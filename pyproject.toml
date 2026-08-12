@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "claude-agent-sdk>=0.2",
+    "google-cloud-bigquery>=3.25",
     "google-cloud-firestore>=2.19",
     "google-cloud-storage>=2.18",
     "google-cloud-run>=0.10",

@@ -21,6 +21,7 @@ resource "google_project_service" "apis" {
     "storage.googleapis.com",
     "iam.googleapis.com",
     "secretmanager.googleapis.com",
+    "bigquery.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -40,6 +41,17 @@ resource "google_storage_bucket" "sessions" {
   location                    = var.region
   uniform_bucket_level_access = true
   depends_on                  = [google_project_service.apis]
+}
+
+# --- analysis: BigQuery dataset for `syros export` snapshots ---
+# Loaded by the caller's identity (no runner/console access): callers need
+# roles/bigquery.jobUser on the project and dataEditor on this dataset.
+
+resource "google_bigquery_dataset" "analytics" {
+  dataset_id  = var.dataset_id
+  location    = var.region
+  description = "Flat snapshots of the Firestore control plane, written by `syros export`"
+  depends_on  = [google_project_service.apis]
 }
 
 resource "google_artifact_registry_repository" "syros" {
