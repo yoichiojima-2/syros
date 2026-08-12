@@ -9,3 +9,5 @@ dist/
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+scratch/**
+!scratch/README.md
