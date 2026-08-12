@@ -76,8 +76,9 @@ resource "google_storage_bucket_iam_member" "runner_bucket" {
 # --- the sandbox ---
 
 resource "google_cloud_run_v2_job" "runner" {
-  name     = var.job_name
-  location = var.region
+  name                = var.job_name
+  location            = var.region
+  deletion_protection = false
 
   template {
     template {
