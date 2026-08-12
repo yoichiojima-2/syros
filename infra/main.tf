@@ -155,7 +155,12 @@ resource "google_cloud_run_v2_job" "runner" {
     }
   }
 
-  depends_on = [google_project_service.apis]
+  # The secretAccessor binding must exist before Cloud Run validates the mount,
+  # or the job update fails with a permission error on the secret.
+  depends_on = [
+    google_project_service.apis,
+    google_secret_manager_secret_iam_member.runner_anthropic_key,
+  ]
 }
 
 # --- the console: same image, IAM-protected Cloud Run service ---
