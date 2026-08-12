@@ -7,6 +7,9 @@ interface Props {
   onDecide: (callHash: string, allow: boolean, message: string | null) => void;
 }
 
+// A pending approval with a live countdown. `now` is the server clock (see
+// api.ts), so the timer agrees with the gate's timeout regardless of any
+// local clock skew; past the deadline the gate has already denied the call.
 export default function ApprovalCard({ approval, now, onDecide }: Props) {
   const [reason, setReason] = useState("");
   const total = Math.max(1, approval.deadline - approval.requested_at);

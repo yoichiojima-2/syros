@@ -2,6 +2,10 @@ import { useLayoutEffect, useRef } from "react";
 import type { ContentBlock, TranscriptEvent, TranscriptMessage } from "../types";
 import { compact, cost, pretty } from "../format";
 
+// Renders the event feed. Message kinds and block types mirror the Firestore
+// serialization in src/syros/types.py; unknown ones render as null rather
+// than breaking the transcript.
+
 function blockList(content: TranscriptMessage["content"]): ContentBlock[] {
   return Array.isArray(content) ? content : [];
 }
@@ -120,6 +124,8 @@ export default function Transcript({
   placeholder: string | null;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  // Follow new messages only while the user is at the bottom; once they
+  // scroll up to read, stop yanking the view down on every poll.
   const pinnedRef = useRef(true);
 
   useLayoutEffect(() => {
@@ -132,6 +138,7 @@ export default function Transcript({
       ref={boxRef}
       onScroll={() => {
         const box = boxRef.current!;
+        // 48px of slack so a near-bottom position still counts as pinned.
         pinnedRef.current = box.scrollTop + box.clientHeight >= box.scrollHeight - 48;
       }}
       className="min-h-0 flex-1 overflow-y-auto p-5"

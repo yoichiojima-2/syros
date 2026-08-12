@@ -23,6 +23,13 @@ from .types import PermissionResult, PermissionResultAllow, PermissionResultDeny
 
 
 def call_hash(tool_name: str, tool_input: dict[str, Any]) -> str:
+    """Deterministic id for a tool call, used as the approval document's key.
+
+    Canonical JSON (sorted keys, fixed separators) makes the hash stable across
+    processes, so the runner and an operator CLI/console always name the same
+    approval doc — and any change to the input yields a different hash,
+    requiring a fresh approval.
+    """
     canonical = json.dumps(tool_input, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(f"{tool_name}\n{canonical}".encode()).hexdigest()
 
@@ -38,6 +45,8 @@ def _deny(reason: str) -> dict[str, Any]:
 
 
 class Gate:
+    """One session's enforcement point: audit hook, kill switch, approval loop."""
+
     def __init__(
         self,
         store: Store,
@@ -103,6 +112,8 @@ class Gate:
             if await self._killed():
                 return PermissionResultDeny(message="session disabled by operator")
             await asyncio.sleep(self._poll_interval)
+        # Record the timeout as an explicit deny so the request doesn't linger
+        # as "pending" in the queue after the harness has already moved on.
         await self._store.decide_approval(
             self._session_id, hash_, allow=False, decided_by="timeout"
         )

@@ -13,12 +13,16 @@ import Composer from "./components/Composer";
 import Sidebar from "./components/Sidebar";
 import Transcript from "./components/Transcript";
 
+// Compare by call_hash so the 1s poll keeps the previous array (and skips a
+// re-render) when the pending set hasn't actually changed.
 function sameApprovals(a: Approval[], b: Approval[]): boolean {
   return (
     a.map((x) => x.call_hash).join(",") === b.map((x) => x.call_hash).join(",")
   );
 }
 
+// The focused session id lives in the URL hash, so sessions are deep-linkable
+// and the back button walks between them.
 function hashSid(): string | null {
   return location.hash.length > 1 ? location.hash.slice(1) : null;
 }
@@ -36,6 +40,7 @@ export default function App() {
 
   useEffect(() => {
     setOnlineListener(setOnline);
+    // 500ms clock tick (on the server's clock) drives the approval countdowns.
     const tick = setInterval(() => setNow(serverNow()), 500);
     const onHash = () => setSid(hashSid());
     window.addEventListener("hashchange", onHash);
@@ -99,6 +104,8 @@ export default function App() {
   const decide = async (callHash: string, allow: boolean, message: string | null) => {
     try {
       await post(`/api/sessions/${sid}/approvals/${callHash}`, { allow, message });
+      // Drop the card immediately; a decided approval leaves the pending set
+      // server-side, so the next poll agrees.
       setApprovals((prev) => prev.filter((a) => a.call_hash !== callHash));
       showFlash(allow ? "allowed" : "denied");
     } catch (err) {

@@ -27,6 +27,11 @@ INBOX_POLL_SECONDS = 2.0
 
 
 async def _watch_interrupt(store: Store, session_id: str, client: ClaudeSDKClient) -> None:
+    """Background task: forward queued interrupts to the harness.
+
+    Swallows transient store errors — a Firestore blip must not take down the
+    run it is only supposed to be able to pause.
+    """
     while True:
         try:
             if await store.take_interrupt(session_id):
@@ -37,6 +42,12 @@ async def _watch_interrupt(store: Store, session_id: str, client: ClaudeSDKClien
 
 
 async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -> list[str]:
+    """Poll the inbox for up to stay_alive seconds of idleness.
+
+    An empty return means "exit now": the idle window lapsed with no input, or
+    the session was killed/terminated. The client re-triggers the job when the
+    next prompt arrives, so exiting is cheap — that's the scale-to-zero deal.
+    """
     waited = 0.0
     while waited <= stay_alive:
         messages = await store.pop_messages(session_id)

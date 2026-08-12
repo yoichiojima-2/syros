@@ -16,6 +16,8 @@ from .. import remote
 from ..options import AgentOptions
 from ..store import Store, lease_active
 
+# Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
+# browser reloading on a long session — can't wedge a single HTTP request.
 MAX_EVENT_PAGES = 50
 
 
@@ -91,6 +93,8 @@ class ConsoleAPI:
         return {"now": time.time(), "sessions": [_summary(s) for s in sessions]}
 
     async def poll(self, session_id: str, after: int) -> dict[str, Any]:
+        """One polling unit: session summary, events past the cursor, pending
+        approvals (with absolute deadlines so the browser renders countdowns)."""
         session = await self._session(session_id)
         events: list[dict[str, Any]] = []
         cursor = after
