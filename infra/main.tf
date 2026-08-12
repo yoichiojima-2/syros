@@ -36,6 +36,21 @@ resource "google_firestore_database" "default" {
   depends_on  = [google_project_service.apis]
 }
 
+# the console's global approvals queue queries approvals across all sessions;
+# collection-group queries need an explicit collection-group-scoped index
+resource "google_firestore_field" "approvals_status" {
+  database   = google_firestore_database.default.name
+  collection = "approvals"
+  field      = "status"
+
+  index_config {
+    indexes {
+      order       = "ASCENDING"
+      query_scope = "COLLECTION_GROUP"
+    }
+  }
+}
+
 resource "google_storage_bucket" "sessions" {
   name                        = "${var.project}-syros"
   location                    = var.region

@@ -1,0 +1,128 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Light theme (default) — dark redefines the same tokens under `.dark`,
+   toggled by next-themes. Chart + status colors follow the same pairing. */
+:root {
+  --background: #f9f9f7;
+  --foreground: #0b0b0b;
+  --card: #fcfcfb;
+  --card-foreground: #0b0b0b;
+  --primary: #1c1c1a;
+  --primary-foreground: #fcfcfb;
+  --secondary: #f0efec;
+  --secondary-foreground: #0b0b0b;
+  --muted: #f0efec;
+  --muted-foreground: #52514e;
+  --faint: #898781;
+  --accent: #f0efec;
+  --accent-foreground: #0b0b0b;
+  --destructive: #d03b3b;
+  --destructive-foreground: #ffffff;
+  --border: #e1e0d9;
+  --input: #d6d5cd;
+  --ring: #898781;
+  --chart-1: #2a78d6;
+  --ok: #0ca30c;
+  --warn: #b97a00;
+  --warn-dot: #fab219;
+  --info: #2a78d6;
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: #0d0d0d;
+  --foreground: #f2f2f0;
+  --card: #1a1a19;
+  --card-foreground: #f2f2f0;
+  --primary: #e8e8e4;
+  --primary-foreground: #141413;
+  --secondary: #242422;
+  --secondary-foreground: #f2f2f0;
+  --muted: #242422;
+  --muted-foreground: #c3c2b7;
+  --faint: #898781;
+  --accent: #242422;
+  --accent-foreground: #f2f2f0;
+  --destructive: #e66767;
+  --destructive-foreground: #141413;
+  --border: #2c2c2a;
+  --input: #383835;
+  --ring: #898781;
+  --chart-1: #3987e5;
+  --ok: #0ca30c;
+  --warn: #fab219;
+  --warn-dot: #fab219;
+  --info: #3987e5;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-warn-dot: var(--warn-dot);
+  --color-info: var(--info);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
+
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-dot {
+    animation: none;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* disclosure triangles for transcript <details> */
+details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+details > summary::before {
+  content: "▸ ";
+  color: var(--faint);
+}
+details[open] > summary::before {
+  content: "▾ ";
+}

@@ -1,9 +1,9 @@
 """stdlib HTTP server for the console — no framework, localhost or Cloud Run.
 
-Serves the built frontend (console/, React + Vite; `npm run build` emits
-static/ into this package) and the JSON API. The asyncio loop owns the Store
-(firestore.AsyncClient is loop-bound); HTTP handler threads bridge into it
-with run_coroutine_threadsafe.
+Serves the built frontend (console/, Next.js static export; `npm run build`
+emits static/ into this package) and the JSON API. The asyncio loop owns the
+Store (firestore.AsyncClient is loop-bound); HTTP handler threads bridge into
+it with run_coroutine_threadsafe.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ CALL_TIMEOUT_SECONDS = 30.0
 
 
 def _load_static() -> dict[str, bytes]:
-    """Preload the built frontend (console/ → vite build → static/) into memory."""
+    """Preload the built frontend (console/ → next build → static/) into memory."""
     files: dict[str, bytes] = {}
 
     def walk(node, prefix: str = "") -> None:
@@ -90,20 +90,30 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
             parts = [p for p in url.path.split("/") if p]
             if parts == ["api", "sessions"]:
                 self._api(api.sessions())
+            elif parts == ["api", "approvals"]:
+                self._api(api.approvals())
             elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "poll":
                 after = int((parse_qs(url.query).get("after") or ["0"])[0])
                 self._api(api.poll(parts[2], after))
             elif parts[:1] == ["api"]:
                 self._json({"error": "not found"}, 404)
             else:
-                name = "/".join(parts) or "index.html"
+                self._static("/".join(parts) or "index.html")
+
+        def _static(self, name: str) -> None:
+            # next content-hashes everything under _next/, so those are immutable
+            cache = "public, max-age=31536000, immutable" if "/" in name else "no-cache"
+            body = static.get(name)
+            if body is None and "/" not in name:
+                # exported pages are flat html files: /sessions -> sessions.html
+                name, cache = f"{name}.html", "no-cache"
                 body = static.get(name)
-                if body is None:
-                    self._json({"error": "not found"}, 404)
-                else:
-                    # vite content-hashes everything under assets/, so those are immutable
-                    cache = "public, max-age=31536000, immutable" if "/" in name else "no-cache"
-                    self._send(200, body, _content_type(name), cache)
+            if body is not None:
+                self._send(200, body, _content_type(name), cache)
+            elif "404.html" in static:
+                self._send(404, static["404.html"], _content_type("404.html"), "no-cache")
+            else:
+                self._json({"error": "not found"}, 404)
 
         def do_POST(self) -> None:
             parts = [p for p in urlparse(self.path).path.split("/") if p]
@@ -138,9 +148,15 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
 
 
 def create_server(
-    api: ConsoleAPI, loop: asyncio.AbstractEventLoop, host: str, port: int
+    api: ConsoleAPI,
+    loop: asyncio.AbstractEventLoop,
+    host: str,
+    port: int,
+    static: dict[str, bytes] | None = None,
 ) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((host, port), _make_handler(api, loop, _load_static()))
+    if static is None:
+        static = _load_static()
+    server = ThreadingHTTPServer((host, port), _make_handler(api, loop, static))
     server.daemon_threads = True
     return server
 
