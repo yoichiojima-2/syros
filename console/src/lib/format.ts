@@ -1,3 +1,5 @@
+// Presentation helpers shared across the console components.
+
 export function relTime(epoch: number | null, now: number): string {
   if (!epoch) return "";
   const s = Math.max(0, now - epoch);

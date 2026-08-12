@@ -33,6 +33,8 @@ async def _trigger_job(project: str, region: str, job: str, session_id: str) -> 
 
 
 async def _prompt_texts(prompt: str | AsyncIterable[dict[str, Any]]) -> list[str]:
+    """Flatten a prompt (plain string or the SDK's streamed-input dicts) into
+    the plain texts that travel through the Firestore inbox."""
     if isinstance(prompt, str):
         return [prompt]
     texts = []
@@ -48,6 +50,11 @@ async def _prompt_texts(prompt: str | AsyncIterable[dict[str, Any]]) -> list[str
 
 
 async def _relay_approvals(store: Store, session_id: str, options: AgentOptions) -> None:
+    """Answer pending approvals with the caller's can_use_tool callback.
+
+    The sandbox's gate only ever sees the approval document; this is the piece
+    that lets an SDK callback drive it, exactly as it would drive a local run.
+    """
     if options.can_use_tool is None:
         return
     from .types import ToolPermissionContext

@@ -12,7 +12,7 @@ import type {
   TranscriptEvent,
 } from "./types";
 
-/** Server-clock ticker for countdowns and relative times. */
+/** Ticker on the server's clock (see api.ts) driving countdowns and relative times. */
 export function useNow(intervalMs = 500): number {
   const [now, setNow] = useState(serverNow);
   useEffect(() => {
@@ -73,7 +73,8 @@ export function useApprovals(intervalMs = 3000): {
   return { approvals, remove };
 }
 
-/** Identity compare so countdown cards aren't re-created every poll. */
+// Compare by call_hash so a poll keeps the previous array (and skips a
+// re-render of the countdown cards) when the pending set hasn't changed.
 function sameApprovals(a: Approval[], b: Approval[]): boolean {
   return a.map((x) => x.call_hash).join(",") === b.map((x) => x.call_hash).join(",");
 }

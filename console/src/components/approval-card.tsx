@@ -8,6 +8,9 @@ import { shortId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Approval } from "@/lib/types";
 
+// A pending approval with a live countdown. `now` is the server clock (see
+// lib/api.ts), so the timer agrees with the gate's timeout regardless of any
+// local clock skew; past the deadline the gate has already denied the call.
 export function ApprovalCard({
   approval,
   now,

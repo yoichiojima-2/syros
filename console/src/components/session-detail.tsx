@@ -19,6 +19,8 @@ export function SessionDetail({ sid }: { sid: string }) {
   const decide = async (callHash: string, allow: boolean, message: string | null) => {
     try {
       await post(`/api/sessions/${sid}/approvals/${callHash}`, { allow, message });
+      // Drop the card immediately; a decided approval leaves the pending set
+      // server-side, so the next poll agrees.
       removeApproval(callHash);
       showFlash(allow ? "allowed" : "denied");
     } catch (err) {

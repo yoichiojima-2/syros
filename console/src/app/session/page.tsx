@@ -14,6 +14,8 @@ export default function SessionPage() {
 }
 
 function SessionInner() {
+  // The focused session id lives in the query string, so sessions stay
+  // deep-linkable and the back button walks between them.
   const sid = useSearchParams().get("sid");
   if (!sid) {
     return (

@@ -1,7 +1,11 @@
+// Shapes of the JSON payloads served by src/syros/console/api.py.
+// All timestamps are epoch seconds (the server flattens Firestore datetimes),
+// and the message/block shapes mirror syros.types' Firestore serialization.
+
 export interface SessionSummary {
   id: string;
   status: string | null;
-  state: string;
+  state: string; // derived liveness: running | stalled | queued | idle | terminated | ...
   disabled: boolean;
   stop_reason: string | null;
   cost_usd: number;
