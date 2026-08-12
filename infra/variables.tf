@@ -55,6 +55,12 @@ variable "model_backend" {
   }
 }
 
+variable "dataset_id" {
+  description = "BigQuery dataset that `syros export` loads analysis snapshots into"
+  type        = string
+  default     = "syros"
+}
+
 variable "console_name" {
   type    = string
   default = "syros-console"

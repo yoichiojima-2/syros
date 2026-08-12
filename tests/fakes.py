@@ -36,7 +36,8 @@ class FakeStore:
         self.sessions[session_id].update(fields)
 
     async def list_sessions(self, limit=20):
-        return [{"id": k, **v} for k, v in self.sessions.items()][:limit]
+        rows = [{"id": k, **v} for k, v in self.sessions.items()]
+        return rows if limit is None else rows[:limit]
 
     async def claim_session(self, session_id, lease_id, ttl_seconds):
         session = self.sessions.get(session_id)
@@ -114,5 +115,11 @@ class FakeStore:
             dict(a) for a in self.approvals.get(session_id, {}).values() if a["status"] == "pending"
         ]
 
+    async def list_approvals(self, session_id):
+        return [dict(a) for a in self.approvals.get(session_id, {}).values()]
+
     async def record_tool_call(self, session_id, row):
         self.tool_calls.setdefault(session_id, []).append(dict(row))
+
+    async def list_tool_calls(self, session_id):
+        return [dict(r) for r in self.tool_calls.get(session_id, [])]

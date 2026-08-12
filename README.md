@@ -82,6 +82,40 @@ The frontend lives in `console/` (React + TypeScript + Vite + Tailwind); `make c
 rebuilds the bundle into `src/syros/console/static/`, which is committed so pip installs
 and the Docker image need no Node toolchain.
 
+## Analysis
+
+Firestore holds all the state but is a poor analysis surface. `syros export` snapshots the
+control plane into four flat BigQuery tables — `sessions`, `events`, `tool_calls`,
+`approvals` — in the Terraform-created `syros` dataset (`--dataset` / `$SYROS_DATASET` to
+override):
+
+```
+syros export                         # idempotent: each run replaces the tables
+```
+
+```sql
+-- what did each session cost, and how did it end?
+SELECT session_id, model, cost_usd, status, stop_reason
+FROM syros.sessions ORDER BY cost_usd DESC;
+
+-- which tools run most, and does anything get denied?
+SELECT tool_name, decision, COUNT(*) AS calls
+FROM syros.tool_calls GROUP BY 1, 2 ORDER BY calls DESC;
+
+-- how long do humans take to decide approvals?
+SELECT tool_name, status, decided_by,
+       TIMESTAMP_DIFF(decided_at, requested_at, SECOND) AS latency_s
+FROM syros.approvals ORDER BY requested_at DESC;
+
+-- dig into any message; full payloads live in JSON columns
+SELECT session_id, seq, JSON_VALUE(message.total_cost_usd) AS cost
+FROM syros.events WHERE kind = 'result';
+```
+
+Like the rest of the ops surface it runs with the caller's identity — the sandbox gains no
+BigQuery access. Exporting needs `roles/bigquery.jobUser` plus write access on the dataset;
+for a standing feed, point Cloud Scheduler at anything that can run `syros export`.
+
 ## Security model
 
 - **Data boundary** — model calls exit only via Vertex AI by default (the sandbox has no

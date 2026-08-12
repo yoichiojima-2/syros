@@ -7,6 +7,7 @@ syros approvals <session_id> allow <call_hash>
 syros approvals <session_id> deny <call_hash> [-m reason]
 syros kill <session_id>                 flip the kill switch
 syros console                           serve the web console (localhost or Cloud Run)
+syros export                            snapshot Firestore into BigQuery for analysis
 """
 
 from __future__ import annotations
@@ -79,6 +80,16 @@ async def _kill(args) -> None:
     print(f"disabled: {args.session_id}")
 
 
+async def _export(args) -> None:
+    from .analytics import collect, load
+
+    project = _project(args)
+    tables = await collect(_store(args))
+    counts = await asyncio.to_thread(load, project, tables, dataset=args.dataset)
+    for name, count in counts.items():
+        print(f"{project}.{args.dataset}.{name}  {count} rows")
+
+
 async def _console(args) -> None:
     from .console.api import ConsoleAPI
     from .console.server import run
@@ -112,6 +123,10 @@ def main() -> None:
     kill = sub.add_parser("kill")
     kill.add_argument("session_id")
     kill.set_defaults(func=_kill)
+
+    export = sub.add_parser("export")
+    export.add_argument("--dataset", default=os.environ.get("SYROS_DATASET") or "syros")
+    export.set_defaults(func=_export)
 
     console = sub.add_parser("console")
     console.add_argument("--host", default="127.0.0.1")
