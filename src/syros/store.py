@@ -67,12 +67,10 @@ class Store:
         fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
         await self._session(session_id).update(fields)
 
-    async def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
-        query = (
-            self._db.collection("sessions")
-            .order_by("created_at", direction="DESCENDING")
-            .limit(limit)
-        )
+    async def list_sessions(self, limit: int | None = 20) -> list[dict[str, Any]]:
+        query = self._db.collection("sessions").order_by("created_at", direction="DESCENDING")
+        if limit is not None:
+            query = query.limit(limit)
         return [{"id": s.id, **s.to_dict()} async for s in query.stream()]
 
     async def claim_session(
@@ -237,8 +235,16 @@ class Store:
         )
         return [s.to_dict() async for s in query.stream()]
 
+    async def list_approvals(self, session_id: str) -> list[dict[str, Any]]:
+        query = self._session(session_id).collection("approvals")
+        return [s.to_dict() async for s in query.stream()]
+
     # --- audit ---
 
     async def record_tool_call(self, session_id: str, row: dict[str, Any]) -> None:
         row["ts"] = self._firestore.SERVER_TIMESTAMP
         await self._session(session_id).collection("tool_calls").add(row)
+
+    async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]:
+        query = self._session(session_id).collection("tool_calls").order_by("ts")
+        return [s.to_dict() async for s in query.stream()]
