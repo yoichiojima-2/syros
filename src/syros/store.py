@@ -249,6 +249,17 @@ class Store:
         query = self._session(session_id).collection("approvals")
         return [s.to_dict() async for s in query.stream()]
 
+    async def list_all_pending_approvals(self) -> list[dict[str, Any]]:
+        """Pending approvals across every session (collection-group query;
+        needs the COLLECTION_GROUP index on approvals.status from infra/)."""
+        query = self._db.collection_group("approvals").where(
+            filter=self._firestore.FieldFilter("status", "==", "pending")
+        )
+        return [
+            {"session_id": s.reference.parent.parent.id, **s.to_dict()}
+            async for s in query.stream()
+        ]
+
     # --- audit ---
 
     async def record_tool_call(self, session_id: str, row: dict[str, Any]) -> None:

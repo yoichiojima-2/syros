@@ -118,6 +118,14 @@ class FakeStore:
     async def list_approvals(self, session_id):
         return [dict(a) for a in self.approvals.get(session_id, {}).values()]
 
+    async def list_all_pending_approvals(self):
+        return [
+            {"session_id": sid, **a}
+            for sid, rows in self.approvals.items()
+            for a in rows.values()
+            if a["status"] == "pending"
+        ]
+
     async def record_tool_call(self, session_id, row):
         self.tool_calls.setdefault(session_id, []).append(dict(row))
 

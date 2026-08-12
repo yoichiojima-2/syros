@@ -104,28 +104,38 @@ class ConsoleAPI:
             if len(batch) < 200:
                 break
             cursor = int(batch[-1]["seq"])
-        approvals = []
         now = time.time()
-        for approval in await self._store.list_pending_approvals(session_id):
-            requested_at = approval.get("requested_at")
-            requested = requested_at.timestamp() if isinstance(requested_at, datetime) else now
-            approvals.append(
-                to_jsonable(
-                    {
-                        "call_hash": approval["call_hash"],
-                        "tool_name": approval["tool_name"],
-                        "input": approval.get("input") or {},
-                        "tool_use_id": approval.get("tool_use_id"),
-                        "requested_at": requested,
-                        "deadline": requested + self._approval_timeout,
-                    }
-                )
-            )
+        approvals = [
+            self._approval(a, now) for a in await self._store.list_pending_approvals(session_id)
+        ]
         return {
             "now": now,
             "session": _summary(session),
             "events": [to_jsonable(e) for e in events],
             "approvals": approvals,
+        }
+
+    def _approval(self, approval: dict[str, Any], now: float) -> dict[str, Any]:
+        requested_at = approval.get("requested_at")
+        requested = requested_at.timestamp() if isinstance(requested_at, datetime) else now
+        return to_jsonable(
+            {
+                "call_hash": approval["call_hash"],
+                "tool_name": approval["tool_name"],
+                "input": approval.get("input") or {},
+                "tool_use_id": approval.get("tool_use_id"),
+                "requested_at": requested,
+                "deadline": requested + self._approval_timeout,
+            }
+        )
+
+    async def approvals(self) -> dict[str, Any]:
+        """Pending approvals across all sessions, for the global queue page."""
+        now = time.time()
+        rows = await self._store.list_all_pending_approvals()
+        return {
+            "now": now,
+            "approvals": [{"session_id": a["session_id"], **self._approval(a, now)} for a in rows],
         }
 
     async def decide(

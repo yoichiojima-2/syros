@@ -95,6 +95,27 @@ async def test_decide_unknown_approval():
         await api(store).decide("sess_1", "nope", allow=True)
 
 
+# --- approvals across sessions ---
+
+
+async def test_approvals_across_sessions():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.create_session("sess_2", {})
+    await store.request_approval("sess_1", "hash1", "Bash", {"command": "rm"})
+    await store.request_approval("sess_2", "hash2", "Write", {"path": "/x"})
+    await store.request_approval("sess_2", "hash3", "Read", {"path": "/y"})
+    await store.decide_approval("sess_2", "hash3", allow=True, decided_by="t")
+
+    result = await api(store, approval_timeout=10.0).approvals()
+
+    rows = {a["call_hash"]: a for a in result["approvals"]}
+    assert set(rows) == {"hash1", "hash2"}
+    assert rows["hash1"]["session_id"] == "sess_1"
+    assert rows["hash2"]["session_id"] == "sess_2"
+    assert rows["hash1"]["deadline"] == pytest.approx(result["now"] + 10.0, abs=1.0)
+
+
 # --- prompt / interrupt / kill ---
 
 
@@ -176,5 +197,53 @@ async def test_http_smoke():
             fetch, "POST", "/api/sessions/sess_1/prompt", {"text": "hi"}
         )
         assert status == 200 and json.loads(body)["ok"] is True
+
+        status, body = await asyncio.to_thread(fetch, "GET", "/api/approvals")
+        assert status == 200 and json.loads(body)["approvals"] == []
+    finally:
+        server.shutdown()
+
+
+async def test_static_serving_next_export():
+    from syros.console.server import create_server
+
+    static = {
+        "index.html": b"<h1>syros</h1>",
+        "sessions.html": b"sessions-page",
+        "404.html": b"not-found-page",
+        "_next/static/x.js": b"js",
+    }
+    server = create_server(
+        api(FakeStore()), asyncio.get_running_loop(), "127.0.0.1", 0, static=static
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    def fetch(path):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", path)
+        response = conn.getresponse()
+        return response.status, response.read(), dict(response.getheaders())
+
+    try:
+        status, body, headers = await asyncio.to_thread(fetch, "/")
+        assert (status, body) == (200, b"<h1>syros</h1>")
+        assert headers["Cache-Control"] == "no-cache"
+
+        # exported page routes fall back to their flat html files
+        status, body, headers = await asyncio.to_thread(fetch, "/sessions")
+        assert (status, body) == (200, b"sessions-page")
+        assert headers["Cache-Control"] == "no-cache"
+        assert headers["Content-Type"].startswith("text/html")
+
+        status, _, headers = await asyncio.to_thread(fetch, "/_next/static/x.js")
+        assert status == 200
+        assert "immutable" in headers["Cache-Control"]
+
+        status, body, _ = await asyncio.to_thread(fetch, "/nope")
+        assert (status, body) == (404, b"not-found-page")
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/nope")
+        assert status == 404 and b"error" in body
     finally:
         server.shutdown()
