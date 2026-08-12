@@ -20,6 +20,12 @@ def new_session_id() -> str:
 
 
 def lease_active(session: dict[str, Any] | None, now: float | None = None) -> bool:
+    """Whether a live sandbox execution currently holds this session.
+
+    The lease is how everyone distinguishes "running" from "the runner died
+    mid-status": clients use it to decide whether triggering a job is needed,
+    and claim_session uses it to keep two executions off one session.
+    """
     if not session:
         return False
     return float(session.get("lease_expires") or 0) > (now if now is not None else time.time())
@@ -120,6 +126,8 @@ class Store:
     # --- events (the message mirror) ---
 
     async def append_event(self, session_id: str, seq: int, message: dict[str, Any]) -> None:
+        # Doc id is the zero-padded seq: writes are idempotent on retry, and
+        # Firestore's lexicographic doc ordering matches numeric order.
         await (
             self._session(session_id)
             .collection("events")
@@ -155,6 +163,8 @@ class Store:
             .where(filter=self._firestore.FieldFilter("consumed", "==", False))
         )
         snapshots = [s async for s in query.stream()]
+        # Sorted client-side: where + order_by on different fields would
+        # require a composite index, and the inbox is always tiny.
         snapshots.sort(key=lambda s: s.get("ts"))
         return snapshots
 
