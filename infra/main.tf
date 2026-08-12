@@ -51,7 +51,9 @@ resource "google_bigquery_dataset" "analytics" {
   dataset_id  = var.dataset_id
   location    = var.region
   description = "Flat snapshots of the Firestore control plane, written by `syros export`"
-  depends_on  = [google_project_service.apis]
+  # Tables are disposable re-runnable snapshots; don't let them block destroy.
+  delete_contents_on_destroy = true
+  depends_on                 = [google_project_service.apis]
 }
 
 resource "google_artifact_registry_repository" "syros" {

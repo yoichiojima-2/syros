@@ -16,6 +16,7 @@ sandbox's service account gains nothing.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 from typing import Any
@@ -94,12 +95,13 @@ def _json(value: Any) -> Any:
 
 def session_row(session: dict[str, Any]) -> dict[str, Any]:
     options = session.get("options") or {}
+    cost = session.get("cost_usd")
     return {
         "session_id": session["id"],
         "status": session.get("status"),
         "stop_reason": session.get("stop_reason"),
         "disabled": bool(session.get("disabled")),
-        "cost_usd": float(session.get("cost_usd") or 0.0),
+        "cost_usd": float(cost) if cost is not None else None,
         "seq_head": session.get("seq_head"),
         "model": options.get("model"),
         "created_by": session.get("created_by"),
@@ -146,29 +148,37 @@ def approval_row(session_id: str, approval: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _all_events(store: Any, session_id: str, page_size: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    cursor = 0
+    while True:
+        events = await store.list_events(session_id, after=cursor, limit=page_size)
+        for event in events:
+            cursor = int(event["seq"])
+            rows.append(event_row(session_id, event))
+        if len(events) < page_size:
+            return rows
+
+
 async def collect(store: Any, page_size: int = 500) -> dict[str, list[dict[str, Any]]]:
     """Read the full session tree from the store into flat row lists."""
+    sessions = await store.list_sessions(limit=None)
     tables: dict[str, list[dict[str, Any]]] = {
-        "sessions": [],
+        "sessions": [session_row(s) for s in sessions],
         "events": [],
         "tool_calls": [],
         "approvals": [],
     }
-    for session in await store.list_sessions(limit=None):
+    for session in sessions:
         session_id = session["id"]
-        tables["sessions"].append(session_row(session))
-        cursor = 0
-        while True:
-            events = await store.list_events(session_id, after=cursor, limit=page_size)
-            for event in events:
-                cursor = int(event["seq"])
-                tables["events"].append(event_row(session_id, event))
-            if len(events) < page_size:
-                break
-        for call in await store.list_tool_calls(session_id):
-            tables["tool_calls"].append(tool_call_row(session_id, call))
-        for approval in await store.list_approvals(session_id):
-            tables["approvals"].append(approval_row(session_id, approval))
+        events, calls, approvals = await asyncio.gather(
+            _all_events(store, session_id, page_size),
+            store.list_tool_calls(session_id),
+            store.list_approvals(session_id),
+        )
+        tables["events"].extend(events)
+        tables["tool_calls"].extend(tool_call_row(session_id, c) for c in calls)
+        tables["approvals"].extend(approval_row(session_id, a) for a in approvals)
     return tables
 
 
@@ -178,15 +188,20 @@ def load(
     """Load the collected rows into BigQuery, replacing each table."""
     from google.cloud import bigquery
 
+    # The dataset itself is Terraform's (infra/main.tf pins its location and
+    # lifecycle); creating it here would demand project-level create rights
+    # the documented caller roles don't include.
     client = bigquery.Client(project=project)
-    client.create_dataset(f"{project}.{dataset}", exists_ok=True)
 
     counts: dict[str, int] = {}
     for name, rows in tables.items():
         schema = [bigquery.SchemaField(n, t, mode=m) for n, t, m in SCHEMAS[name]]
         table_id = f"{project}.{dataset}.{name}"
         if not rows:
-            client.create_table(bigquery.Table(table_id, schema=schema), exists_ok=True)
+            # A load job can't truncate to zero rows; recreate the table empty
+            # so an emptied collection doesn't leave stale rows behind.
+            client.delete_table(table_id, not_found_ok=True)
+            client.create_table(bigquery.Table(table_id, schema=schema))
             counts[name] = 0
             continue
         job = client.load_table_from_json(

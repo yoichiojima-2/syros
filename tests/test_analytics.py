@@ -66,6 +66,11 @@ async def test_timestamps_normalize_to_iso8601():
     assert approval_row("s", {"requested_at": when})["requested_at"] == when.isoformat()
 
 
+async def test_unknown_cost_stays_null_not_zero():
+    assert session_row({"id": "s"})["cost_usd"] is None
+    assert session_row({"id": "s", "cost_usd": 0.0})["cost_usd"] == 0.0
+
+
 async def test_json_payloads_survive_exotic_leaves():
     when = datetime.datetime(2026, 8, 12, tzinfo=datetime.timezone.utc)
     row = tool_call_row("s", {"input": {"deadline": when, "args": ["ls"]}})
