@@ -21,5 +21,13 @@ async def run_local(
         resume=options.resume,
         env=model_env(options),
     )
+    if options.can_use_tool is not None and isinstance(prompt, str):
+        # The SDK's query() requires streaming input when can_use_tool is set;
+        # wrap the string so both sandboxes accept the same call shape.
+        prompt = _as_stream(prompt)
     async for message in _sdk_query(prompt=prompt, options=sdk_options):
         yield message
+
+
+async def _as_stream(prompt: str) -> AsyncIterator[dict[str, Any]]:
+    yield {"type": "user", "message": {"role": "user", "content": prompt}}

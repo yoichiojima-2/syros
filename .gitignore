@@ -13,3 +13,4 @@ scratch/**
 !scratch/README.md
 
 console/node_modules/
+.mypy_cache
