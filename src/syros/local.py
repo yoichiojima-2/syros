@@ -1,4 +1,4 @@
-"""Local sandbox: run claude_agent_sdk in-process, routed through Vertex AI."""
+"""Local sandbox: run claude_agent_sdk in-process, on the configured model backend."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 from claude_agent_sdk import query as _sdk_query
 
-from .options import AgentOptions, build_sdk_options, vertex_env
+from .options import AgentOptions, build_sdk_options, model_env
 from .types import Message
 
 
@@ -19,7 +19,7 @@ async def run_local(
         can_use_tool=options.can_use_tool,
         cwd=options.workspace,
         resume=options.resume,
-        env=vertex_env(options),
+        env=model_env(options),
     )
     async for message in _sdk_query(prompt=prompt, options=sdk_options):
         yield message

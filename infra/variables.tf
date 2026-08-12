@@ -44,6 +44,22 @@ variable "vertex_region" {
   default     = "global"
 }
 
+variable "model_backend" {
+  description = "Where model calls go: 'vertex' (inside the project) or 'anthropic' (mounts the anthropic-api-key secret; traffic leaves GCP)"
+  type        = string
+  default     = "vertex"
+
+  validation {
+    condition     = contains(["vertex", "anthropic"], var.model_backend)
+    error_message = "model_backend must be 'vertex' or 'anthropic'."
+  }
+}
+
+variable "console_name" {
+  type    = string
+  default = "syros-console"
+}
+
 variable "vpc_connector" {
   description = "Optional Serverless VPC connector for egress lockdown; null = default egress"
   type        = string

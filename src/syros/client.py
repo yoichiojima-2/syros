@@ -6,7 +6,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
 from .errors import SyrosError
-from .options import AgentOptions, build_sdk_options, vertex_env
+from .options import AgentOptions, build_sdk_options, model_env
 from .types import Message
 
 
@@ -57,7 +57,7 @@ class SyrosClient:
                 can_use_tool=self.options.can_use_tool,
                 cwd=self.options.workspace,
                 resume=self.options.resume,
-                env=vertex_env(self.options),
+                env=model_env(self.options),
             )
             self._local = ClaudeSDKClient(sdk_options)
             await self._local.connect()

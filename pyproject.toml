@@ -9,6 +9,7 @@ dependencies = [
     "google-cloud-firestore>=2.19",
     "google-cloud-storage>=2.18",
     "google-cloud-run>=0.10",
+    "google-cloud-secret-manager>=2.20",
 ]
 
 [dependency-groups]

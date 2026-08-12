@@ -1,7 +1,7 @@
 import pytest
 
 from syros.errors import OptionsError
-from syros.options import AgentOptions, build_sdk_options, vertex_env
+from syros.options import AgentOptions, build_sdk_options, model_env
 
 
 def test_local_defaults_validate():
@@ -92,8 +92,8 @@ def test_build_sdk_options_maps_fields():
     assert sdk.env == {"A": "1"}
 
 
-def test_vertex_env_with_project():
-    env = vertex_env(AgentOptions(project="proj-1"))
+def test_model_env_with_project():
+    env = model_env(AgentOptions(project="proj-1"))
     assert env == {
         "CLAUDE_CODE_USE_VERTEX": "1",
         "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
@@ -101,5 +101,28 @@ def test_vertex_env_with_project():
     }
 
 
-def test_vertex_env_without_project_is_ambient():
-    assert vertex_env(AgentOptions()) == {}
+def test_model_env_without_project_is_ambient():
+    assert model_env(AgentOptions()) == {}
+
+
+def test_model_env_anthropic_backend_bypasses_vertex(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    env = model_env(AgentOptions(project="proj-1", model_backend="anthropic"))
+    assert env == {"ANTHROPIC_API_KEY": "sk-test"}
+
+
+def test_model_env_anthropic_backend_from_environment(monkeypatch):
+    """The sandbox reads its backend from the job env, not from serialized options."""
+    monkeypatch.setenv("SYROS_MODEL_BACKEND", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert model_env(AgentOptions(project="proj-1")) == {"ANTHROPIC_API_KEY": "sk-test"}
+
+
+def test_model_env_anthropic_backend_without_key_raises():
+    with pytest.raises(OptionsError, match="ANTHROPIC_API_KEY"):
+        model_env(AgentOptions(project="proj-1", model_backend="anthropic"))
+
+
+def test_model_env_ignores_ambient_key_on_vertex_backend(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert model_env(AgentOptions(project="proj-1"))["CLAUDE_CODE_USE_VERTEX"] == "1"

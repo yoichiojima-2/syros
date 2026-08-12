@@ -20,6 +20,7 @@ resource "google_project_service" "apis" {
     "aiplatform.googleapis.com",
     "storage.googleapis.com",
     "iam.googleapis.com",
+    "secretmanager.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -48,7 +49,17 @@ resource "google_artifact_registry_repository" "syros" {
   depends_on    = [google_project_service.apis]
 }
 
-# --- the sandbox identity: least privilege, no secrets ---
+# --- secrets: containers only; values are added out-of-band via gcloud ---
+
+resource "google_secret_manager_secret" "anthropic_api_key" {
+  secret_id = "anthropic-api-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
+# --- the sandbox identity: least privilege; a secret only on the escape hatch ---
 
 resource "google_service_account" "runner" {
   account_id   = "syros-runner"
@@ -71,6 +82,15 @@ resource "google_storage_bucket_iam_member" "runner_bucket" {
   bucket = google_storage_bucket.sessions.name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.runner.email}"
+}
+
+# Granted only when the sandbox actually calls Anthropic directly, so the default
+# deployment keeps a runner identity that can read no secret at all.
+resource "google_secret_manager_secret_iam_member" "runner_anthropic_key" {
+  count     = var.model_backend == "anthropic" ? 1 : 0
+  secret_id = google_secret_manager_secret.anthropic_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runner.email}"
 }
 
 # --- the sandbox ---
@@ -106,6 +126,23 @@ resource "google_cloud_run_v2_job" "runner" {
           name  = "CLOUD_ML_REGION"
           value = var.vertex_region
         }
+        env {
+          name  = "SYROS_MODEL_BACKEND"
+          value = var.model_backend
+        }
+
+        dynamic "env" {
+          for_each = var.model_backend == "anthropic" ? [1] : []
+          content {
+            name = "ANTHROPIC_API_KEY"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.anthropic_api_key.secret_id
+                version = "latest"
+              }
+            }
+          }
+        }
       }
 
       dynamic "vpc_access" {
@@ -114,6 +151,60 @@ resource "google_cloud_run_v2_job" "runner" {
           connector = vpc_access.value
           egress    = "ALL_TRAFFIC"
         }
+      }
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# --- the console: same image, IAM-protected Cloud Run service ---
+# No public access; connect with `gcloud run services proxy syros-console`.
+
+resource "google_service_account" "console" {
+  account_id   = "syros-console"
+  display_name = "syros console"
+}
+
+resource "google_project_iam_member" "console_firestore" {
+  project = var.project
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.console.email}"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "console_runs_job" {
+  name     = google_cloud_run_v2_job.runner.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.console.email}"
+}
+
+resource "google_cloud_run_v2_service" "console" {
+  name                = var.console_name
+  location            = var.region
+  deletion_protection = false
+  ingress             = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.console.email
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 1
+    }
+
+    containers {
+      image   = var.image
+      command = ["syros"]
+      args    = ["console", "--host", "0.0.0.0", "--no-open"]
+
+      env {
+        name  = "SYROS_PROJECT"
+        value = var.project
+      }
+      env {
+        name  = "SYROS_JOB"
+        value = var.job_name
       }
     }
   }

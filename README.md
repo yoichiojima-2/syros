@@ -67,14 +67,28 @@ syros approvals sess_... allow <call_hash>
 syros kill sess_...                  # kill switch: denies every further tool call
 ```
 
+Or with one — the console is a pure Firestore client (no server-side state):
+
+```
+syros console                        # web console at localhost:8484
+```
+
+Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
+(re-triggers the runner job), interrupt, kill. It also deploys to Cloud Run
+(`syros-console`, IAM-only — no public access); connect with
+`gcloud run services proxy syros-console --region asia-northeast1`.
+
 ## Security model
 
-- **Data boundary** — model calls exit only via Vertex AI (the sandbox has no Anthropic
-  API key); state lives in your project's Firestore/GCS. Note: Claude on Vertex currently
-  serves on the `global` endpoint, and a fresh project's quota starts at zero — request it
-  before relying on this.
+- **Data boundary** — model calls exit only via Vertex AI by default (the sandbox has no
+  Anthropic API key); state lives in your project's Firestore/GCS. Note: Claude on Vertex
+  currently serves on the `global` endpoint, and a fresh project's quota starts at zero —
+  request it before relying on this. `model_backend = "anthropic"` is the escape hatch
+  while that quota is pending: it mounts the `anthropic-api-key` secret and calls the
+  Anthropic API directly, which moves model traffic outside GCP. Opt in deliberately.
 - **Credential-less sandbox** — the runner's service account has exactly: `aiplatform.user`,
-  `datastore.user`, and object access on the one session bucket. No secrets are mounted.
+  `datastore.user`, and object access on the one session bucket. No secrets are mounted
+  (the `anthropic-api-key` secret is readable only under `model_backend = "anthropic"`).
   When a tool needs a credential, keep it host-side: the approval/custom-tool round-trip
   runs on the caller's machine with the caller's identity.
 - **Audit before execution** — a `PreToolUse` hook writes the tool-call row to
@@ -137,8 +151,8 @@ silently diverging.
 
 ## Deliberately not built
 
-REST API and UI (the SDK + CLI is the surface; a viewer can be added later as a pure
-Firestore client), versioned agent registry (options travel with the session; pin by
+REST API (the SDK is the surface; `syros console` is a pure Firestore client, not a
+control plane — deleting it loses nothing), versioned agent registry (options travel with the session; pin by
 committing code), vaults/egress proxy (the sandbox is credential-less; keep secrets
 host-side), scheduler (point Cloud Scheduler at the job), multi-env tenancy (one project
 per trust boundary).

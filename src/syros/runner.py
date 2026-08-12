@@ -1,8 +1,9 @@
 """Sandbox entrypoint: `python -m syros.runner <session_id>`.
 
 Claims the session, restores state from GCS, runs the claude_agent_sdk harness
-on Vertex with the governance gate wired in, mirrors every message to the
-Firestore event feed, then checkpoints and exits 0 (scale to zero).
+on the deployment's model backend with the governance gate wired in, mirrors
+every message to the Firestore event feed, then checkpoints and exits 0
+(scale to zero).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from pathlib import Path
 from claude_agent_sdk import ClaudeSDKClient
 
 from .gate import Gate
-from .options import AgentOptions, build_sdk_options, vertex_env
+from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store
 from .types import ResultMessage, message_to_doc
 from . import workspace
@@ -77,7 +78,7 @@ async def run(session_id: str) -> None:
         can_use_tool=gate.can_use_tool,
         cwd=str(ws),
         resume=session.get("claude_session_id"),
-        env={**vertex_env(options), "HOME": str(home)},
+        env={**model_env(options), "HOME": str(home)},
     )
     sdk_options.hooks = gate.hooks()
 

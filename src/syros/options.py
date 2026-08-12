@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
 from .errors import OptionsError
 from .types import CanUseTool
 
 PermissionMode = Literal["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"]
+ModelBackend = Literal["vertex", "anthropic"]
 
 _SERIALIZED_FIELDS = (
     "system_prompt",
@@ -50,6 +51,9 @@ class AgentOptions:
     project: str | None = None  # default: $SYROS_PROJECT or $GOOGLE_CLOUD_PROJECT
     region: str | None = None  # Cloud Run region; default: $SYROS_REGION or asia-northeast1
     vertex_region: str | None = None  # default: $CLOUD_ML_REGION or global
+    # Deployment-scoped, so it is not serialized to the runner: the sandbox reads
+    # $SYROS_MODEL_BACKEND from its own environment, where the key is mounted.
+    model_backend: ModelBackend | None = None  # default: $SYROS_MODEL_BACKEND or vertex
     bucket: str | None = None  # default: $SYROS_BUCKET or {project}-syros
     job: str | None = None  # Cloud Run Job name; default: $SYROS_JOB or syros-runner
     workspace: str | None = None  # local sandbox only: the agent's working directory
@@ -71,6 +75,12 @@ class AgentOptions:
 
     def resolved_vertex_region(self) -> str:
         return self.vertex_region or os.environ.get("CLOUD_ML_REGION") or "global"
+
+    def resolved_model_backend(self) -> ModelBackend:
+        backend = self.model_backend or os.environ.get("SYROS_MODEL_BACKEND") or "vertex"
+        if backend not in get_args(ModelBackend):
+            raise OptionsError(f"unknown model_backend {backend!r}: use 'vertex' or 'anthropic'")
+        return cast(ModelBackend, backend)
 
     def resolved_bucket(self) -> str:
         return self.bucket or os.environ.get("SYROS_BUCKET") or f"{self.resolved_project()}-syros"
@@ -137,13 +147,19 @@ def build_sdk_options(
     )
 
 
-def vertex_env(options: AgentOptions) -> dict[str, str]:
-    """Env vars that route claude_agent_sdk's model calls through Vertex AI.
+def model_env(options: AgentOptions) -> dict[str, str]:
+    """Env vars that route claude_agent_sdk's model calls to a backend.
 
-    Empty when no project is configured (local dev without GCP falls back to
-    ambient credentials such as ANTHROPIC_API_KEY). The remote runner always
-    has a project, so the sandbox always exits via Vertex.
+    Vertex by default, keyed on the GCP project; empty when none is configured
+    (local dev falls back to the harness's own ambient credentials). Backend
+    "anthropic" calls the Anthropic API instead — the escape hatch for a project
+    with no Vertex Claude quota. Model traffic then leaves GCP, so it is an
+    explicit opt-in, never a fallback when a key happens to be present.
     """
+    if options.resolved_model_backend() == "anthropic":
+        if not (key := os.environ.get("ANTHROPIC_API_KEY")):
+            raise OptionsError("model_backend='anthropic' requires $ANTHROPIC_API_KEY")
+        return {"ANTHROPIC_API_KEY": key}
     project = (
         options.project or os.environ.get("SYROS_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
     )
