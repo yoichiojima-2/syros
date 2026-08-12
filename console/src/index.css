@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0b0e14;
+  --color-panel: #10141d;
+  --color-raised: #171c28;
+  --color-line: #232a3a;
+  --color-ink: #e2e7f0;
+  --color-dim: #8b94a7;
+  --color-faint: #5b6373;
+  --color-accent: #6cb1f0;
+  --color-ok: #46d39a;
+  --color-warn: #ecb245;
+  --color-danger: #ef6b61;
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+@keyframes pulse-dot {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-dot {
+    animation: none;
+  }
+}
+
+details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--color-faint);
+  transition: transform 0.15s ease;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
