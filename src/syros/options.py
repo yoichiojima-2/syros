@@ -1,0 +1,156 @@
+"""AgentOptions — the serializable, sandbox-safe subset of ClaudeAgentOptions.
+
+Only options that behave identically in both sandboxes are defined here.
+Machine-local ClaudeAgentOptions (cwd, env, hooks, add_dirs, setting_sources,
+stdio MCP servers, ...) are deliberately absent: passing them raises TypeError
+at the constructor rather than silently diverging between local and remote.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+from .errors import OptionsError
+from .types import CanUseTool
+
+PermissionMode = Literal["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"]
+
+_SERIALIZED_FIELDS = (
+    "system_prompt",
+    "model",
+    "tools",
+    "allowed_tools",
+    "disallowed_tools",
+    "permission_mode",
+    "mcp_servers",
+    "max_turns",
+    "max_budget_usd",
+)
+
+
+@dataclass
+class AgentOptions:
+    # --- mirrored from claude_agent_sdk; identical semantics in both sandboxes ---
+    system_prompt: str | None = None
+    model: str | None = None
+    tools: list[str] | None = None
+    allowed_tools: list[str] = field(default_factory=list)
+    disallowed_tools: list[str] = field(default_factory=list)
+    permission_mode: PermissionMode | None = None
+    mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)  # http/sse only
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
+    resume: str | None = None  # local: claude session uuid; gcp: syros session id
+    can_use_tool: CanUseTool | None = None
+
+    # --- syros ---
+    sandbox: Literal["local", "gcp"] = "local"
+    project: str | None = None  # default: $SYROS_PROJECT or $GOOGLE_CLOUD_PROJECT
+    region: str | None = None  # Cloud Run region; default: $SYROS_REGION or asia-northeast1
+    vertex_region: str | None = None  # default: $CLOUD_ML_REGION or global
+    bucket: str | None = None  # default: $SYROS_BUCKET or {project}-syros
+    job: str | None = None  # Cloud Run Job name; default: $SYROS_JOB or syros-runner
+    workspace: str | None = None  # local sandbox only: the agent's working directory
+
+    def resolved_project(self) -> str:
+        project = (
+            self.project
+            or os.environ.get("SYROS_PROJECT")
+            or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        )
+        if not project:
+            raise OptionsError(
+                "no GCP project configured: set AgentOptions.project or $SYROS_PROJECT"
+            )
+        return project
+
+    def resolved_region(self) -> str:
+        return self.region or os.environ.get("SYROS_REGION") or "asia-northeast1"
+
+    def resolved_vertex_region(self) -> str:
+        return self.vertex_region or os.environ.get("CLOUD_ML_REGION") or "global"
+
+    def resolved_bucket(self) -> str:
+        return self.bucket or os.environ.get("SYROS_BUCKET") or f"{self.resolved_project()}-syros"
+
+    def resolved_job(self) -> str:
+        return self.job or os.environ.get("SYROS_JOB") or "syros-runner"
+
+    def validate(self) -> None:
+        if self.system_prompt is not None and not isinstance(self.system_prompt, str):
+            raise OptionsError("system_prompt must be a plain string in syros")
+        for name, config in self.mcp_servers.items():
+            if not isinstance(config, dict):
+                raise OptionsError(
+                    f"mcp server {name!r}: only dict configs (http/sse) are supported"
+                )
+            if config.get("type") not in ("http", "sse"):
+                raise OptionsError(
+                    f"mcp server {name!r}: type must be 'http' or 'sse' — stdio and"
+                    " in-process servers cannot run in the sandbox"
+                )
+        if self.sandbox == "gcp":
+            if self.workspace is not None:
+                raise OptionsError(
+                    "workspace is managed by the sandbox in gcp mode; it lives in GCS"
+                )
+            self.resolved_project()
+        elif self.sandbox != "local":
+            raise OptionsError(f"unknown sandbox {self.sandbox!r}: use 'local' or 'gcp'")
+
+    def serialize(self) -> dict[str, Any]:
+        """The option subset that travels to the remote runner (JSON/Firestore-safe)."""
+        return {name: getattr(self, name) for name in _SERIALIZED_FIELDS}
+
+
+def build_sdk_options(
+    options: AgentOptions,
+    *,
+    can_use_tool: CanUseTool | None = None,
+    cwd: str | None = None,
+    resume: str | None = None,
+    env: dict[str, str] | None = None,
+) -> Any:
+    """Build a ClaudeAgentOptions from the shared option subset.
+
+    Used by both the local backend and the remote runner, so the harness the
+    agent runs on is configured identically in both sandboxes.
+    """
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    return ClaudeAgentOptions(
+        system_prompt=options.system_prompt,
+        model=options.model,
+        tools=options.tools,
+        allowed_tools=list(options.allowed_tools),
+        disallowed_tools=list(options.disallowed_tools),
+        permission_mode=options.permission_mode,
+        mcp_servers=dict(options.mcp_servers),
+        max_turns=options.max_turns,
+        max_budget_usd=options.max_budget_usd,
+        can_use_tool=can_use_tool,
+        cwd=cwd,
+        resume=resume,
+        env=dict(env or {}),
+    )
+
+
+def vertex_env(options: AgentOptions) -> dict[str, str]:
+    """Env vars that route claude_agent_sdk's model calls through Vertex AI.
+
+    Empty when no project is configured (local dev without GCP falls back to
+    ambient credentials such as ANTHROPIC_API_KEY). The remote runner always
+    has a project, so the sandbox always exits via Vertex.
+    """
+    project = (
+        options.project or os.environ.get("SYROS_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    )
+    if not project:
+        return {}
+    return {
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "ANTHROPIC_VERTEX_PROJECT_ID": project,
+        "CLOUD_ML_REGION": options.resolved_vertex_region(),
+    }

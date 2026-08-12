@@ -1,0 +1,34 @@
+[project]
+name = "syros"
+version = "0.1.0"
+description = "Minimal secure agent development environment on GCP: claude-agent-sdk, local or sandboxed"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "claude-agent-sdk>=0.2",
+    "google-cloud-firestore>=2.19",
+    "google-cloud-storage>=2.18",
+    "google-cloud-run>=0.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+syros = "syros.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/syros"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

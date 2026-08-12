@@ -1,0 +1,105 @@
+import pytest
+
+from syros.errors import OptionsError
+from syros.options import AgentOptions, build_sdk_options, vertex_env
+
+
+def test_local_defaults_validate():
+    AgentOptions().validate()
+
+
+def test_gcp_requires_project():
+    with pytest.raises(OptionsError, match="project"):
+        AgentOptions(sandbox="gcp").validate()
+
+
+def test_gcp_project_from_env(monkeypatch):
+    monkeypatch.setenv("SYROS_PROJECT", "proj-1")
+    options = AgentOptions(sandbox="gcp")
+    options.validate()
+    assert options.resolved_project() == "proj-1"
+    assert options.resolved_bucket() == "proj-1-syros"
+    assert options.resolved_job() == "syros-runner"
+    assert options.resolved_region() == "asia-northeast1"
+
+
+def test_gcp_rejects_workspace():
+    with pytest.raises(OptionsError, match="workspace"):
+        AgentOptions(sandbox="gcp", project="p", workspace="/tmp/x").validate()
+
+
+def test_rejects_stdio_mcp_server():
+    options = AgentOptions(mcp_servers={"local": {"type": "stdio", "command": "server"}})
+    with pytest.raises(OptionsError, match="stdio"):
+        options.validate()
+
+
+def test_accepts_http_mcp_server():
+    AgentOptions(mcp_servers={"gh": {"type": "http", "url": "https://example.com/mcp"}}).validate()
+
+
+def test_unknown_sandbox():
+    with pytest.raises(OptionsError, match="unknown sandbox"):
+        AgentOptions(sandbox="aws").validate()
+
+
+def test_machine_local_options_are_type_errors():
+    with pytest.raises(TypeError):
+        AgentOptions(cwd="/tmp")  # not a syros option
+    with pytest.raises(TypeError):
+        AgentOptions(hooks={})
+
+
+def test_serialize_round_trip_subset():
+    options = AgentOptions(
+        system_prompt="be careful",
+        model="claude-sonnet-5",
+        allowed_tools=["Read"],
+        max_turns=5,
+        max_budget_usd=1.5,
+        can_use_tool=lambda *a: None,  # callables never serialize
+    )
+    doc = options.serialize()
+    assert doc["system_prompt"] == "be careful"
+    assert doc["max_budget_usd"] == 1.5
+    assert "can_use_tool" not in doc
+    assert "sandbox" not in doc
+    restored = AgentOptions(**doc)
+    assert restored.model == "claude-sonnet-5"
+
+
+def test_build_sdk_options_maps_fields():
+    options = AgentOptions(
+        system_prompt="sp",
+        model="m",
+        tools=["Bash"],
+        allowed_tools=["Bash"],
+        disallowed_tools=["WebSearch"],
+        permission_mode="default",
+        max_turns=7,
+        max_budget_usd=2.0,
+    )
+    sdk = build_sdk_options(options, cwd="/w", resume="uuid", env={"A": "1"})
+    assert sdk.system_prompt == "sp"
+    assert sdk.model == "m"
+    assert sdk.tools == ["Bash"]
+    assert sdk.disallowed_tools == ["WebSearch"]
+    assert sdk.permission_mode == "default"
+    assert sdk.max_turns == 7
+    assert sdk.max_budget_usd == 2.0
+    assert sdk.cwd == "/w"
+    assert sdk.resume == "uuid"
+    assert sdk.env == {"A": "1"}
+
+
+def test_vertex_env_with_project():
+    env = vertex_env(AgentOptions(project="proj-1"))
+    assert env == {
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
+        "CLOUD_ML_REGION": "global",
+    }
+
+
+def test_vertex_env_without_project_is_ambient():
+    assert vertex_env(AgentOptions()) == {}
