@@ -78,6 +78,10 @@ Sessions, live transcripts, approve/deny with countdown, prompts into idle sessi
 (`syros-console`, IAM-only — no public access); connect with
 `gcloud run services proxy syros-console --region asia-northeast1`.
 
+The frontend lives in `console/` (React + TypeScript + Vite + Tailwind); `make console`
+rebuilds the bundle into `src/syros/console/static/`, which is committed so pip installs
+and the Docker image need no Node toolchain.
+
 ## Analysis
 
 Firestore holds all the state but is a poor analysis surface. `syros export` snapshots the

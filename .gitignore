@@ -11,3 +11,5 @@ dist/
 .terraform.lock.hcl
 scratch/**
 !scratch/README.md
+
+console/node_modules/

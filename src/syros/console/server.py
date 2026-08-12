@@ -1,13 +1,16 @@
 """stdlib HTTP server for the console — no framework, localhost or Cloud Run.
 
-The asyncio loop owns the Store (firestore.AsyncClient is loop-bound); HTTP
-handler threads bridge into it with run_coroutine_threadsafe.
+Serves the built frontend (console/, React + Vite; `npm run build` emits
+static/ into this package) and the JSON API. The asyncio loop owns the Store
+(firestore.AsyncClient is loop-bound); HTTP handler threads bridge into it
+with run_coroutine_threadsafe.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +22,29 @@ from .api import Conflict, ConsoleAPI, NotFound
 CALL_TIMEOUT_SECONDS = 30.0
 
 
-def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, html: bytes):
+def _load_static() -> dict[str, bytes]:
+    """Preload the built frontend (console/ → vite build → static/) into memory."""
+    files: dict[str, bytes] = {}
+
+    def walk(node, prefix: str = "") -> None:
+        for child in node.iterdir():
+            if child.is_dir():
+                walk(child, f"{prefix}{child.name}/")
+            else:
+                files[f"{prefix}{child.name}"] = child.read_bytes()
+
+    walk(resources.files("syros.console").joinpath("static"))
+    return files
+
+
+def _content_type(name: str) -> str:
+    guessed = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    if guessed.startswith("text/") or guessed in ("application/javascript", "text/javascript"):
+        return f"{guessed}; charset=utf-8"
+    return guessed
+
+
+def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict[str, bytes]):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):  # noqa: A002 - stdlib signature
             pass
@@ -27,10 +52,14 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, html: bytes)
         def _call(self, coro):
             return asyncio.run_coroutine_threadsafe(coro, loop).result(CALL_TIMEOUT_SECONDS)
 
-        def _send(self, status: int, body: bytes, content_type: str) -> None:
+        def _send(
+            self, status: int, body: bytes, content_type: str, cache: str | None = None
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if cache:
+                self.send_header("Cache-Control", cache)
             self.end_headers()
             self.wfile.write(body)
 
@@ -59,15 +88,22 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, html: bytes)
         def do_GET(self) -> None:
             url = urlparse(self.path)
             parts = [p for p in url.path.split("/") if p]
-            if not parts:
-                self._send(200, html, "text/html; charset=utf-8")
-            elif parts == ["api", "sessions"]:
+            if parts == ["api", "sessions"]:
                 self._api(api.sessions())
             elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "poll":
                 after = int((parse_qs(url.query).get("after") or ["0"])[0])
                 self._api(api.poll(parts[2], after))
-            else:
+            elif parts[:1] == ["api"]:
                 self._json({"error": "not found"}, 404)
+            else:
+                name = "/".join(parts) or "index.html"
+                body = static.get(name)
+                if body is None:
+                    self._json({"error": "not found"}, 404)
+                else:
+                    # vite content-hashes everything under assets/, so those are immutable
+                    cache = "public, max-age=31536000, immutable" if "/" in name else "no-cache"
+                    self._send(200, body, _content_type(name), cache)
 
         def do_POST(self) -> None:
             parts = [p for p in urlparse(self.path).path.split("/") if p]
@@ -104,8 +140,7 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, html: bytes)
 def create_server(
     api: ConsoleAPI, loop: asyncio.AbstractEventLoop, host: str, port: int
 ) -> ThreadingHTTPServer:
-    html = resources.files("syros.console").joinpath("index.html").read_bytes()
-    server = ThreadingHTTPServer((host, port), _make_handler(api, loop, html))
+    server = ThreadingHTTPServer((host, port), _make_handler(api, loop, _load_static()))
     server.daemon_threads = True
     return server
 
