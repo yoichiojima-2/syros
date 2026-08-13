@@ -5,8 +5,9 @@ REGION  ?= asia-northeast1
 JOB     ?= syros-runner
 SERVICE ?= syros-console
 
-# Rebuild the web console (Node required); output lands in
-# src/syros/console/static/ (gitignored — it churns on every build).
+# Rebuild the web console locally (Node required); output lands in
+# src/syros/console/static/, which is gitignored — the Docker build
+# produces its own copy, so this is only needed for local `syros console`.
 console:
 	cd console && npm install && npm run build
 
@@ -17,14 +18,15 @@ test:
 # service to the new digest — pushing :latest alone is not enough, Cloud Run
 # resolves the tag to a digest at deploy time, not per execution. The console
 # runs the same image (different entrypoint), so both move together.
-deploy: console
+deploy:
 	docker build --platform linux/amd64 -t $(IMAGE) .
 	docker push $(IMAGE)
 	gcloud run jobs update $(JOB) --image $(IMAGE) --region $(REGION)
 	gcloud run services update $(SERVICE) --image $(IMAGE) --region $(REGION)
 
-# Frontend-only change: rebuild the bundle, then ship it to the console service.
-deploy-console: console
+# Frontend-only change: the image build compiles the console itself, so just
+# rebuild and ship it to the console service.
+deploy-console:
 	docker build --platform linux/amd64 -t $(IMAGE) .
 	docker push $(IMAGE)
 	gcloud run services update $(SERVICE) --image $(IMAGE) --region $(REGION)
