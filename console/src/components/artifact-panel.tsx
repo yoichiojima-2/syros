@@ -54,10 +54,15 @@ function CopyButton({ text }: { text: string }) {
       size="sm"
       title="Copy source"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        });
+        // clipboard is undefined on insecure origins (console over plain http
+        // on a LAN address); fail quietly rather than throwing in the handler
+        navigator.clipboard?.writeText(text).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          },
+          () => {},
+        );
       }}
     >
       {copied ? <Check /> : <Copy />}
@@ -175,8 +180,10 @@ export function ArtifactPanel({
         </pre>
       ) : (
         <iframe
-          // remount when the document changes so stateful HTML restarts clean
-          key={`${artifact.path}:${version.seq}:${dark}`}
+          // remount when the document changes so stateful HTML restarts clean.
+          // keyed on the version index, not seq — one assistant message can
+          // carry two writes to the same file, which share a seq.
+          key={`${artifact.path}:${index}:${dark}`}
           title={artifact.name}
           sandbox={artifact.kind === "html" ? "allow-scripts" : ""}
           srcDoc={

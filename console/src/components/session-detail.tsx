@@ -106,7 +106,13 @@ export function SessionDetail({ sid }: { sid: string }) {
 
       <div className="flex min-h-0 flex-1">
         {/* on small screens the open panel takes over; the transcript column hides */}
-        <div className={showPanel ? "hidden min-h-0 flex-1 flex-col lg:flex" : "flex min-h-0 flex-1 flex-col"}>
+        <div
+          className={
+            showPanel
+              ? "hidden min-h-0 min-w-0 flex-1 flex-col lg:flex"
+              : "flex min-h-0 min-w-0 flex-1 flex-col"
+          }
+        >
           <Transcript
             events={events}
             placeholder={session ? "No messages yet." : "loading…"}
