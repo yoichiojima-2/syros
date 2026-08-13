@@ -31,10 +31,23 @@ resource "google_project_service" "apis" {
 # sessions/, shared workspaces under workspaces/) ---
 
 resource "google_firestore_database" "default" {
-  name        = "(default)"
-  location_id = var.firestore_location
-  type        = "FIRESTORE_NATIVE"
-  depends_on  = [google_project_service.apis]
+  name                              = "(default)"
+  location_id                       = var.firestore_location
+  type                              = "FIRESTORE_NATIVE"
+  delete_protection_state           = "DELETE_PROTECTION_ENABLED"
+  point_in_time_recovery_enablement = "POINT_IN_TIME_RECOVERY_ENABLED"
+  depends_on                        = [google_project_service.apis]
+}
+
+# Firestore is the only copy of the control plane (GCS holds per-session blobs,
+# BigQuery is a disposable snapshot), so keep a rolling weekly backup
+resource "google_firestore_backup_schedule" "weekly" {
+  database  = google_firestore_database.default.name
+  retention = "1209600s" # 14 days
+
+  weekly_recurrence {
+    day = "SUNDAY"
+  }
 }
 
 # the console's global approvals queue queries approvals across all sessions;
