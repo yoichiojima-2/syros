@@ -115,14 +115,10 @@ class GcsObjects:
         await asyncio.to_thread(workspace.delete_file, self._project, self._bucket, name, file)
 
     async def rename_workspace_file(self, name: str, src: str, dst: str) -> None:
-        await asyncio.to_thread(
-            workspace.rename_file, self._project, self._bucket, name, src, dst
-        )
+        await asyncio.to_thread(workspace.rename_file, self._project, self._bucket, name, src, dst)
 
     async def set_workspace_tags(self, name: str, file: str, tags: list[str]) -> None:
-        await asyncio.to_thread(
-            workspace.set_tags, self._project, self._bucket, name, file, tags
-        )
+        await asyncio.to_thread(workspace.set_tags, self._project, self._bucket, name, file, tags)
 
     async def delete_workspace_prefix(self, name: str, subpath: str | None, max_files: int) -> int:
         prefix = workspace.workspace_prefix(name) + (subpath or "")
@@ -153,9 +149,7 @@ class GcsObjects:
         )
 
     async def delete_artifact_file(self, space: str, name: str) -> None:
-        await asyncio.to_thread(
-            artifacts.delete_artifact, self._project, self._bucket, space, name
-        )
+        await asyncio.to_thread(artifacts.delete_artifact, self._project, self._bucket, space, name)
 
     async def rename_artifact_file(self, space: str, src: str, dst: str) -> None:
         await asyncio.to_thread(
