@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CircleStop, OctagonX, PanelRight, Trash2 } from "lucide-react";
+import { CalendarClock, CircleStop, OctagonX, PanelRight, Trash2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StateBadge } from "@/components/state-badge";
 import { Transcript } from "@/components/transcript";
@@ -143,6 +145,20 @@ export function SessionDetail({ sid }: { sid: string }) {
         {session && (
           <>
             <StateBadge state={session.state} />
+            {/* a scheduled run is an ordinary session; say which schedule owns
+                it so the transcript links back to its history */}
+            {session.schedule && (
+              <Link
+                href={`/schedule?name=${encodeURIComponent(session.schedule)}`}
+                className="hover:opacity-80"
+                title={`Run of schedule ${session.schedule} (${session.trigger})`}
+              >
+                <Badge className="font-mono">
+                  <CalendarClock className="size-3" />
+                  {session.schedule}
+                </Badge>
+              </Link>
+            )}
             <span className="font-mono text-[11px] text-muted-foreground">
               {session.model || ""} {cost(session.cost_usd)}
               {session.stop_reason ? ` · ${session.stop_reason}` : ""}

@@ -7,6 +7,11 @@ syros approvals <session_id>            list pending approvals
 syros approvals <session_id> allow <call_hash>
 syros approvals <session_id> deny <call_hash> [-m reason]
 syros kill <session_id>                 flip the kill switch
+syros schedules                         list schedules and their next run
+syros schedules create <name> --cron "0 9 * * *" --prompt "..."
+syros schedules runs <name>             run history for one schedule
+syros schedules run|pause|resume|delete <name>
+syros tick                              fire every schedule that is due
 syros artifacts                         list shared artifact spaces
 syros artifacts <space>                 list files in a space
 syros artifacts <space> push <path...>  upload local files/dirs into a space
@@ -26,6 +31,8 @@ import json
 import os
 
 from . import env
+from .errors import SyrosError
+from .options import AgentOptions
 from .store import Store
 from .types import doc_to_message
 
@@ -39,6 +46,25 @@ def _project(args: argparse.Namespace) -> str:
 
 def _store(args: argparse.Namespace) -> Store:
     return Store(_project(args))
+
+
+def _options(args: argparse.Namespace) -> AgentOptions:
+    """The deployment coordinates a command needs to trigger a run."""
+    return AgentOptions(
+        project=_project(args),
+        region=getattr(args, "region", None),
+        job=getattr(args, "job", None),
+    )
+
+
+def _local(epoch: float | None, timezone: str = "UTC") -> str:
+    if not epoch:
+        return "—"
+    from datetime import datetime
+
+    from .cron import zone
+
+    return datetime.fromtimestamp(epoch, tz=zone(timezone)).strftime("%Y-%m-%d %H:%M")
 
 
 async def _sessions(args) -> None:
@@ -97,6 +123,107 @@ async def _kill(args) -> None:
     store = _store(args)
     await store.update_session(args.session_id, disabled=True)
     print(f"disabled: {args.session_id}")
+
+
+async def _schedules(args) -> None:
+    from . import schedules
+
+    options = _options(args)
+    store = _store(args)
+
+    if args.action == "list":
+        for schedule in await schedules.list_all(store=store):
+            timezone = schedule.get("timezone") or schedules.DEFAULT_TIMEZONE
+            state = "paused" if not schedule.get("enabled") else "on"
+            print(
+                f"{schedule['name']:<24}  {schedule.get('cron', ''):<16}  {state:<7}"
+                f"  next {_local(schedule.get('next_run_at'), timezone)} {timezone}"
+                f"  {schedule.get('runs') or 0} runs"
+                f"  {schedule.get('last_session_id') or ''}"
+            )
+            if schedule.get("last_error"):
+                print(f"    error: {schedule['last_error']}")
+        return
+
+    if not args.name:
+        raise SystemExit(f"schedules {args.action} requires a name")
+
+    if args.action == "create":
+        if not args.cron or not args.prompt:
+            raise SystemExit("create requires --cron and --prompt")
+        run_options = AgentOptions(
+            model=args.model,
+            system_prompt=args.system_prompt,
+            allowed_tools=list(args.allow or []),
+            permission_mode=args.permission_mode,
+            workspace=args.workspace,
+            artifacts=args.artifacts,
+            max_turns=args.max_turns,
+            max_budget_usd=args.max_budget_usd,
+        )
+        schedule = await schedules.create(
+            args.name,
+            args.cron,
+            args.prompt,
+            run_options,
+            options=options,
+            timezone=args.tz,
+            created_by=getpass.getuser(),
+            store=store,
+        )
+        print(f"created {args.name}: {schedule['cron']} ({args.tz})")
+        print(f"    next run {_local(schedule['next_run_at'], args.tz)} {args.tz}")
+        return
+
+    if args.action in ("pause", "resume"):
+        schedule = await schedules.set_enabled(args.name, args.action == "resume", store=store)
+        print(f"{args.action}d {args.name}")
+        if args.action == "resume":
+            timezone = schedule.get("timezone") or schedules.DEFAULT_TIMEZONE
+            print(f"    next run {_local(schedule['next_run_at'], timezone)} {timezone}")
+        return
+
+    if args.action == "delete":
+        await schedules.delete(args.name, store=store)
+        print(f"deleted {args.name}  (its past runs stay in `syros sessions`)")
+        return
+
+    if args.action == "run":
+        session_id = await schedules.run_now(
+            args.name, options=options, store=store, created_by=getpass.getuser()
+        )
+        print(f"started {session_id}")
+        return
+
+    # runs: the schedule's own history
+    for session in await schedules.runs(args.name, limit=args.limit, store=store):
+        print(
+            f"{session['id']}  {session.get('status'):<10}"
+            f"  {session.get('trigger') or '':<9}"
+            f"  ${float(session.get('cost_usd') or 0):.4f}"
+            f"  {session.get('stop_reason') or '':<22}"
+            f"  {_local(_epoch(session.get('created_at')))}"
+        )
+
+
+def _epoch(value) -> float | None:
+    from datetime import datetime
+
+    return value.timestamp() if isinstance(value, datetime) else value
+
+
+async def _tick(args) -> None:
+    from . import schedules
+
+    result = await schedules.tick(_options(args), store=_store(args))
+    for run in result["fired"]:
+        print(f"fired    {run['schedule']}  {run['session_id']}")
+    for run in result["skipped"]:
+        print(f"skipped  {run['schedule']}  (previous run {run['session_id']} still active)")
+    for failure in result["errors"]:
+        print(f"error    {failure['schedule']}  {failure['error']}")
+    if not any((result["fired"], result["skipped"], result["errors"])):
+        print("nothing due")
 
 
 async def _artifacts(args) -> None:
@@ -184,6 +311,36 @@ def main() -> None:
     kill.add_argument("session_id")
     kill.set_defaults(func=_kill)
 
+    schedules = sub.add_parser("schedules")
+    schedules.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "create", "pause", "resume", "delete", "run", "runs"],
+    )
+    schedules.add_argument("name", nargs="?")
+    schedules.add_argument("--cron", default=None, help="5-field cron, or an @alias")
+    schedules.add_argument("--tz", default="UTC", help="IANA timezone the cron is read in")
+    schedules.add_argument("--prompt", default=None)
+    # Run options: the subset of AgentOptions worth having on the command line.
+    schedules.add_argument("--model", default=None)
+    schedules.add_argument("--system-prompt", default=None)
+    schedules.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
+    schedules.add_argument("--permission-mode", default=None)
+    schedules.add_argument("--workspace", default=None)
+    schedules.add_argument("--artifacts", default=None, metavar="SPACE")
+    schedules.add_argument("--max-turns", type=int, default=None)
+    schedules.add_argument("--max-budget-usd", type=float, default=None)
+    schedules.add_argument("--limit", type=int, default=50, help="runs to list")
+    schedules.add_argument("--region", default=None)
+    schedules.add_argument("--job", default=None)
+    schedules.set_defaults(func=_schedules)
+
+    tick = sub.add_parser("tick", help="fire due schedules; the scheduler job's entrypoint")
+    tick.add_argument("--region", default=None)
+    tick.add_argument("--job", default=None)
+    tick.set_defaults(func=_tick)
+
     artifacts = sub.add_parser("artifacts")
     artifacts.add_argument("space", nargs="?")
     artifacts.add_argument(
@@ -222,6 +379,10 @@ def main() -> None:
         asyncio.run(args.func(args))
     except KeyboardInterrupt:
         pass
+    except SyrosError as exc:
+        # Bad cron, unknown schedule, unusable options: the user's problem to
+        # fix, not a bug — print the message, skip the traceback.
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

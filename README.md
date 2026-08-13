@@ -111,6 +111,42 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/`, which is committed so pip installs
 and the Docker image need no Node toolchain.
 
+## Schedules
+
+A schedule is a cron expression plus a prompt plus the usual run options, stored as one
+Firestore document. Each firing starts a *fresh ordinary session* — same list, transcript,
+approval queue, audit trail, kill switch — tagged with the schedule's name, so scheduled
+work is governed exactly like interactive work. Nothing in the runner knows schedules
+exist.
+
+```
+syros schedules create nightly-report \
+  --cron "0 9 * * *" --tz Asia/Tokyo \
+  --prompt "profile the CSVs and rewrite report.md" \
+  --model claude-sonnet-5 --workspace reports --allow Read --allow Write
+
+syros schedules                      # each schedule, its next slot, last run
+syros schedules runs nightly-report  # run history: outcome, trigger, cost
+syros schedules run nightly-report   # fire once, off-cycle (clock untouched)
+syros schedules pause|resume|delete nightly-report
+```
+
+The console has the same surface with a run-status view per schedule: outcome/duration
+bars over the run history (click a bar for that run's transcript), success rate, average
+duration, spend, and a create/pause/run-now/delete UI. Cron is the standard 5-field
+syntax (`@daily` etc. work), evaluated as wall-clock time in the schedule's IANA
+timezone, so a 9am schedule stays at 9am across DST.
+
+What advances the clock is `syros tick`, which fires every due schedule and exits;
+Terraform wires Cloud Scheduler → a `syros-scheduler` Cloud Run Job to run it every
+minute (`tick_schedule` to change — its cadence is the effective granularity of all
+schedules). The tick is transactional and idempotent: overlapping ticks can't
+double-fire, an outage catches up with one run rather than replaying missed slots, and
+a slot that comes due while the previous run is still active is skipped and counted
+(one live run per schedule — also what a shared workspace's lease would force anyway).
+Failures are visible, not silent: a schedule whose launch fails records `last_error`,
+and one whose cron can no longer fire is auto-paused with the reason on it.
+
 ## Analysis
 
 Firestore holds all the state but is a poor analysis surface. `syros export` snapshots the
@@ -254,8 +290,7 @@ doing nothing.
 REST API (the SDK is the surface; `syros console` is a pure Firestore client, not a
 control plane — deleting it loses nothing), versioned agent registry (options travel with the session; pin by
 committing code), vaults/egress proxy (the sandbox is credential-less; keep secrets
-host-side), scheduler (point Cloud Scheduler at the job), multi-env tenancy (one project
-per trust boundary).
+host-side), multi-env tenancy (one project per trust boundary).
 
 ## Development
 

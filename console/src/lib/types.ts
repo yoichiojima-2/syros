@@ -31,6 +31,55 @@ export interface SessionSummary {
   updated_at: number | null;
   model: string | null;
   workspace: string | null;
+  schedule: string | null; // the schedule that started it, if any
+  trigger: string; // "api" | "schedule" | "manual"
+}
+
+// Mirrors run_outcome() in src/syros/console/api.py — keep the two in sync.
+// Liveness (SessionState) answers "is it going"; the outcome answers "how did
+// it go", and the three live states carry through so one badge covers both.
+export type RunOutcome =
+  | "running"
+  | "starting"
+  | "queued"
+  | "stalled"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+/** A session seen as one run of a schedule. duration_s is null while it runs. */
+export interface RunSummary extends SessionSummary {
+  outcome: RunOutcome;
+  duration_s: number | null;
+}
+
+export interface ScheduleSummary {
+  name: string;
+  cron: string;
+  timezone: string;
+  prompt: string;
+  options: Record<string, unknown>;
+  enabled: boolean;
+  next_run_at: number | null;
+  last_run_at: number | null;
+  last_skipped_at: number | null;
+  last_error: string | null;
+  runs: number;
+  skips: number;
+  created_by: string | null;
+  created_at: number | null;
+  last_run: RunSummary | null;
+}
+
+export interface SchedulesResponse {
+  now: number;
+  schedules: ScheduleSummary[];
+}
+
+export interface ScheduleResponse {
+  now: number;
+  schedule: ScheduleSummary;
+  runs: RunSummary[];
 }
 
 export interface Approval {
