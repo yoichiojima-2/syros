@@ -8,6 +8,10 @@ import { cn } from "@/lib/utils";
 // Renders the event feed. Message kinds and block types mirror the Firestore
 // serialization in src/syros/types.py; unknown ones render as null rather
 // than breaking the transcript.
+//
+// Layout follows a chat, not a log: the prompt sits in a tinted bubble on the
+// right, the agent answers as plain prose on the page, and the machinery (tool
+// calls, results, thinking) stays folded away in muted disclosures.
 
 function blockList(content: TranscriptMessage["content"]): ContentBlock[] {
   return Array.isArray(content) ? content : [];
@@ -23,11 +27,13 @@ function CollapsibleRow({
   detail: string;
 }) {
   return (
-    <details className={cn("font-mono text-xs", className)}>
-      <summary className="overflow-hidden text-ellipsis whitespace-nowrap text-muted-foreground">
+    <details className={cn("group font-mono text-xs", className)}>
+      {/* negative margin keeps the label on the prose margin while the hover
+          fill still reads as a padded row */}
+      <summary className="-mx-2 overflow-hidden rounded-lg px-2 py-1 text-ellipsis whitespace-nowrap text-muted-foreground transition-colors hover:bg-secondary/60">
         {summary}
       </summary>
-      <pre className="mt-1.5 overflow-x-auto rounded-lg border border-border bg-card px-3 py-2.5 whitespace-pre-wrap [overflow-wrap:break-word]">
+      <pre className="mt-1.5 overflow-x-auto rounded-xl border border-border bg-surface px-3 py-2.5 whitespace-pre-wrap [overflow-wrap:break-word]">
         {detail}
       </pre>
     </details>
@@ -36,9 +42,10 @@ function CollapsibleRow({
 
 function UserText({ text }: { text: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card px-3 py-2 font-mono text-[13px] whitespace-pre-wrap [overflow-wrap:break-word]">
-      <span className="text-faint">❯ </span>
-      {text}
+    <div className="flex justify-end">
+      <div className="max-w-[85%] rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap [overflow-wrap:break-word]">
+        {text}
+      </div>
     </div>
   );
 }
@@ -72,7 +79,7 @@ function MessageView({ message }: { message: TranscriptMessage }) {
             return (
               <div
                 key={i}
-                className="text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:break-word]"
+                className="text-[15px] leading-7 whitespace-pre-wrap [overflow-wrap:break-word]"
               >
                 {block.text}
               </div>
@@ -80,8 +87,10 @@ function MessageView({ message }: { message: TranscriptMessage }) {
           if (block.type === "thinking")
             return (
               <details key={i} className="text-[13px] text-muted-foreground">
-                <summary className="font-mono text-[11px]">thinking</summary>
-                <div className="pt-1.5 pl-3 whitespace-pre-wrap italic">{block.thinking || ""}</div>
+                <summary className="text-[11px] tracking-wide uppercase">thinking</summary>
+                <div className="mt-1.5 border-l-2 border-border pl-3 whitespace-pre-wrap italic">
+                  {block.thinking || ""}
+                </div>
               </details>
             );
           if (block.type === "tool_use" || block.type === "server_tool_use")
@@ -90,7 +99,7 @@ function MessageView({ message }: { message: TranscriptMessage }) {
                 key={i}
                 summary={
                   <>
-                    ⚙ <b className="font-semibold text-foreground">{block.name || "?"}</b>{" "}
+                    <b className="font-semibold text-foreground">{block.name || "?"}</b>{" "}
                     {compact(block.input || {}, 140)}
                   </>
                 }
@@ -104,23 +113,25 @@ function MessageView({ message }: { message: TranscriptMessage }) {
   }
   if (message.kind === "system") {
     return (
-      <div className="font-mono text-[11px] text-muted-foreground">
-        system: {message.subtype || ""}
-      </div>
+      <div className="font-mono text-[11px] text-faint">system: {message.subtype || ""}</div>
     );
   }
   if (message.kind === "result") {
-    const parts = [`[${message.subtype}] ${message.num_turns} turns`];
+    const parts = [`${message.subtype} · ${message.num_turns} turns`];
     if (message.total_cost_usd != null) parts.push(cost(message.total_cost_usd));
     if (message.duration_ms != null) parts.push(`${(message.duration_ms / 1000).toFixed(1)}s`);
     return (
-      <div
-        className={cn(
-          "border-t border-border pt-2 font-mono text-xs",
-          message.is_error ? "text-destructive" : "text-muted-foreground",
-        )}
-      >
-        {parts.join(" · ")}
+      <div className="flex items-center gap-3 pt-1">
+        <span className="h-px flex-1 bg-border" />
+        <span
+          className={cn(
+            "font-mono text-[11px]",
+            message.is_error ? "text-destructive" : "text-faint",
+          )}
+        >
+          {parts.join(" · ")}
+        </span>
+        <span className="h-px flex-1 bg-border" />
       </div>
     );
   }
@@ -153,9 +164,9 @@ export function Transcript({
         // 48px of slack so a near-bottom position still counts as pinned.
         pinnedRef.current = box.scrollTop + box.clientHeight >= box.scrollHeight - 48;
       }}
-      className="min-h-0 flex-1 overflow-y-auto p-5"
+      className="min-h-0 flex-1 overflow-y-auto px-5 py-6"
     >
-      <div className="mx-auto max-w-3xl space-y-3">
+      <div className="mx-auto max-w-3xl space-y-5">
         {placeholder !== null && events.length === 0 && (
           <p className="pt-16 text-center text-[13px] text-muted-foreground">{placeholder}</p>
         )}

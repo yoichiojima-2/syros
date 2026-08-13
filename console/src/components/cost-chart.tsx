@@ -67,7 +67,7 @@ export function CostChart({ sessions }: { sessions: SessionSummary[] | null }) {
                   if (!active || !payload?.length) return null;
                   const row = payload[0].payload as { id: string; cost: number };
                   return (
-                    <div className="rounded-md border border-border bg-card px-2.5 py-1.5 font-mono text-xs shadow-sm">
+                    <div className="rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-xs shadow-sm">
                       <div>{row.id}</div>
                       <div className="text-muted-foreground">{cost(row.cost)}</div>
                     </div>
@@ -77,8 +77,8 @@ export function CostChart({ sessions }: { sessions: SessionSummary[] | null }) {
               <Bar
                 dataKey="cost"
                 fill="var(--chart-1)"
-                barSize={14}
-                radius={[0, 4, 4, 0]}
+                barSize={16}
+                radius={[0, 6, 6, 0]}
                 className="cursor-pointer"
                 onClick={(row: { id?: string }) => row.id && router.push(`/session?sid=${row.id}`)}
               />
