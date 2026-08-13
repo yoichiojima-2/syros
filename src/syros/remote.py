@@ -8,6 +8,7 @@ approval decision arrives, it simply re-triggers the job.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
@@ -75,10 +76,8 @@ async def _relay_approvals(store: StoreProtocol, session_id: str, options: Agent
         )
 
 
-async def attach_session(
-    store: StoreProtocol, options: AgentOptions
-) -> tuple[str, dict[str, Any], int]:
-    """Resolve (session_id, session, cursor) — reusing options.resume or creating anew."""
+async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[str, int]:
+    """Resolve (session_id, cursor) — reusing options.resume or creating anew."""
     if options.resume:
         session_id = options.resume
         session = await store.get_session(session_id)
@@ -86,11 +85,10 @@ async def attach_session(
             raise SyrosError(f"session {session_id} not found")
         if session.get("status") == "terminated":
             raise SessionTerminated(session_id)
-        return session_id, session, int(session.get("seq_head") or 0)
+        return session_id, int(session.get("seq_head") or 0)
     session_id = new_session_id()
     await store.create_session(session_id, options.serialize())
-    session = await store.get_session(session_id)
-    return session_id, session, 0
+    return session_id, 0
 
 
 async def send_prompt(
@@ -117,8 +115,6 @@ async def stream_response(
 ) -> AsyncIterator[tuple[int, Message]]:
     """Yield (seq, message) from the event feed until a ResultMessage, relaying
     pending approvals to options.can_use_tool while waiting."""
-    import asyncio
-
     cursor = after
     while True:
         events = await store.list_events(session_id, after=cursor)
@@ -143,7 +139,7 @@ async def run_remote(
     store: StoreProtocol | None = None,
 ) -> AsyncIterator[Message]:
     store = store or Store(options.resolved_project())
-    session_id, _, cursor = await attach_session(store, options)
+    session_id, cursor = await attach_session(store, options)
     await send_prompt(store, session_id, options, prompt)
     async for _, message in stream_response(store, session_id, options, cursor):
         yield message
