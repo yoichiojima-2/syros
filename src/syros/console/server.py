@@ -143,7 +143,9 @@ def _load_static() -> dict[str, bytes]:
             else:
                 files[f"{prefix}{child.name}"] = child.read_bytes()
 
-    walk(resources.files("syros.console").joinpath("static"))
+    root = resources.files("syros.console").joinpath("static")
+    if root.is_dir():
+        walk(root)
     return files
 
 

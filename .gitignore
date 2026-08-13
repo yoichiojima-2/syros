@@ -13,4 +13,7 @@ scratch/**
 !scratch/README.md
 
 console/node_modules/
+console/.next/
+console/out/
+src/syros/console/static/
 .mypy_cache
