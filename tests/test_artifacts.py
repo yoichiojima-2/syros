@@ -127,3 +127,15 @@ def test_checkpoint_excludes_mounted_spaces(bucket, tmp_path):
 
     assert workspace.checkpoint("p", "b", "sessions/s/state/ws/", ws, ("artifacts/",)) == 1
     assert set(bucket.objects) == {"sessions/s/state/ws/notes.md"}
+
+
+def test_mount_prompt_lists_spaces_with_modes():
+    prompt = artifacts.mount_prompt({"team": "rw", "inputs": "ro"})
+    assert "./artifacts/team/ (read-write" in prompt
+    assert "published when the session ends" in prompt
+    assert "./artifacts/inputs/ (read-only" in prompt
+    assert "discarded" in prompt
+
+
+def test_mount_prompt_empty_without_spaces():
+    assert artifacts.mount_prompt({}) is None

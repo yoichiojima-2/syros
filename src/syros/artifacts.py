@@ -27,6 +27,32 @@ def space_prefix(space: str) -> str:
     return f"artifacts/{space}/"
 
 
+def mount_prompt(spaces: dict[str, str]) -> str | None:
+    """System prompt fragment describing mounted spaces to the agent.
+
+    The mounts are harness-made: nothing else in the agent's context says they
+    exist or that only the working directory survives the run, so a session
+    can finish "successfully" having written its output to /tmp and published
+    nothing. Injected by the runner whenever spaces are mounted.
+    """
+    if not spaces:
+        return None
+    lines = ["Shared artifact spaces are mounted in your working directory:"]
+    for space, mode in spaces.items():
+        detail = (
+            "read-write: files written here are published when the session ends"
+            if mode == "rw"
+            else "read-only: local changes are discarded"
+        )
+        lines.append(f"- ./artifacts/{space}/ ({detail})")
+    lines.append(
+        "Only the working directory persists; anything outside it (/tmp, $HOME)"
+        " is discarded when the session ends. Write deliverables into a"
+        " read-write artifact space to publish them."
+    )
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class Artifact:
     name: str

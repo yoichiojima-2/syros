@@ -85,7 +85,7 @@ def gcs_sync(monkeypatch):
         calls["checkpoint"].append((prefix, root.name))
         if exclude:
             calls["exclude"].append((prefix, exclude))
-        return 0
+        return 2 if prefix.startswith("artifacts/") else 0
 
     monkeypatch.setattr(syros.runner.workspace, "restore", record_restore)
     monkeypatch.setattr(syros.runner.workspace, "checkpoint", record_checkpoint)
@@ -185,6 +185,48 @@ async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync)
         ("artifacts/team/", "team"),
     ]
     assert gcs_sync["exclude"] == [(f"sessions/{SID}/state/ws/", ("artifacts/",))]
+
+
+async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_sync):
+    await store.create_session(
+        SID, {"system_prompt": "sp", "artifacts": {"team": "rw", "inputs": "ro"}}
+    )
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    prompt = client.options.system_prompt
+    assert prompt.startswith("sp\n\n")
+    assert "./artifacts/team/ (read-write" in prompt
+    assert "./artifacts/inputs/ (read-only" in prompt
+    # rw-space file count lands on the session for `syros sessions`
+    session = await store.get_session(SID)
+    assert session["published"] == 2
+
+
+async def test_runner_mount_prompt_stands_alone_without_system_prompt(
+    env, store, fake_harness, gcs_sync
+):
+    await store.create_session(SID, {"artifacts": "team"})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    assert client.options.system_prompt.startswith("Shared artifact spaces")
+
+
+async def test_runner_without_mounts_leaves_prompt_and_session_untouched(env, store, fake_harness):
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    assert client.options.system_prompt is None
+    session = await store.get_session(SID)
+    assert "published" not in session
 
 
 async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, gcs_sync):
