@@ -12,16 +12,14 @@ import type { PreviewKind } from "@/lib/artifacts";
 // sandboxed iframe (scripts allowed, no same-origin — the document is inert
 // toward the console); markdown and SVG render in a script-less iframe, so
 // agent-authored content can't escape into the page.
-//
-// These documents stay on system font stacks rather than the console's Geist:
-// without allow-same-origin the iframe has an opaque origin, so a webfont from
-// the console's own origin is a cross-origin fetch the server sends no CORS
-// header for, and inlining the woff2 as a data: URI into every srcdoc is not
-// worth it here. Agent artifacts reading as plain documents is fine.
 
+// Mirrors the console tokens (globals.css) for the srcdoc documents, which get
+// no stylesheet of their own: the same violet-tinted neutrals, so a markdown or
+// SVG preview sits in the page instead of punching a gray hole in it. The
+// accents stay out — agent content colors itself.
 export const PALETTE = {
-  light: { bg: "#ffffff", fg: "#18181b", muted: "#71717a", border: "#e4e4e7", code: "#f4f4f5" },
-  dark: { bg: "#1b1b1e", fg: "#f4f4f5", muted: "#a1a1aa", border: "#2e2e33", code: "#141416" },
+  light: { bg: "#ffffff", fg: "#221f2e", muted: "#6b6480", border: "#e5e0f3", code: "#f1eefb" },
+  dark: { bg: "#1a1622", fg: "#f2eefc", muted: "#a79fc0", border: "#322b45", code: "#131019" },
 };
 
 export function markdownDoc(markdown: string, dark: boolean): string {

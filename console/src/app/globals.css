@@ -2,65 +2,71 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Cool, neutral palette: near-white page, a slightly deeper gray for chrome
-   (sidebar, headers), white cards, and a single emerald accent carrying every
-   primary action. Light is the default; dark redefines the same tokens under
-   `.dark`, toggled by next-themes. */
+/* Lilac-and-mint palette: the neutrals are tinted violet rather than gray — a
+   lavender-white page, a deeper lilac for chrome (sidebar, headers), white
+   cards — with a violet accent carrying every primary action and mint reserved
+   for "running / online / ok". Light is the default; dark redefines the same
+   tokens under `.dark`, toggled by next-themes.
+
+   Anything that can carry small text (--primary, --muted-foreground, --ok,
+   --warn, --info, --destructive) is picked to clear ~4.5:1 on its own
+   background; the pastels (--primary-soft, --surface) are fills only, and
+   always sit under --foreground. */
 :root {
-  --background: #fafafa;
-  --foreground: #18181b;
-  --surface: #f4f4f5; /* chrome: sidebar, sticky headers, user bubbles */
+  --background: #fbfaff;
+  --foreground: #221f2e; /* violet-leaning ink, not neutral black */
+  --surface: #f1eefb; /* chrome: sidebar, sticky headers, user bubbles */
   --card: #ffffff;
-  --card-foreground: #18181b;
-  --primary: #047857; /* emerald — primary actions, active nav, charts */
+  --card-foreground: #221f2e;
+  --primary: #6d4bd2; /* violet — primary actions, active nav, links */
   --primary-foreground: #ffffff;
-  --primary-soft: #d6f0e4; /* emerald at tint strength, for fills behind text */
-  --secondary: #ececee;
-  --secondary-foreground: #18181b;
-  --muted: #ececee;
-  --muted-foreground: #71717a;
-  --faint: #a1a1aa;
-  --accent: #ececee;
-  --accent-foreground: #18181b;
-  --destructive: #dc2626;
+  --primary-soft: #e9e2ff; /* violet at tint strength, for fills behind text */
+  --secondary: #ebe7f7;
+  --secondary-foreground: #221f2e;
+  --muted: #ebe7f7;
+  --muted-foreground: #6b6480;
+  --faint: #a09aba;
+  --accent: #ebe7f7;
+  --accent-foreground: #221f2e;
+  --destructive: #d92d63; /* rose rather than fire-engine red */
   --destructive-foreground: #ffffff;
-  --border: #e4e4e7;
-  --input: #d4d4d8;
-  --ring: #047857;
-  --chart-1: #047857;
-  --ok: #2c8765;
-  --warn: #a16207;
+  --border: #e5e0f3;
+  --input: #cec7e6;
+  --ring: #6d4bd2;
+  --chart-1: #7c5cd6; /* a step brighter than --primary: bars, not text */
+  --ok: #12876b; /* mint, darkened until it reads as text */
+  --warn: #a1620d;
   --warn-dot: #eab308;
-  --info: #3b6fc9;
+  --info: #4f6ad9;
   --radius: 0.75rem;
 }
 
 .dark {
-  --background: #1b1b1e;
-  --foreground: #f4f4f5;
-  --surface: #141416;
-  --card: #232327;
-  --card-foreground: #f4f4f5;
-  --primary: #34d399;
-  --primary-foreground: #06281c;
-  --primary-soft: #123b2c;
-  --secondary: #2c2c31;
-  --secondary-foreground: #f4f4f5;
-  --muted: #2c2c31;
-  --muted-foreground: #a1a1aa;
-  --faint: #6d6d76;
-  --accent: #2c2c31;
-  --accent-foreground: #f4f4f5;
-  --destructive: #f87171;
-  --destructive-foreground: #2a0b0b;
-  --border: #2e2e33;
-  --input: #43434a;
-  --ring: #34d399;
-  --chart-1: #34d399;
-  --ok: #4eab86;
+  --background: #1a1622;
+  --foreground: #f2eefc;
+  --surface: #131019;
+  --card: #241f31;
+  --card-foreground: #f2eefc;
+  --primary: #b49bff;
+  --primary-foreground: #221142;
+  --primary-soft: #362a5e;
+  --secondary: #2e2740;
+  --secondary-foreground: #f2eefc;
+  --muted: #2e2740;
+  --muted-foreground: #a79fc0;
+  --faint: #6f6788;
+  --accent: #2e2740;
+  --accent-foreground: #f2eefc;
+  --destructive: #ff7a9c;
+  --destructive-foreground: #3a0d1c;
+  --border: #322b45;
+  --input: #4a4266;
+  --ring: #b49bff;
+  --chart-1: #b49bff;
+  --ok: #5fd0a8;
   --warn: #eab308;
   --warn-dot: #eab308;
-  --info: #7ba3de;
+  --info: #8fa8f5;
 }
 
 @theme inline {
@@ -93,15 +99,10 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-xl: calc(var(--radius) + 4px);
-  /* Geist, self-hosted: the `geist` package ships the woff2 files, so the build
-     bundles them into the static export and the console serves them from its own
-     origin — nothing is fetched from a third party at build or run time, which
-     keeps the no-egress property localhost and Cloud Run need. The variables come
-     from next/font on <html> (layout.tsx); `@theme inline` is what makes
-     font-sans / font-mono resolve them at use time rather than freezing them
-     here. The system stacks stay behind as the fallback. */
-  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  /* System font stacks only — no shipping or fetching webfonts, since the
+     console is served from localhost and Cloud Run with no egress. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
 
   @keyframes pulse-dot {
