@@ -120,6 +120,11 @@ def test_derived_state():
     assert derived_state({"status": "terminated"}) == "terminated"
     assert derived_state({"status": "queued"}) == "queued"
     assert derived_state({"status": "idle"}) == "idle"
+    # starting: fresh trigger = on its way; a stale one is a job that never came up
+    assert derived_state({"status": "starting", "triggered_at": time.time()}) == "starting"
+    assert derived_state({"status": "starting", "triggered_at": time.time() - 3600}) == "stalled"
+    assert derived_state({"status": "starting"}) == "stalled"
+    assert derived_state({"status": "starting", "disabled": True}) == "terminated"
 
 
 def test_to_jsonable():
@@ -210,6 +215,7 @@ async def test_prompt_triggers_job_when_idle(no_job_trigger):
     assert result["triggered"] is True
     assert no_job_trigger == [("proj-1", "asia-northeast1", "syros-runner", "sess_1")]
     assert store.inbox["sess_1"] == [{"kind": "message", "text": "hello", "consumed": False}]
+    assert (await api(store).poll("sess_1", after=0))["session"]["state"] == "starting"
 
 
 async def test_prompt_skips_trigger_when_lease_active(no_job_trigger):
@@ -272,6 +278,19 @@ async def test_delete_running_session_conflicts():
 
     # a stalled session (expired lease) is a dead job — deletable
     await store.update_session("sess_1", lease_expires=time.time() - 1)
+    await api(store).delete("sess_1")
+    assert await store.get_session("sess_1") is None
+
+
+async def test_delete_starting_session_conflicts():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.mark_starting("sess_1")
+    with pytest.raises(Conflict):
+        await api(store).delete("sess_1")
+
+    # the execution never came up: past the grace window the row is deletable
+    await store.update_session("sess_1", triggered_at=time.time() - 3600)
     await api(store).delete("sess_1")
     assert await store.get_session("sess_1") is None
 
@@ -521,6 +540,11 @@ async def test_http_smoke():
 
         status, body = await asyncio.to_thread(fetch, "GET", "/api/approvals")
         assert status == 200 and json.loads(body)["approvals"] == []
+
+        # the prompt above triggered the job, so the session is starting —
+        # it has to be killed before it can be deleted
+        status, body = await asyncio.to_thread(fetch, "POST", "/api/sessions/sess_1/kill")
+        assert status == 200 and json.loads(body)["ok"] is True
 
         # bulk delete: its route must not be shadowed by /api/sessions/{sid}/...
         status, body = await asyncio.to_thread(
