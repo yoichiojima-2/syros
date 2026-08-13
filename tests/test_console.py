@@ -636,7 +636,10 @@ async def test_http_smoke():
 
     store = FakeStore()
     await store.create_session("sess_1", {})
-    server = create_server(api(store), asyncio.get_running_loop(), "127.0.0.1", 0)
+    # The built frontend is generated (make console), not committed — inject a
+    # stand-in so static serving is exercised without a Node build.
+    static = {"index.html": b"<html>syros</html>", "404.html": b"<html>404</html>"}
+    server = create_server(api(store), asyncio.get_running_loop(), "127.0.0.1", 0, static=static)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
 
