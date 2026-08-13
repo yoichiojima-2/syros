@@ -46,49 +46,54 @@ export function RunTimeline({
 
   return (
     <div className={className}>
-      <div className="flex items-end gap-3">
-        <div className="flex h-40 flex-col justify-between py-px text-right font-mono text-[10px] text-faint">
-          <span>{duration(longest)}</span>
-          <span>0</span>
-        </div>
-        <div className="flex h-40 min-w-0 flex-1 items-end gap-[3px] border-b border-border">
-          {bars.map((run) => {
-            const seconds = elapsed(run);
-            const pending = run.duration_s === null;
-            return (
-              <button
-                key={run.id}
-                type="button"
-                onClick={() => router.push(`/session?sid=${run.id}`)}
-                aria-label={`${run.outcome} run ${run.id}`}
-                className="group relative min-w-[5px] flex-1 rounded-t-[3px] focus-visible:outline-none"
-                style={{
-                  height: `${Math.max(
-                    MIN_BAR_PERCENT,
-                    (Math.min(seconds, longest) / longest) * 100,
-                  )}%`,
-                }}
-              >
-                <span
-                  className={cn(
-                    "block size-full rounded-t-[3px] transition-opacity group-hover:opacity-80",
-                    outcomeFill(run.outcome),
-                    // a run in flight has no settled height yet; the stripes
-                    // say "still growing" without animating the layout
-                    pending && "opacity-70 [background-image:repeating-linear-gradient(45deg,transparent,transparent_3px,rgba(255,255,255,0.35)_3px,rgba(255,255,255,0.35)_6px)]",
-                  )}
-                />
-                <span className="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-10 hidden -translate-x-1/2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-left font-mono text-[11px] whitespace-nowrap shadow-sm group-hover:block group-focus-visible:block">
-                  <span className="block">{shortId(run.id)}</span>
-                  <span className="block text-muted-foreground">
-                    {run.outcome} · {pending ? `${duration(seconds)}…` : duration(seconds)} ·{" "}
-                    {cost(run.cost_usd)}
+      {/* the bars have a min width so each stays clickable; on narrow screens
+          the chart scrolls sideways instead of spilling out of its card
+          (md:overflow-visible so hover tooltips aren't clipped on desktop) */}
+      <div className="overflow-x-auto md:overflow-visible">
+        <div className="flex items-end gap-3">
+          <div className="flex h-40 flex-col justify-between py-px text-right font-mono text-[10px] text-faint">
+            <span>{duration(longest)}</span>
+            <span>0</span>
+          </div>
+          <div className="flex h-40 min-w-0 flex-1 items-end gap-[3px] border-b border-border">
+            {bars.map((run) => {
+              const seconds = elapsed(run);
+              const pending = run.duration_s === null;
+              return (
+                <button
+                  key={run.id}
+                  type="button"
+                  onClick={() => router.push(`/session?sid=${run.id}`)}
+                  aria-label={`${run.outcome} run ${run.id}`}
+                  className="group relative min-w-[5px] flex-1 rounded-t-[3px] focus-visible:outline-none"
+                  style={{
+                    height: `${Math.max(
+                      MIN_BAR_PERCENT,
+                      (Math.min(seconds, longest) / longest) * 100,
+                    )}%`,
+                  }}
+                >
+                  <span
+                    className={cn(
+                      "block size-full rounded-t-[3px] transition-opacity group-hover:opacity-80",
+                      outcomeFill(run.outcome),
+                      // a run in flight has no settled height yet; the stripes
+                      // say "still growing" without animating the layout
+                      pending && "opacity-70 [background-image:repeating-linear-gradient(45deg,transparent,transparent_3px,rgba(255,255,255,0.35)_3px,rgba(255,255,255,0.35)_6px)]",
+                    )}
+                  />
+                  <span className="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-10 hidden -translate-x-1/2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-left font-mono text-[11px] whitespace-nowrap shadow-sm group-hover:block group-focus-visible:block">
+                    <span className="block">{shortId(run.id)}</span>
+                    <span className="block text-muted-foreground">
+                      {run.outcome} · {pending ? `${duration(seconds)}…` : duration(seconds)} ·{" "}
+                      {cost(run.cost_usd)}
+                    </span>
+                    <span className="block text-faint">{clockTime(run.created_at)}</span>
                   </span>
-                  <span className="block text-faint">{clockTime(run.created_at)}</span>
-                </span>
-              </button>
-            );
-          })}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
       <div className="mt-1.5 flex justify-between pl-12 text-[10px] text-faint">

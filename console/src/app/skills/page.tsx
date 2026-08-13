@@ -39,7 +39,7 @@ export default function SkillsPage() {
     });
 
   return (
-    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
       <div className="flex items-center gap-3">
         <h1 className="flex-1 font-serif text-2xl tracking-tight">Skills</h1>
         {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}

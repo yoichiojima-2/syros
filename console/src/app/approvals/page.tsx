@@ -19,7 +19,7 @@ export default function ApprovalsPage() {
     });
 
   return (
-    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
       <h1 className="font-serif text-2xl tracking-tight">Approvals</h1>
       {flash && <p className="text-[11px] text-muted-foreground">{flash}</p>}
       {approvals === null ? (

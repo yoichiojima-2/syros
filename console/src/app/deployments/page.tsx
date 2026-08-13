@@ -38,7 +38,7 @@ export default function DeploymentsPage() {
     });
 
   return (
-    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-serif text-2xl tracking-tight">Deployments</h1>
         {!creating && (

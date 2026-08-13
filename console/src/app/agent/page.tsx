@@ -58,7 +58,7 @@ function AgentInner() {
   }
 
   return (
-    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <Link
@@ -68,7 +68,7 @@ function AgentInner() {
             <ArrowLeft className="size-3.5" />
             Agents
           </Link>
-          <h1 className="pt-1 font-mono text-2xl font-semibold tracking-tight">{name}</h1>
+          <h1 className="pt-1 font-mono text-2xl font-semibold tracking-tight break-all">{name}</h1>
           <AgentLine agent={agent} now={now} />
         </div>
         <div className="flex items-center gap-2">
@@ -132,7 +132,11 @@ function AgentInner() {
                   {setOptions(agent.options)
                     .filter(([key]) => key !== "system_prompt")
                     .map(([key, value]) => (
-                      <Badge key={key} variant="secondary" className="font-mono">
+                      <Badge
+                        key={key}
+                        variant="secondary"
+                        className="max-w-full font-mono break-words whitespace-normal"
+                      >
                         {key}: {value}
                       </Badge>
                     ))}
