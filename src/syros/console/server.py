@@ -63,23 +63,36 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             sid, call_hash, allow=bool(body.get("allow")), message=body.get("message")
         ),
     ),
-    ("GET", ("api", "schedules"), lambda api, body, query: api.schedules()),
-    ("POST", ("api", "schedules"), lambda api, body, query: api.create_schedule(body)),
-    ("GET", ("api", "schedules", None), lambda api, body, query, name: api.schedule(name)),
+    ("GET", ("api", "deployments"), lambda api, body, query: api.deployments()),
+    ("POST", ("api", "deployments"), lambda api, body, query: api.create_deployment(body)),
+    ("GET", ("api", "deployments", None), lambda api, body, query, name: api.deployment(name)),
     (
         "POST",
-        ("api", "schedules", None, "enabled"),
-        lambda api, body, query, name: api.set_schedule_enabled(name, bool(body.get("enabled"))),
+        ("api", "deployments", None, "enabled"),
+        lambda api, body, query, name: api.set_deployment_enabled(name, bool(body.get("enabled"))),
     ),
     (
         "POST",
-        ("api", "schedules", None, "run"),
-        lambda api, body, query, name: api.run_schedule(name),
+        ("api", "deployments", None, "run"),
+        lambda api, body, query, name: api.run_deployment(name),
     ),
     (
         "POST",
-        ("api", "schedules", None, "delete"),
-        lambda api, body, query, name: api.delete_schedule(name),
+        ("api", "deployments", None, "delete"),
+        lambda api, body, query, name: api.delete_deployment(name),
+    ),
+    ("GET", ("api", "agents"), lambda api, body, query: api.agents()),
+    ("POST", ("api", "agents"), lambda api, body, query: api.create_agent(body)),
+    ("GET", ("api", "agents", None), lambda api, body, query, name: api.agent(name)),
+    (
+        "POST",
+        ("api", "agents", None, "update"),
+        lambda api, body, query, name: api.update_agent(name, body),
+    ),
+    (
+        "POST",
+        ("api", "agents", None, "delete"),
+        lambda api, body, query, name: api.delete_agent(name),
     ),
     ("GET", ("api", "workspaces"), lambda api, body, query: api.workspaces()),
     (
@@ -329,7 +342,7 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
                 self._json({"error": str(exc)}, 413)
             except (ValueError, TypeError, SyrosError) as exc:
                 # SyrosError covers the whole validation family — a rejected
-                # option, an unparsable cron, a schedule that isn't there.
+                # option, an unparsable cron, a deployment that isn't there.
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:
                 self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
