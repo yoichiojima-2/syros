@@ -19,7 +19,7 @@ export default function OverviewPage() {
 
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Overview</h1>
+      <h1 className="font-serif text-2xl tracking-tight">Overview</h1>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           label="Active sessions"

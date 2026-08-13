@@ -14,12 +14,12 @@ import type { PreviewKind } from "@/lib/artifacts";
 // agent-authored content can't escape into the page.
 
 // Mirrors the console tokens (globals.css) for the srcdoc documents, which get
-// no stylesheet of their own: the same violet-tinted neutrals, so a markdown or
-// SVG preview sits in the page instead of punching a gray hole in it. The
+// no stylesheet of their own: the same warm paper-toned neutrals, so a markdown
+// or SVG preview sits in the page instead of punching a gray hole in it. The
 // accents stay out — agent content colors itself.
 export const PALETTE = {
-  light: { bg: "#ffffff", fg: "#221f2e", muted: "#6b6480", border: "#e5e0f3", code: "#f1eefb" },
-  dark: { bg: "#1a1622", fg: "#f2eefc", muted: "#a79fc0", border: "#322b45", code: "#131019" },
+  light: { bg: "#ffffff", fg: "#141413", muted: "#6f6e69", border: "#e5e2d8", code: "#f0eee6" },
+  dark: { bg: "#262624", fg: "#f5f4ee", muted: "#b7b5ad", border: "#3e3e3a", code: "#1f1e1d" },
 };
 
 export function markdownDoc(markdown: string, dark: boolean): string {
