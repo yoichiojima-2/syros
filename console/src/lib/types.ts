@@ -3,10 +3,18 @@
 // and the message/block shapes mirror syros.types' Firestore serialization.
 
 // Mirrors derived_state() in src/syros/console/api.py — keep the two in sync.
-export type SessionState = "running" | "stalled" | "queued" | "idle" | "terminated" | "unknown";
+export type SessionState =
+  | "running"
+  | "starting"
+  | "stalled"
+  | "queued"
+  | "idle"
+  | "terminated"
+  | "unknown";
 
 export const ACTIVE_STATES: ReadonlySet<SessionState> = new Set([
   "running",
+  "starting",
   "queued",
   "stalled",
 ]);

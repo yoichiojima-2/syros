@@ -47,7 +47,10 @@ export function SessionDetail({ sid }: { sid: string }) {
   const working =
     !dead &&
     (pending.length > 0 ||
-      ((session?.state === "running" || session?.state === "queued") && lastKind !== "result"));
+      ((session?.state === "running" ||
+        session?.state === "starting" ||
+        session?.state === "queued") &&
+        lastKind !== "result"));
 
   // Artifacts replay from the transcript (see lib/artifacts.ts). The panel
   // opens itself when a version lands and stays closed once dismissed, until
