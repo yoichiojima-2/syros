@@ -47,6 +47,7 @@ class StoreProtocol(Protocol):
     async def get_session(self, session_id: str) -> dict[str, Any] | None: ...
     async def update_session(self, session_id: str, **fields: Any) -> None: ...
     async def list_sessions(self, limit: int | None = 20) -> list[dict[str, Any]]: ...
+    async def delete_session(self, session_id: str) -> None: ...
     async def claim_session(
         self, session_id: str, lease_id: str, ttl_seconds: float
     ) -> dict[str, Any] | None: ...
@@ -134,6 +135,15 @@ class Store:
         if limit is not None:
             query = query.limit(limit)
         return [{"id": s.id, **s.to_dict()} async for s in query.stream()]
+
+    async def delete_session(self, session_id: str) -> None:
+        """Remove the session and everything under it. Deleting a document
+        doesn't cascade in Firestore, so each subcollection is drained first."""
+        reference = self._session(session_id)
+        for name in ("events", "inbox", "approvals", "tool_calls"):
+            async for snapshot in reference.collection(name).stream():
+                await snapshot.reference.delete()
+        await reference.delete()
 
     async def claim_session(
         self, session_id: str, lease_id: str, ttl_seconds: float

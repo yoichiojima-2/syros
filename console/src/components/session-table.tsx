@@ -1,6 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -19,11 +21,13 @@ export function SessionTable({
   now,
   compact = false,
   emptyMessage = "No sessions yet — run a query and it will appear here.",
+  onDelete,
 }: {
   sessions: SessionSummary[] | null;
   now: number;
   compact?: boolean;
   emptyMessage?: string;
+  onDelete?: (session: SessionSummary) => void;
 }) {
   const router = useRouter();
 
@@ -55,6 +59,7 @@ export function SessionTable({
           <TableHead className="text-right">Cost</TableHead>
           {!compact && <TableHead className="text-right">Events</TableHead>}
           <TableHead className="text-right">Updated</TableHead>
+          {onDelete && <TableHead className="w-8" />}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -91,6 +96,27 @@ export function SessionTable({
             <TableCell className="text-right font-mono text-xs text-muted-foreground">
               {relTime(s.updated_at ?? s.created_at, now) || "—"}
             </TableCell>
+            {onDelete && (
+              <TableCell className="w-8 text-right">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 text-muted-foreground hover:text-destructive"
+                  title={
+                    s.state === "running"
+                      ? "Kill the session before deleting it"
+                      : `Delete ${s.id}`
+                  }
+                  disabled={s.state === "running"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(s);
+                  }}
+                >
+                  <Trash2 />
+                </Button>
+              </TableCell>
+            )}
           </TableRow>
         ))}
       </TableBody>

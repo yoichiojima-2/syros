@@ -44,6 +44,13 @@ class FakeStore:
         rows = [{"id": k, **v} for k, v in self.sessions.items()]
         return rows if limit is None else rows[:limit]
 
+    async def delete_session(self, session_id):
+        self.sessions.pop(session_id, None)
+        self.events.pop(session_id, None)
+        self.inbox.pop(session_id, None)
+        self.approvals.pop(session_id, None)
+        self.tool_calls.pop(session_id, None)
+
     async def claim_session(self, session_id, lease_id, ttl_seconds):
         session = self.sessions.get(session_id)
         if not session or session.get("status") == "terminated" or session.get("disabled"):

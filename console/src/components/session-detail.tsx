@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CircleStop, OctagonX, PanelRight } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CircleStop, OctagonX, PanelRight, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StateBadge } from "@/components/state-badge";
 import { Transcript } from "@/components/transcript";
@@ -14,6 +15,7 @@ import { post } from "@/lib/api";
 import { cost } from "@/lib/format";
 
 export function SessionDetail({ sid }: { sid: string }) {
+  const router = useRouter();
   const { session, events, approvals, removeApproval } = useSessionPoll(sid);
   const now = useNow();
   const [flash, run] = useAction();
@@ -121,6 +123,14 @@ export function SessionDetail({ sid }: { sid: string }) {
     });
   };
 
+  const remove = () => {
+    if (!confirm(`Delete ${sid}? The session and its history are removed permanently.`)) return;
+    run(async () => {
+      await post(`/api/sessions/${sid}/delete`);
+      router.push("/sessions");
+    });
+  };
+
   const showPanel = panelOpen && artifacts.length > 0;
 
   return (
@@ -147,6 +157,15 @@ export function SessionDetail({ sid }: { sid: string }) {
         </Button>
         <Button variant="destructive" size="sm" onClick={kill} disabled={!session || dead}>
           <OctagonX /> Kill
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={remove}
+          disabled={!session || session.state === "running"}
+          title={session?.state === "running" ? "Kill the session before deleting it" : undefined}
+        >
+          <Trash2 /> Delete
         </Button>
       </div>
 
