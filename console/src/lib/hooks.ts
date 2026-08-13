@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api, serverNow, setOnlineListener } from "./api";
 import type {
+  AgentResponse,
+  AgentsResponse,
+  AgentSummary,
   Approval,
   ApprovalsResponse,
   ApprovalWithSession,
@@ -129,6 +132,64 @@ export function useDeployment(
     missing,
     refresh: () => setNonce((n) => n + 1),
   };
+}
+
+export function useAgents(intervalMs = 5000): {
+  agents: AgentSummary[] | null;
+  refresh: () => void;
+} {
+  const [agents, setAgents] = useState<AgentSummary[] | null>(null);
+  const [nonce, setNonce] = useState(0);
+  usePolling(
+    () => {
+      api<AgentsResponse>("/api/agents")
+        .then((data) => setAgents(data.agents))
+        .catch(() => {});
+    },
+    intervalMs,
+    nonce,
+  );
+  return { agents, refresh: () => setNonce((n) => n + 1) };
+}
+
+/** One stored agent — the agent detail view's feed. */
+export function useAgent(
+  name: string | null,
+  intervalMs = 5000,
+): {
+  agent: AgentSummary | null;
+  missing: boolean;
+  refresh: () => void;
+} {
+  const [agent, setAgent] = useState<AgentSummary | null>(null);
+  const [missing, setMissing] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    setAgent(null);
+    setMissing(false);
+    if (!name) return;
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return;
+      api<AgentResponse>(`/api/agents/${encodeURIComponent(name)}`)
+        .then((next) => {
+          if (cancelled) return;
+          setAgent(next.agent);
+          setMissing(false);
+        })
+        // a deleted agent 404s; say so rather than spinning on a skeleton
+        .catch((err: Error) => {
+          if (!cancelled && /not found/i.test(err.message)) setMissing(true);
+        });
+    };
+    poll();
+    const timer = setInterval(poll, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [name, intervalMs, nonce]);
+  return { agent, missing, refresh: () => setNonce((n) => n + 1) };
 }
 
 export function useWorkspaces(intervalMs = 4000): WorkspaceSummary[] | null {

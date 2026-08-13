@@ -14,6 +14,8 @@ that comes back after an outage, can neither double-fire nor backfill.
 
     deployments/{name}
         cron, timezone, prompt, options   what to run, and when
+        agent                             stored agent whose options are the run
+                                          defaults, re-read at each firing
         enabled                           paused deployments keep their history
         next_run_at                       epoch seconds; the tick's only cursor
         last_run_at, last_session_id      the newest run
@@ -31,10 +33,10 @@ import time
 from datetime import datetime
 from typing import Any
 
-from . import cron, remote
+from . import agents, cron, remote
 from .errors import SyrosError
 from .names import validate_name
-from .options import AgentOptions
+from .options import AgentOptions, options_from_doc
 from .store import Store, StoreProtocol, lease_active, new_session_id, start_pending
 
 DEFAULT_TIMEZONE = "UTC"
@@ -58,6 +60,7 @@ def build(
     prompt: str,
     run_options: AgentOptions | None = None,
     *,
+    agent: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     enabled: bool = True,
     created_by: str | None = None,
@@ -67,9 +70,13 @@ def build(
 
     `run_options` are the options every run of this deployment gets — the same
     subset a session stores, so a deployment can name a model, a shared
-    workspace, artifact spaces, allowed tools, or a budget.
+    workspace, artifact spaces, allowed tools, or a budget. `agent` names a
+    stored agent whose options become the defaults, resolved fresh at each
+    firing; `run_options` then override per field.
     """
     validate_name("deployment", name)
+    if agent is not None:
+        validate_name("agent", agent)
     if not isinstance(prompt, str) or not prompt.strip():
         raise DeploymentError("a deployment needs a prompt")
     cron.validate(expression, timezone)
@@ -78,6 +85,7 @@ def build(
         "cron": cron.describe(expression),
         "timezone": timezone,
         "prompt": prompt,
+        "agent": agent,
         "options": (run_options or AgentOptions()).serialize(),
         "enabled": bool(enabled),
         "next_run_at": cron.next_after(expression, now, timezone),
@@ -102,14 +110,16 @@ async def create(
     run_options: AgentOptions | None = None,
     *,
     options: AgentOptions | None = None,
+    agent: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
     enabled: bool = True,
     created_by: str | None = None,
     store: StoreProtocol | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Define a deployment. `options` is the deployment (project/region/job);
-    `run_options` is what each run of the deployment is given."""
+    """Define a deployment. `options` is the installation coordinates (project/region/job);
+    `run_options` is what each run of the deployment is given; `agent` names a
+    stored agent whose options are the run defaults, re-read at each firing."""
     options = options or AgentOptions()
     run_options = run_options or AgentOptions()
     # Every run inherits the deployment's project, so validate against it here
@@ -121,12 +131,17 @@ async def create(
         expression,
         prompt,
         run_options,
+        agent=agent,
         timezone=timezone,
         enabled=enabled,
         created_by=created_by,
         now=now,
     )
     store = _store(options, store)
+    if agent is not None:
+        # Fail at definition time, not at the first firing. The reference is
+        # still re-resolved on every launch, so a later delete surfaces there.
+        await agents.require_agent(store, agent)
     if await store.get_deployment(name) is not None:
         raise DeploymentError(f"deployment {name!r} already exists")
     await store.create_deployment(name, doc)
@@ -212,7 +227,9 @@ async def run_now(
     options = options or AgentOptions()
     store = _store(options, store)
     deployment = await _require(store, name)
-    return await launch(store, options, deployment, trigger="manual", created_by=created_by, now=now)
+    return await launch(
+        store, options, deployment, trigger="manual", created_by=created_by, now=now
+    )
 
 
 async def launch(
@@ -228,12 +245,20 @@ async def launch(
     name = deployment["name"]
     now = time.time() if now is None else now
     session_id = new_session_id()
+    # An agent reference is resolved at fire time — each run picks up the
+    # agent's current options, with the deployment's own options overriding
+    # per field — and the merged result is snapshotted onto the session.
+    agent_name = deployment.get("agent")
+    run_options = options_from_doc(dict(deployment.get("options") or {}))
+    run_options.agent = agent_name
+    run_options = await agents.resolve(store, run_options)
     await store.create_session(
         session_id,
-        dict(deployment.get("options") or {}),
+        run_options.serialize(),
         created_by=created_by or f"deployment:{name}",
         deployment=name,
         trigger=trigger,
+        agent=agent_name,
     )
     await remote.send_prompt(store, session_id, options, deployment.get("prompt") or "")
     await store.update_deployment(
@@ -307,7 +332,9 @@ async def tick(
             await store.update_deployment(
                 name, last_skipped_at=now, skips=int(deployment.get("skips") or 0) + 1
             )
-            skipped.append({"deployment": name, "session_id": deployment.get("last_session_id") or ""})
+            skipped.append(
+                {"deployment": name, "session_id": deployment.get("last_session_id") or ""}
+            )
             continue
         try:
             session_id = await launch(store, options, deployment, now=now)

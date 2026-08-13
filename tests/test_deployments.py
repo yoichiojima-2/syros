@@ -64,6 +64,36 @@ async def test_run_options_are_stored():
     assert options["model"] == "m" and options["workspace"] == "ws"
 
 
+async def test_agent_reference_is_stored_and_validated():
+    from syros import agents
+    from syros.agents import AgentError
+
+    store = FakeStore()
+    with pytest.raises(AgentError):
+        await make(store, agent="ghost")
+    await agents.create("reviewer", AgentOptions(model="m"), options=OPTS, store=store)
+    await make(store, agent="reviewer")
+    assert store.deployments["nightly"]["agent"] == "reviewer"
+
+
+async def test_launch_resolves_agent_at_fire_time(no_job_trigger):
+    from syros import agents
+
+    store = FakeStore()
+    await agents.create(
+        "reviewer", AgentOptions(system_prompt="v1", model="m1"), options=OPTS, store=store
+    )
+    await make(store, agent="reviewer", run_options=AgentOptions(model="override"))
+    # the agent is edited after the deployment was defined: the firing sees v2
+    await agents.update("reviewer", AgentOptions(system_prompt="v2"), options=OPTS, store=store)
+    session_id = await deployments.run_now("nightly", options=OPTS, store=store)
+    session = store.sessions[session_id]
+    assert session["agent"] == "reviewer"
+    assert session["options"]["system_prompt"] == "v2"
+    # the deployment's own explicitly-set option still overrides the agent's
+    assert session["options"]["model"] == "override"
+
+
 async def test_tick_before_due_is_noop(no_job_trigger):
     store = FakeStore()
     now = time.time()

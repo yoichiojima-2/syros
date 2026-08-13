@@ -3,6 +3,7 @@
 Same API shape as claude_agent_sdk; every run is sandboxed in your GCP project.
 """
 
+from .agents import AgentError
 from .client import SyrosClient, query
 from .errors import OptionsError, SessionTerminated, SyrosError
 from .options import AgentOptions
@@ -24,6 +25,7 @@ from .types import (
 )
 
 __all__ = [
+    "AgentError",
     "AgentOptions",
     "AssistantMessage",
     "ContentBlock",

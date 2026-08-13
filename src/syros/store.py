@@ -10,6 +10,8 @@ Layout:
                                       exclusive lease on a shared workspace
     deployments/{name}                  {cron, timezone, prompt, options, enabled,
                                       next_run_at, ...} — a cron that fires runs
+    agents/{name}                     {options, description, ...} — a stored,
+                                      named run configuration (persona)
 """
 
 from __future__ import annotations
@@ -73,6 +75,7 @@ class StoreProtocol(Protocol):
         created_by: str | None = None,
         deployment: str | None = None,
         trigger: str = "api",
+        agent: str | None = None,
     ) -> None: ...
     async def get_session(self, session_id: str) -> dict[str, Any] | None: ...
     async def update_session(self, session_id: str, **fields: Any) -> None: ...
@@ -127,6 +130,11 @@ class StoreProtocol(Protocol):
     async def list_deployments(self) -> list[dict[str, Any]]: ...
     async def delete_deployment(self, name: str) -> None: ...
     async def claim_slot(self, name: str, due: float, following: float) -> bool: ...
+    async def create_agent(self, name: str, doc: dict[str, Any]) -> None: ...
+    async def get_agent(self, name: str) -> dict[str, Any] | None: ...
+    async def update_agent(self, name: str, **fields: Any) -> None: ...
+    async def list_agents(self) -> list[dict[str, Any]]: ...
+    async def delete_agent(self, name: str) -> None: ...
 
 
 class Store:
@@ -150,6 +158,7 @@ class Store:
         created_by: str | None = None,
         deployment: str | None = None,
         trigger: str = "api",
+        agent: str | None = None,
     ) -> None:
         await self._session(session_id).create(
             {
@@ -169,6 +178,9 @@ class Store:
                 # cron firing, "manual" for a run-now on a deployment.
                 "deployment": deployment,
                 "trigger": trigger,
+                # Which stored agent the options were resolved from, if any —
+                # provenance only; the merged options above are authoritative.
+                "agent": agent,
                 "created_at": self._firestore.SERVER_TIMESTAMP,
                 "updated_at": self._firestore.SERVER_TIMESTAMP,
             }
@@ -188,7 +200,9 @@ class Store:
             query = query.limit(limit)
         return [{"id": s.id, **s.to_dict()} async for s in query.stream()]
 
-    async def list_deployment_sessions(self, deployment: str, limit: int = 50) -> list[dict[str, Any]]:
+    async def list_deployment_sessions(
+        self, deployment: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
         """One deployment's runs, newest first.
 
         Equality plus an order_by on another field needs the composite index
@@ -532,7 +546,7 @@ class Store:
 
     async def list_deployments(self) -> list[dict[str, Any]]:
         """Every deployment. Unfiltered and unordered on purpose: the tick wants
-        them all, and a deployment's deployments number in the tens."""
+        them all, and an installation's deployments number in the tens."""
         return [
             {"name": s.id, **s.to_dict()} async for s in self._db.collection("deployments").stream()
         ]
@@ -567,3 +581,32 @@ class Store:
             return True
 
         return await _claim(transaction)
+
+    # --- agents (stored run configurations) ---
+
+    def _agent(self, name: str):
+        return self._db.collection("agents").document(name)
+
+    async def create_agent(self, name: str, doc: dict[str, Any]) -> None:
+        """Create; the document id is the name, so this fails on a duplicate."""
+        await self._agent(name).create(
+            {
+                **doc,
+                "created_at": self._firestore.SERVER_TIMESTAMP,
+                "updated_at": self._firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+    async def get_agent(self, name: str) -> dict[str, Any] | None:
+        snapshot = await self._agent(name).get()
+        return {"name": name, **snapshot.to_dict()} if snapshot.exists else None
+
+    async def update_agent(self, name: str, **fields: Any) -> None:
+        fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
+        await self._agent(name).update(fields)
+
+    async def list_agents(self) -> list[dict[str, Any]]:
+        return [{"name": s.id, **s.to_dict()} async for s in self._db.collection("agents").stream()]
+
+    async def delete_agent(self, name: str) -> None:
+        await self._agent(name).delete()

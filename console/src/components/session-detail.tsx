@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CalendarClock, CircleStop, OctagonX, PanelRight, Trash2 } from "lucide-react";
+import { Bot, CalendarClock, CircleStop, OctagonX, PanelRight, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StateBadge } from "@/components/state-badge";
@@ -156,6 +156,19 @@ export function SessionDetail({ sid }: { sid: string }) {
                 <Badge className="font-mono">
                   <CalendarClock className="size-3" />
                   {session.deployment}
+                </Badge>
+              </Link>
+            )}
+            {/* which stored agent the session's options were resolved from */}
+            {session.agent && (
+              <Link
+                href={`/agent?name=${encodeURIComponent(session.agent)}`}
+                className="hover:opacity-80"
+                title={`Ran as agent ${session.agent}`}
+              >
+                <Badge className="font-mono">
+                  <Bot className="size-3" />
+                  {session.agent}
                 </Badge>
               </Link>
             )}

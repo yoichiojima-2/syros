@@ -53,6 +53,11 @@ class AgentOptions:
     can_use_tool: CanUseTool | None = None
 
     # --- syros ---
+    # Named stored agent (agents/{name} in Firestore): its saved options become
+    # the defaults for this run, and any field set explicitly here overrides
+    # them. Resolved when the session is created; the session stores the merged
+    # result, so later edits to the agent never change a running session.
+    agent: str | None = None
     # Named shared GCS workspace: sessions with the same name share one working
     # directory (workspaces/{name}/ in the bucket). HOME stays per-session, so
     # transcripts and resume are unaffected. Fixed at session creation; on
@@ -113,6 +118,8 @@ class AgentOptions:
             raise OptionsError("system_prompt must be a plain string in syros")
         if self.workspace is not None:
             validate_name("workspace", self.workspace)
+        if self.agent is not None:
+            validate_name("agent", self.agent)
         for space, mode in self.resolved_artifacts().items():
             validate_name("artifact space", space)
             if mode not in get_args(ArtifactMode):

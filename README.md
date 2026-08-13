@@ -111,6 +111,37 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
 Docker image builds its own copy in a Node stage, so deploys need no local build.
 
+## Agents
+
+An agent is a named, stored run configuration — the persona a session runs as: system
+prompt, model, allowed tools, permission mode, workspace, artifact spaces, budgets. One
+Firestore document, mirroring Claude Managed Agents' Agent object (minus versioning:
+the document is mutable, and every session snapshots the options it resolved at creation,
+so editing an agent changes future runs only).
+
+Reference it from the SDK with `AgentOptions(agent=...)`: the stored options become the
+defaults, and any field set explicitly alongside it overrides them per field:
+
+```python
+from syros import query, AgentOptions
+
+async for message in query(
+    prompt="review the diff in the workspace",
+    options=AgentOptions(agent="reviewer", model="claude-opus-5"),  # model overrides
+):
+    ...
+```
+
+```
+syros agents create reviewer   --system-prompt "You are a careful code reviewer."   --allow Read --allow Grep --model claude-sonnet-5
+
+syros agents                     # list agents
+syros agents show|update|delete reviewer
+```
+
+The console has an Agents view with the same create/edit/delete surface, and sessions
+show which agent they ran as. Deployments can reference an agent too (below).
+
 ## Deployments
 
 A deployment is a cron expression plus a prompt plus the usual run options, stored as one
@@ -131,6 +162,10 @@ syros deployments run nightly-report   # fire once, off-cycle (clock untouched)
 syros deployments pause|resume|delete nightly-report
 ```
 
+A deployment can name an agent (`--agent reviewer`) whose stored options become the run
+defaults — resolved fresh at each firing, so an agent edit reaches the next run without
+touching the deployment; the deployment's own options still override per field.
+
 The console has the same surface with a run-status view per deployment: outcome/duration
 bars over the run history (click a bar for that run's transcript), success rate, average
 duration, spend, and a create/pause/run-now/delete UI. Cron is the standard 5-field
@@ -139,7 +174,7 @@ timezone, so a 9am deployment stays at 9am across DST.
 
 What advances the clock is `syros tick`, which fires every due deployment and exits;
 Terraform wires Cloud Scheduler → a `syros-scheduler` Cloud Run Job to run it every
-minute (`tick_deployment` to change — its cadence is the effective granularity of all
+minute (`tick_schedule` to change — its cadence is the effective granularity of all
 deployments). The tick is transactional and idempotent: overlapping ticks can't
 double-fire, an outage catches up with one run rather than replaying missed slots, and
 a slot that comes due while the previous run is still active is skipped and counted

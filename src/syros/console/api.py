@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from .. import remote, deployments
+from .. import agents, remote, deployments
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
 from ..store import StoreProtocol, lease_active, start_pending
@@ -111,6 +111,8 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             # Run provenance, for sessions a deployment created
             "deployment": session.get("deployment"),
             "trigger": session.get("trigger") or "api",
+            # Which stored agent the options were resolved from, if any
+            "agent": session.get("agent"),
         }
     )
 
@@ -314,6 +316,7 @@ class ConsoleAPI:
                 "cron": deployment.get("cron"),
                 "timezone": deployment.get("timezone") or deployments.DEFAULT_TIMEZONE,
                 "prompt": deployment.get("prompt") or "",
+                "agent": deployment.get("agent"),
                 "options": deployment.get("options") or {},
                 "enabled": bool(deployment.get("enabled")),
                 "next_run_at": float(deployment.get("next_run_at") or 0.0) or None,
@@ -370,6 +373,7 @@ class ConsoleAPI:
             str(body.get("prompt") or ""),
             run_options,
             options=self._options,
+            agent=(str(body["agent"]).strip() or None) if body.get("agent") else None,
             timezone=str(body.get("timezone") or deployments.DEFAULT_TIMEZONE),
             enabled=bool(body.get("enabled", True)),
             created_by=_decided_by(),
@@ -393,6 +397,72 @@ class ConsoleAPI:
     async def delete_deployment(self, name: str) -> dict[str, Any]:
         await self._require_deployment(name)
         await deployments.delete(name, store=self._store)
+        return {"now": time.time(), "ok": True}
+
+    # --- agents (stored run configurations) ---
+
+    def _agent_row(self, agent: dict[str, Any]) -> dict[str, Any]:
+        return to_jsonable(
+            {
+                "name": agent.get("name"),
+                "description": agent.get("description"),
+                "options": agent.get("options") or {},
+                "created_by": agent.get("created_by"),
+                "created_at": agent.get("created_at"),
+                "updated_at": agent.get("updated_at"),
+            }
+        )
+
+    async def agents(self) -> dict[str, Any]:
+        rows = await agents.list_all(store=self._store)
+        return {"now": time.time(), "agents": [self._agent_row(a) for a in rows]}
+
+    async def agent(self, name: str) -> dict[str, Any]:
+        agent = await self._store.get_agent(name)
+        if agent is None:
+            raise NotFound(f"agent {name} not found")
+        return {"now": time.time(), "agent": self._agent_row(agent)}
+
+    async def create_agent(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Define an agent from the console's form. Options arrive as the same
+        serialized dict a session stores — unknown ones are rejected by
+        options_from_doc rather than silently dropped."""
+        name = str(body.get("name") or "").strip()
+        if await self._store.get_agent(name) is not None:
+            raise Conflict(f"agent {name} already exists")
+        run_options = options_from_doc(dict(body.get("options") or {}))
+        run_options.project = run_options.project or self._options.project
+        agent = await agents.create(
+            name,
+            run_options,
+            options=self._options,
+            description=(str(body.get("description") or "").strip() or None),
+            created_by=_decided_by(),
+            store=self._store,
+        )
+        return {"now": time.time(), "agent": self._agent_row(agent)}
+
+    async def update_agent(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace an agent's options. Running sessions keep their snapshot;
+        the next run referencing this agent picks up the new configuration."""
+        existing = await self._store.get_agent(name)
+        if existing is None:
+            raise NotFound(f"agent {name} not found")
+        run_options = options_from_doc(dict(body.get("options") or {}))
+        run_options.project = run_options.project or self._options.project
+        agent = await agents.update(
+            name,
+            run_options,
+            options=self._options,
+            description=(str(body.get("description") or "").strip() or None),
+            store=self._store,
+        )
+        return {"now": time.time(), "agent": self._agent_row(agent)}
+
+    async def delete_agent(self, name: str) -> dict[str, Any]:
+        if await self._store.get_agent(name) is None:
+            raise NotFound(f"agent {name} not found")
+        await agents.delete(name, store=self._store)
         return {"now": time.time(), "ok": True}
 
     # --- shared workspaces ---

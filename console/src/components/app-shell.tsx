@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Bot,
   CalendarClock,
   ChartColumn,
   FolderGit2,
@@ -20,6 +21,7 @@ const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard", label: "Dashboard", icon: ChartColumn },
   { href: "/sessions", label: "Sessions", icon: ListTree },
+  { href: "/agents", label: "Agents", icon: Bot },
   { href: "/deployments", label: "Deployments", icon: CalendarClock },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/workspaces", label: "Workspaces", icon: FolderGit2 },

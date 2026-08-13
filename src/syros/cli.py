@@ -7,8 +7,11 @@ syros approvals <session_id>            list pending approvals
 syros approvals <session_id> allow <call_hash>
 syros approvals <session_id> deny <call_hash> [-m reason]
 syros kill <session_id>                 flip the kill switch
+syros agents                            list stored agents (personas)
+syros agents create <name> --system-prompt "..." --allow Read --allow Bash
+syros agents show|update|delete <name>
 syros deployments                         list deployments and their next run
-syros deployments create <name> --cron "0 9 * * *" --prompt "..."
+syros deployments create <name> --cron "0 9 * * *" --prompt "..." [--agent <name>]
 syros deployments runs <name>             run history for one deployment
 syros deployments run|pause|resume|delete <name>
 syros tick                              fire every deployment that is due
@@ -49,7 +52,7 @@ def _store(args: argparse.Namespace) -> Store:
 
 
 def _options(args: argparse.Namespace) -> AgentOptions:
-    """The deployment coordinates a command needs to trigger a run."""
+    """The installation coordinates a command needs to trigger a run."""
     return AgentOptions(
         project=_project(args),
         region=getattr(args, "region", None),
@@ -125,6 +128,80 @@ async def _kill(args) -> None:
     print(f"disabled: {args.session_id}")
 
 
+def _run_options(args) -> AgentOptions:
+    """The AgentOptions subset worth having on the command line."""
+    return AgentOptions(
+        model=args.model,
+        system_prompt=args.system_prompt,
+        allowed_tools=list(args.allow or []),
+        permission_mode=args.permission_mode,
+        workspace=args.workspace,
+        artifacts=args.artifacts,
+        max_turns=args.max_turns,
+        max_budget_usd=args.max_budget_usd,
+    )
+
+
+async def _agents(args) -> None:
+    from . import agents
+
+    options = _options(args)
+    store = _store(args)
+
+    if args.action == "list":
+        for agent in await agents.list_all(store=store):
+            opts = agent.get("options") or {}
+            print(
+                f"{agent['name']:<24}  {opts.get('model') or '-':<24}"
+                f"  {opts.get('permission_mode') or 'default':<18}"
+                f"  {agent.get('description') or ''}"
+            )
+        return
+
+    if not args.name:
+        raise SystemExit(f"agents {args.action} requires a name")
+
+    if args.action == "create":
+        agent = await agents.create(
+            args.name,
+            _run_options(args),
+            options=options,
+            description=args.description,
+            created_by=getpass.getuser(),
+            store=store,
+        )
+        print(f"created {args.name}")
+        return
+
+    if args.action == "update":
+        await agents.update(
+            args.name,
+            _run_options(args),
+            options=options,
+            description=args.description,
+            store=store,
+        )
+        print(f"updated {args.name}")
+        return
+
+    if args.action == "delete":
+        await agents.delete(args.name, store=store)
+        print(f"deleted {args.name}  (sessions that ran as it keep their options)")
+        return
+
+    # show
+    agent = await agents.get(args.name, store=store)
+    if agent is None:
+        raise SystemExit(f"no such agent: {args.name}")
+    print(
+        json.dumps(
+            {k: v for k, v in agent.items() if k not in ("created_at", "updated_at")},
+            indent=2,
+            default=str,
+        )
+    )
+
+
 async def _deployments(args) -> None:
     from . import deployments
 
@@ -151,22 +228,13 @@ async def _deployments(args) -> None:
     if args.action == "create":
         if not args.cron or not args.prompt:
             raise SystemExit("create requires --cron and --prompt")
-        run_options = AgentOptions(
-            model=args.model,
-            system_prompt=args.system_prompt,
-            allowed_tools=list(args.allow or []),
-            permission_mode=args.permission_mode,
-            workspace=args.workspace,
-            artifacts=args.artifacts,
-            max_turns=args.max_turns,
-            max_budget_usd=args.max_budget_usd,
-        )
         deployment = await deployments.create(
             args.name,
             args.cron,
             args.prompt,
-            run_options,
+            _run_options(args),
             options=options,
+            agent=args.agent,
             timezone=args.tz,
             created_by=getpass.getuser(),
             store=store,
@@ -311,6 +379,26 @@ def main() -> None:
     kill.add_argument("session_id")
     kill.set_defaults(func=_kill)
 
+    agents = sub.add_parser("agents")
+    agents.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "create", "show", "update", "delete"],
+    )
+    agents.add_argument("name", nargs="?")
+    agents.add_argument("--description", default=None)
+    # Run options: the subset of AgentOptions worth having on the command line.
+    agents.add_argument("--model", default=None)
+    agents.add_argument("--system-prompt", default=None)
+    agents.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
+    agents.add_argument("--permission-mode", default=None)
+    agents.add_argument("--workspace", default=None)
+    agents.add_argument("--artifacts", default=None, metavar="SPACE")
+    agents.add_argument("--max-turns", type=int, default=None)
+    agents.add_argument("--max-budget-usd", type=float, default=None)
+    agents.set_defaults(func=_agents)
+
     deployments = sub.add_parser("deployments")
     deployments.add_argument(
         "action",
@@ -322,6 +410,7 @@ def main() -> None:
     deployments.add_argument("--cron", default=None, help="5-field cron, or an @alias")
     deployments.add_argument("--tz", default="UTC", help="IANA timezone the cron is read in")
     deployments.add_argument("--prompt", default=None)
+    deployments.add_argument("--agent", default=None, help="stored agent the runs default to")
     # Run options: the subset of AgentOptions worth having on the command line.
     deployments.add_argument("--model", default=None)
     deployments.add_argument("--system-prompt", default=None)

@@ -81,6 +81,19 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         ("api", "deployments", None, "delete"),
         lambda api, body, query, name: api.delete_deployment(name),
     ),
+    ("GET", ("api", "agents"), lambda api, body, query: api.agents()),
+    ("POST", ("api", "agents"), lambda api, body, query: api.create_agent(body)),
+    ("GET", ("api", "agents", None), lambda api, body, query, name: api.agent(name)),
+    (
+        "POST",
+        ("api", "agents", None, "update"),
+        lambda api, body, query, name: api.update_agent(name, body),
+    ),
+    (
+        "POST",
+        ("api", "agents", None, "delete"),
+        lambda api, body, query, name: api.delete_agent(name),
+    ),
     ("GET", ("api", "workspaces"), lambda api, body, query: api.workspaces()),
     (
         "GET",

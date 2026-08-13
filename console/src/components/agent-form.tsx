@@ -6,51 +6,46 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ChoiceField, Field, MODELS, TOOLS } from "@/components/option-fields";
-import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
+import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import type { AgentSummary } from "@/lib/types";
 
-// The presets cover what people actually schedule; anything else is typed in.
-const PRESETS: { label: string; cron: string }[] = [
-  { label: "Hourly", cron: "0 * * * *" },
-  { label: "Daily 9am", cron: "0 9 * * *" },
-  { label: "Weekdays 9am", cron: "0 9 * * MON-FRI" },
-  { label: "Monday 8am", cron: "0 8 * * MON" },
-  { label: "Every 15m", cron: "*/15 * * * *" },
-];
-
-function browserZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch {
-    return "UTC";
-  }
-}
-
-/** New-deployment form. Run options mirror the AgentOptions subset a session
- *  stores, and are posted as that same serialized dict — the server rejects
- *  anything it doesn't recognize rather than dropping it. */
-export function DeploymentForm({
-  onCreated,
+/** Create or edit a stored agent (persona). Its options mirror the
+ *  AgentOptions subset a session stores and are posted as that same serialized
+ *  dict — the server rejects anything it doesn't recognize rather than
+ *  dropping it. */
+export function AgentForm({
+  agent,
+  onSaved,
   onCancel,
 }: {
-  onCreated: (name: string) => void;
+  agent?: AgentSummary; // present = edit in place, absent = create
+  onSaved: (name: string) => void;
   onCancel: () => void;
 }) {
   const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
-  const { agents } = useAgents();
-  const [name, setName] = useState("");
-  const [agent, setAgent] = useState("");
-  const [cron, setCron] = useState("0 9 * * *");
-  const [timezone, setTimezone] = useState(browserZone());
-  const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState("");
-  const [workspace, setWorkspace] = useState("");
-  const [artifacts, setArtifacts] = useState("");
-  const [tools, setTools] = useState<string[]>([]);
-  const [extraTools, setExtraTools] = useState("");
-  const [budget, setBudget] = useState("");
+  const stored = agent?.options ?? {};
+  const [name, setName] = useState(agent?.name ?? "");
+  const [description, setDescription] = useState(agent?.description ?? "");
+  const [systemPrompt, setSystemPrompt] = useState((stored.system_prompt as string) ?? "");
+  const [model, setModel] = useState((stored.model as string) ?? "");
+  const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
+  const [workspace, setWorkspace] = useState((stored.workspace as string) ?? "");
+  const [artifacts, setArtifacts] = useState(
+    typeof stored.artifacts === "string" ? stored.artifacts : "",
+  );
+  const [tools, setTools] = useState<string[]>(
+    ((stored.allowed_tools as string[]) ?? []).filter((tool) => TOOLS.includes(tool)),
+  );
+  const [extraTools, setExtraTools] = useState(
+    ((stored.allowed_tools as string[]) ?? []).filter((tool) => !TOOLS.includes(tool)).join(", "),
+  );
+  const [budget, setBudget] = useState(
+    stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
+  );
+  const [maxTurns, setMaxTurns] = useState(stored.max_turns == null ? "" : String(stored.max_turns));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -61,7 +56,9 @@ export function DeploymentForm({
     setError("");
     // Only send what was filled in: an empty string is "unset", not "".
     const options: Record<string, unknown> = {};
+    if (systemPrompt.trim()) options.system_prompt = systemPrompt;
     if (model.trim()) options.model = model.trim();
+    if (permissionMode.trim()) options.permission_mode = permissionMode.trim();
     if (workspace.trim()) options.workspace = workspace.trim();
     if (artifacts.trim()) options.artifacts = artifacts.trim();
     const allowed = [
@@ -73,16 +70,15 @@ export function DeploymentForm({
     ];
     if (allowed.length) options.allowed_tools = allowed;
     if (budget.trim()) options.max_budget_usd = Number(budget);
+    if (maxTurns.trim()) options.max_turns = Number(maxTurns);
     try {
-      await post("/api/deployments", {
-        name: name.trim(),
-        cron: cron.trim(),
-        timezone: timezone.trim(),
-        prompt,
-        agent: agent.trim() || null,
-        options,
-      });
-      onCreated(name.trim());
+      const body = { name: name.trim(), description: description.trim(), options };
+      if (agent) {
+        await post(`/api/agents/${encodeURIComponent(agent.name)}/update`, body);
+      } else {
+        await post("/api/agents", body);
+      }
+      onSaved(name.trim());
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -93,9 +89,10 @@ export function DeploymentForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New deployment</CardTitle>
+        <CardTitle>{agent ? `Edit ${agent.name}` : "New agent"}</CardTitle>
         <CardDescription>
-          Every firing starts a fresh session with these options and this prompt.
+          A stored run configuration: sessions and deployments that reference it get these options
+          as defaults. Edits apply to future runs only.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -105,71 +102,40 @@ export function DeploymentForm({
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="nightly-report"
-                autoFocus
+                placeholder="code-reviewer"
+                autoFocus={!agent}
+                disabled={!!agent}
                 required
               />
             </Field>
-            <Field label="Cron" hint="minute hour day month weekday">
+            <Field label="Description" hint="for humans">
               <Input
-                value={cron}
-                onChange={(e) => setCron(e.target.value)}
-                className="font-mono"
-                required
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="careful code reviews"
               />
             </Field>
-            <Field label="Timezone" hint="IANA name">
-              <Input
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-                className="font-mono"
-                required
+            <Field label="Permission mode">
+              <ChoiceField
+                value={permissionMode}
+                onChange={setPermissionMode}
+                choices={["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"]}
+                noneLabel="default"
               />
             </Field>
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {PRESETS.map((preset) => (
-              <button
-                key={preset.cron}
-                type="button"
-                onClick={() => setCron(preset.cron)}
-                className={cn(
-                  "rounded-full border px-2.5 py-0.5 text-[11px] transition-colors",
-                  cron === preset.cron
-                    ? "border-transparent bg-primary-soft text-foreground"
-                    : "border-border text-muted-foreground hover:bg-secondary",
-                )}
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-          <Field label="Prompt">
+          <Field label="System prompt">
             <Textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
               rows={3}
-              required
-              placeholder="Profile the CSVs in the workspace and write report.md"
+              placeholder="You are a careful data analyst."
               className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
             />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <Field label="Agent" hint="stored defaults">
-              <ChoiceField
-                value={agent}
-                onChange={setAgent}
-                choices={(agents ?? []).map((a) => a.name)}
-                noneLabel="none"
-              />
-            </Field>
             <Field label="Model">
-              <ChoiceField
-                value={model}
-                onChange={setModel}
-                choices={MODELS}
-                noneLabel="default"
-              />
+              <ChoiceField value={model} onChange={setModel} choices={MODELS} noneLabel="default" />
             </Field>
             <Field label="Workspace">
               <ChoiceField
@@ -194,6 +160,15 @@ export function DeploymentForm({
                 value={budget}
                 onChange={(e) => setBudget(e.target.value)}
                 inputMode="decimal"
+                placeholder="none"
+                className="font-mono"
+              />
+            </Field>
+            <Field label="Max turns">
+              <Input
+                value={maxTurns}
+                onChange={(e) => setMaxTurns(e.target.value)}
+                inputMode="numeric"
                 placeholder="none"
                 className="font-mono"
               />
@@ -233,7 +208,7 @@ export function DeploymentForm({
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
             <Button type="submit" size="sm" disabled={busy}>
-              {busy ? "Creating…" : "Create deployment"}
+              {busy ? "Saving…" : agent ? "Save agent" : "Create agent"}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
               Cancel

@@ -33,6 +33,7 @@ export interface SessionSummary {
   workspace: string | null;
   deployment: string | null; // the deployment that started it, if any
   trigger: string; // "api" | "deployment" | "manual"
+  agent: string | null; // the stored agent its options were resolved from, if any
 }
 
 // Mirrors run_outcome() in src/syros/console/api.py — keep the two in sync.
@@ -58,6 +59,7 @@ export interface DeploymentSummary {
   cron: string;
   timezone: string;
   prompt: string;
+  agent: string | null; // stored agent whose options are the run defaults
   options: Record<string, unknown>;
   enabled: boolean;
   next_run_at: number | null;
@@ -80,6 +82,26 @@ export interface DeploymentResponse {
   now: number;
   deployment: DeploymentSummary;
   runs: RunSummary[];
+}
+
+/** A stored, named run configuration (persona) — agents/{name} in Firestore. */
+export interface AgentSummary {
+  name: string;
+  description: string | null;
+  options: Record<string, unknown>;
+  created_by: string | null;
+  created_at: number | null;
+  updated_at: number | null;
+}
+
+export interface AgentsResponse {
+  now: number;
+  agents: AgentSummary[];
+}
+
+export interface AgentResponse {
+  now: number;
+  agent: AgentSummary;
 }
 
 export interface Approval {

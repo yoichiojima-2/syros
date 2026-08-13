@@ -178,6 +178,13 @@ function DeploymentInner() {
                 {deployment.prompt}
               </pre>
               <div className="flex flex-wrap gap-1.5">
+                {deployment.agent && (
+                  <Link href={`/agent?name=${encodeURIComponent(deployment.agent)}`}>
+                    <Badge className="font-mono" title="Stored agent whose options are the run defaults, re-read at each firing">
+                      agent: {deployment.agent}
+                    </Badge>
+                  </Link>
+                )}
                 {setOptions(deployment.options).map(([key, value]) => (
                   <Badge key={key} variant="secondary" className="font-mono">
                     {key}: {value}
