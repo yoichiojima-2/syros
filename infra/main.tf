@@ -2,9 +2,18 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = ">= 6.0"
+      version = ">= 6.47"
+    }
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = ">= 6.47"
     }
   }
+}
+
+provider "google-beta" {
+  project = var.project
+  region  = var.region
 }
 
 provider "google" {
@@ -23,6 +32,7 @@ resource "google_project_service" "apis" {
     "secretmanager.googleapis.com",
     "bigquery.googleapis.com",
     "cloudscheduler.googleapis.com",
+    "iap.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -290,7 +300,12 @@ resource "google_cloud_run_v2_job" "runner" {
 }
 
 # --- the console: same image, IAM-protected Cloud Run service ---
-# No public access; connect with `gcloud run services proxy syros-console`.
+# Two access modes, both IAM-gated:
+#   console_iap = true (default): public URL behind Identity-Aware Proxy —
+#     open the service URL in a browser, sign in with Google, and IAP admits
+#     only principals in console_invokers.
+#   console_iap = false: no unauthenticated path at all; connect with
+#     `gcloud run services proxy syros-console`.
 
 resource "google_service_account" "console" {
   account_id   = "syros-console"
@@ -334,14 +349,46 @@ resource "google_secret_manager_secret_iam_member" "console_connectors_viewer" {
   member    = "serviceAccount:${google_service_account.console.email}"
 }
 
-# Who may open the console. No allUsers here by design: reach it with
-# `gcloud run services proxy`, which authenticates as the caller.
+# Who may open the console. No allUsers here by design: with IAP on, the
+# proxy authenticates the browser session and checks the accessor binding
+# below; with IAP off, reach it with `gcloud run services proxy`, which
+# authenticates as the caller.
 resource "google_cloud_run_v2_service_iam_member" "console_invokers" {
   for_each = toset(var.console_invokers)
   name     = google_cloud_run_v2_service.console.name
   location = var.region
   role     = "roles/run.invoker"
   member   = each.value
+}
+
+# IAP terminates the browser's Google sign-in and then invokes the service as
+# its own service agent, so that agent — and only it beyond console_invokers —
+# needs run.invoker. The identity resource forces the agent's creation, which
+# enabling the API alone does not guarantee.
+resource "google_project_service_identity" "iap" {
+  count      = var.console_iap ? 1 : 0
+  provider   = google-beta
+  service    = "iap.googleapis.com"
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "console_iap_agent" {
+  count    = var.console_iap ? 1 : 0
+  name     = google_cloud_run_v2_service.console.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_project_service_identity.iap[0].email}"
+}
+
+# Who may pass through IAP to the console — the browser-facing counterpart of
+# the run.invoker binding above, scoped to this one service.
+resource "google_iap_web_cloud_run_service_iam_member" "console_accessors" {
+  for_each               = var.console_iap ? toset(var.console_invokers) : toset([])
+  project                = var.project
+  location               = var.region
+  cloud_run_service_name = google_cloud_run_v2_service.console.name
+  role                   = "roles/iap.httpsResourceAccessor"
+  member                 = each.value
 }
 
 # --- the scheduler: Cloud Scheduler fires `syros tick` on a fixed cadence ---
@@ -443,6 +490,7 @@ resource "google_cloud_run_v2_service" "console" {
   location            = var.region
   deletion_protection = false
   ingress             = "INGRESS_TRAFFIC_ALL"
+  iap_enabled         = var.console_iap
 
   template {
     service_account = google_service_account.console.email

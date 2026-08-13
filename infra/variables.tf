@@ -102,6 +102,12 @@ variable "console_invokers" {
   default     = []
 }
 
+variable "console_iap" {
+  description = "Put the console behind Identity-Aware Proxy: the service URL becomes reachable from any browser, IAP handles Google sign-in, and only console_invokers pass. false = IAM-only access via `gcloud run services proxy`."
+  type        = bool
+  default     = true
+}
+
 variable "vpc_connector" {
   description = "Optional Serverless VPC connector for egress lockdown; null = default egress"
   type        = string
