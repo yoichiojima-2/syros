@@ -1,16 +1,16 @@
 # syros
 
-A minimal, secure agent development environment on Google Cloud. Same API shape as
-[`claude_agent_sdk`](https://code.claude.com/docs/en/agent-sdk); every agent runs in a
-sandboxed Cloud Run Job inside your own GCP project — models via Vertex AI only, every
-tool call audited before it executes, gateable by a human.
+Run [`claude_agent_sdk`](https://code.claude.com/docs/en/agent-sdk) agents in sandboxed
+Cloud Run Jobs inside your own GCP project. Same API shape as the SDK; models go through
+Vertex AI by default, every tool call is written to an audit trail before it executes,
+and calls can be gated on human approval.
 
-**The minimum secure agent platform is not a platform.** `claude_agent_sdk` is already the
-harness (loop, tools, permissions, sessions, resume). GCP managed services are already the
-control plane: Firestore holds session state, the event stream, the audit trail, and the
-approval queue; Cloud Run Jobs are the sandbox; GCS is the workspace; IAM is auth. syros is
-one Python package and one Terraform module. No servers, no UI, no REST API, ~zero
-always-on cost.
+The idea is to add as little as possible on top of what already exists.
+`claude_agent_sdk` already provides the harness (loop, tools, permissions, sessions,
+resume), and GCP managed services cover the control plane: Firestore holds session state,
+the event stream, the audit trail, and the approval queue; Cloud Run Jobs are the sandbox;
+GCS is the workspace; IAM is auth. syros is one Python package and one Terraform module —
+no servers, no REST API, and roughly zero always-on cost.
 
 ## Use
 
@@ -127,8 +127,8 @@ for a standing feed, point Cloud Scheduler at anything that can run `syros expor
   When a tool needs a credential, keep it host-side: the approval/custom-tool round-trip
   runs on the caller's machine with the caller's identity.
 - **Audit before execution** — a `PreToolUse` hook writes the tool-call row to
-  `sessions/{sid}/tool_calls` and awaits the commit *before* the tool runs. Enforced in
-  code, never by prompt.
+  `sessions/{sid}/tool_calls` and awaits the commit *before* the tool runs, so the gate
+  is enforced in code rather than by prompting.
 - **Approvals** — `permission_mode`-gated calls file a document in
   `sessions/{sid}/approvals` and block until your `can_use_tool` callback (or
   `syros approvals`) decides; timeout denies (default 300s).
@@ -184,7 +184,7 @@ doing nothing.
 | `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`); transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore |
 | `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
-## Deliberately not built
+## Out of scope
 
 REST API (the SDK is the surface; `syros console` is a pure Firestore client, not a
 control plane — deleting it loses nothing), versioned agent registry (options travel with the session; pin by
@@ -202,3 +202,8 @@ uvx ruff check src tests && uvx ruff format --check src tests
 
 Layout: `src/syros/` (client SDK + sandbox runner in one package), `infra/` (Terraform),
 `examples/`, `tests/` (unit + fake-store integration; no GCP needed).
+
+## Status
+
+Early and evolving — interfaces may still change between releases. Issues and pull
+requests are welcome.
