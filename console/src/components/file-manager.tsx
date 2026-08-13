@@ -284,7 +284,7 @@ export function FileManager({
                 title={disabledReason ?? `Delete ${child.path}/`}
                 disabled={disabled}
                 onClick={() => removeFolder(child.path)}
-                className="hidden shrink-0 text-faint hover:text-destructive disabled:opacity-40 group-hover:block"
+                className="hidden shrink-0 text-faint hover:text-destructive disabled:opacity-40 group-hover:block pointer-coarse:block"
               >
                 <Trash2 className="size-3" />
               </button>
@@ -308,7 +308,7 @@ export function FileManager({
               checked={checked.has(f.name)}
               onChange={() => toggleChecked(f.name)}
               className={cn(
-                "size-3 shrink-0 group-hover:opacity-100",
+                "size-3 shrink-0 group-hover:opacity-100 pointer-coarse:opacity-100",
                 checked.size ? "opacity-100" : "opacity-0",
               )}
             />
@@ -330,7 +330,7 @@ export function FileManager({
                 {relTime(f.updated, now) || bytes(f.size)}
               </span>
             </button>
-            <span className="hidden shrink-0 items-center gap-1 group-hover:flex">
+            <span className="hidden shrink-0 items-center gap-1 group-hover:flex pointer-coarse:flex">
               <button
                 title={disabledReason ?? "Rename / move"}
                 disabled={disabled}

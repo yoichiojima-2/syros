@@ -94,7 +94,7 @@ function ArtifactsInner() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <aside className="flex shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-4 lg:w-72 lg:border-r lg:border-b-0">
+      <aside className="flex max-h-[45svh] shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-4 lg:max-h-none lg:w-72 lg:border-r lg:border-b-0">
         <div>
           <div className="flex items-center justify-between pb-2">
             <h1 className="px-1 font-serif text-xl tracking-tight">Artifacts</h1>
@@ -137,7 +137,7 @@ function ArtifactsInner() {
                     <button
                       title={`Delete ${s.name}`}
                       onClick={() => removeSpace(s.name)}
-                      className="hidden shrink-0 text-faint hover:text-destructive group-hover:block"
+                      className="hidden shrink-0 text-faint hover:text-destructive group-hover:block pointer-coarse:block"
                     >
                       <Trash2 className="size-3" />
                     </button>
@@ -249,7 +249,7 @@ function FileViewer({
         fullscreen && "fixed inset-0 z-50 bg-card",
       )}
     >
-      <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border px-3 py-2">
         <span className="min-w-0 flex-1 truncate px-1.5 font-mono text-[13px] font-medium" title={file}>
           {file}
         </span>

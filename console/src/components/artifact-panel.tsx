@@ -56,7 +56,7 @@ export function ArtifactPanel({
           : "w-full lg:w-[min(46%,660px)] lg:border-l lg:border-border",
       )}
     >
-      <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border px-3 py-2">
         {artifacts.length > 1 ? (
           <select
             value={artifact.path}

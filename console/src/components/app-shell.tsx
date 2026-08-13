@@ -40,13 +40,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-svh flex-col md:flex-row">
-      <aside className="flex shrink-0 items-center gap-1 border-b border-border bg-surface px-3 py-2.5 md:w-56 md:flex-col md:items-stretch md:gap-0 md:border-r md:border-b-0 md:px-3 md:py-5">
+      <aside className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-surface px-3 py-2 md:w-56 md:flex-col md:items-stretch md:gap-0 md:border-r md:border-b-0 md:px-3 md:py-5">
         <div className="flex items-baseline gap-2 md:px-2 md:pb-5">
           <span className="size-2 shrink-0 self-center rounded-full bg-primary" />
           <span className="font-serif text-[17px] tracking-tight">syros</span>
           <span className="hidden truncate font-mono text-[11px] text-faint md:inline">{host}</span>
         </div>
-        <nav className="flex gap-1 md:flex-col md:gap-0.5">
+        {/* below md the sidebar is a top bar: labels hide so ten entries fit as
+            icons, and the row scrolls sideways on the narrowest screens */}
+        <nav className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto md:flex-none md:flex-col md:gap-0.5 md:overflow-visible">
           {NAV.map(({ href, label, icon: Icon }) => {
             // detail pages are singular (/session, /deployment, /workspace) and
             // keep their list's nav entry lit
@@ -55,21 +57,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={href}
                 href={href}
+                title={label}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors",
+                  "flex shrink-0 items-center gap-2.5 rounded-lg p-2 text-[13px] transition-colors md:px-2.5",
                   active
                     ? "bg-primary-soft font-medium text-foreground"
                     : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
                 )}
               >
                 <Icon className={cn("size-4", active && "text-primary")} />
-                {label}
+                <span className="hidden md:inline">{label}</span>
               </Link>
             );
           })}
         </nav>
-        <span className="flex-1" />
-        <div className="flex items-center gap-2 md:justify-between md:px-1 md:pt-4">
+        <span className="hidden flex-1 md:block" />
+        <div className="flex shrink-0 items-center gap-2 md:justify-between md:px-1 md:pt-4">
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className={cn("size-[7px] rounded-full", online ? "bg-ok" : "bg-destructive")} />
             <span className="hidden md:inline">{online ? "connected" : "offline"}</span>

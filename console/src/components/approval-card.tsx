@@ -46,12 +46,13 @@ export function ApprovalCard({
         )}
         style={{ width: `${(left / total) * 100}%` }}
       />
-      <div className="flex items-baseline gap-2.5">
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
         <b
           className={cn(
-            "font-mono text-[13px] font-semibold",
+            "min-w-0 max-w-full truncate font-mono text-[13px] font-semibold",
             urgent ? "text-destructive" : "text-warn",
           )}
+          title={approval.tool_name}
         >
           {approval.tool_name}
         </b>
@@ -78,7 +79,7 @@ export function ApprovalCard({
       <pre className="my-2.5 max-h-40 overflow-y-auto rounded-xl bg-surface px-3 py-2.5 font-mono text-xs whitespace-pre-wrap text-muted-foreground [overflow-wrap:break-word]">
         {JSON.stringify(approval.input, null, 2)}
       </pre>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button variant="ok" onClick={() => onDecide(approval.call_hash, true, null)}>
           Allow
         </Button>
@@ -92,7 +93,7 @@ export function ApprovalCard({
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="deny reason (optional)"
-          className="flex-1 font-mono text-xs"
+          className="min-w-40 flex-1 font-mono text-xs"
         />
       </div>
     </div>
