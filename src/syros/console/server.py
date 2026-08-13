@@ -48,6 +48,11 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     ("POST", ("api", "sessions", None, "delete"), lambda api, body, query, sid: api.delete(sid)),
     (
         "POST",
+        ("api", "sessions", "delete"),
+        lambda api, body, query: api.delete_many(body.get("ids")),
+    ),
+    (
+        "POST",
         ("api", "sessions", None, "approvals", None),
         lambda api, body, query, sid, call_hash: api.decide(
             sid, call_hash, allow=bool(body.get("allow")), message=body.get("message")
