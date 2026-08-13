@@ -44,6 +44,12 @@ resource "google_firestore_field" "approvals_status" {
   field      = "status"
 
   index_config {
+    # custom index_config replaces the field's default single-field indexes,
+    # so keep the collection-scoped index that per-session queries rely on
+    indexes {
+      order       = "ASCENDING"
+      query_scope = "COLLECTION"
+    }
     indexes {
       order       = "ASCENDING"
       query_scope = "COLLECTION_GROUP"
