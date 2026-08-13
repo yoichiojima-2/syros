@@ -6,54 +6,43 @@ import { StateBadge } from "@/components/state-badge";
 import { Transcript } from "@/components/transcript";
 import { Composer } from "@/components/composer";
 import { ApprovalCard } from "@/components/approval-card";
-import { useFlash, useNow, useSessionPoll } from "@/lib/hooks";
+import { useAction, useNow, useSessionPoll } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cost } from "@/lib/format";
 
 export function SessionDetail({ sid }: { sid: string }) {
   const { session, events, approvals, removeApproval } = useSessionPoll(sid);
   const now = useNow();
-  const [flash, showFlash] = useFlash();
+  const [flash, run] = useAction();
   const dead = session?.state === "terminated";
 
-  const decide = async (callHash: string, allow: boolean, message: string | null) => {
-    try {
+  const decide = (callHash: string, allow: boolean, message: string | null) =>
+    run(async () => {
       await post(`/api/sessions/${sid}/approvals/${callHash}`, { allow, message });
       // Drop the card immediately; a decided approval leaves the pending set
       // server-side, so the next poll agrees.
       removeApproval(callHash);
-      showFlash(allow ? "allowed" : "denied");
-    } catch (err) {
-      showFlash(`error: ${(err as Error).message}`);
-    }
-  };
+      return allow ? "allowed" : "denied";
+    });
 
-  const sendPrompt = async (text: string) => {
-    try {
+  const sendPrompt = (text: string) =>
+    run(async () => {
       const result = await post<{ triggered: boolean }>(`/api/sessions/${sid}/prompt`, { text });
-      showFlash(result.triggered ? "queued · runner starting…" : "queued");
-    } catch (err) {
-      showFlash(`error: ${(err as Error).message}`);
-    }
-  };
+      return result.triggered ? "queued · runner starting…" : "queued";
+    });
 
-  const interrupt = async () => {
-    try {
+  const interrupt = () =>
+    run(async () => {
       await post(`/api/sessions/${sid}/interrupt`);
-      showFlash("interrupt queued");
-    } catch (err) {
-      showFlash(`error: ${(err as Error).message}`);
-    }
-  };
+      return "interrupt queued";
+    });
 
-  const kill = async () => {
+  const kill = () => {
     if (!confirm(`Kill ${sid}? The session terminates and cannot be resumed.`)) return;
-    try {
+    run(async () => {
       await post(`/api/sessions/${sid}/kill`);
-      showFlash("killed");
-    } catch (err) {
-      showFlash(`error: ${(err as Error).message}`);
-    }
+      return "killed";
+    });
   };
 
   return (

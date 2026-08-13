@@ -18,7 +18,8 @@ from typing import Any
 
 from claude_agent_sdk.types import HookMatcher
 
-from .store import Store
+from .env import DEFAULT_APPROVAL_TIMEOUT
+from .store import StoreProtocol
 from .types import PermissionResult, PermissionResultAllow, PermissionResultDeny
 
 
@@ -49,10 +50,10 @@ class Gate:
 
     def __init__(
         self,
-        store: Store,
+        store: StoreProtocol,
         session_id: str,
         *,
-        approval_timeout: float = 300.0,
+        approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
         poll_interval: float = 1.0,
     ) -> None:
         self._store = store

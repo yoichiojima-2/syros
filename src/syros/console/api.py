@@ -13,8 +13,9 @@ from datetime import datetime
 from typing import Any
 
 from .. import remote
+from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions
-from ..store import Store, lease_active
+from ..store import StoreProtocol, lease_active
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
 # browser reloading on a long session — can't wedge a single HTTP request.
@@ -40,7 +41,10 @@ def to_jsonable(value: Any) -> Any:
 
 
 def derived_state(session: dict[str, Any]) -> str:
-    """Liveness ≠ status: a "running" session whose lease expired is a dead job."""
+    """Liveness ≠ status: a "running" session whose lease expired is a dead job.
+
+    The value set mirrors SessionState in console/src/lib/types.ts — keep in sync.
+    """
     if session.get("status") == "terminated" or session.get("disabled"):
         return "terminated"
     if session.get("status") == "running":
@@ -75,7 +79,11 @@ def _decided_by() -> str:
 
 class ConsoleAPI:
     def __init__(
-        self, store: Store, options: AgentOptions, *, approval_timeout: float = 300.0
+        self,
+        store: StoreProtocol,
+        options: AgentOptions,
+        *,
+        approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
     ) -> None:
         self._store = store
         self._options = options

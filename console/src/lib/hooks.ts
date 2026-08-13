@@ -138,3 +138,18 @@ export function useFlash(): [string, (text: string) => void] {
   };
   return [flash, show];
 }
+
+/** useFlash plus the try/catch every action shares: flash the message the
+ * action returns on success, flash the error on failure. */
+export function useAction(): [string, (fn: () => Promise<string | void>) => Promise<void>] {
+  const [flash, showFlash] = useFlash();
+  const run = async (fn: () => Promise<string | void>) => {
+    try {
+      const message = await fn();
+      if (message) showFlash(message);
+    } catch (err) {
+      showFlash(`error: ${(err as Error).message}`);
+    }
+  };
+  return [flash, run];
+}

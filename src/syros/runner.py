@@ -12,10 +12,10 @@ import asyncio
 import os
 import sys
 import uuid
-from pathlib import Path
 
 from claude_agent_sdk import ClaudeSDKClient
 
+from . import env
 from .gate import Gate
 from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store
@@ -62,28 +62,22 @@ async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -
 
 
 async def run(session_id: str) -> None:
-    project = os.environ["SYROS_PROJECT"]
-    bucket = os.environ.get("SYROS_BUCKET", f"{project}-syros")
-    stay_alive = float(os.environ.get("SYROS_STAY_ALIVE", "60"))
-    lease_ttl = float(os.environ.get("SYROS_LEASE_TTL", "3600"))
-    root = Path(os.environ.get("SYROS_WORK_DIR", "/work"))
+    config = env.RunnerEnv.from_env()
 
-    store = Store(project)
-    session = await store.claim_session(session_id, uuid.uuid4().hex, lease_ttl)
+    store = Store(config.project)
+    session = await store.claim_session(session_id, uuid.uuid4().hex, config.lease_ttl)
     if session is None:
         return  # another execution holds the lease, or the session is gone/terminated
 
-    ws, home = root / "ws", root / "home"
+    ws, home = config.work_dir / "ws", config.work_dir / "home"
     ws.mkdir(parents=True, exist_ok=True)
     home.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(workspace.restore, project, bucket, session_id, root)
-
-    options = AgentOptions(**session["options"], project=project)
-    gate = Gate(
-        store,
-        session_id,
-        approval_timeout=float(os.environ.get("SYROS_APPROVAL_TIMEOUT", "300")),
+    await asyncio.to_thread(
+        workspace.restore, config.project, config.bucket, session_id, config.work_dir
     )
+
+    options = AgentOptions(**session["options"], project=config.project)
+    gate = Gate(store, session_id, approval_timeout=env.approval_timeout())
     sdk_options = build_sdk_options(
         options,
         can_use_tool=gate.can_use_tool,
@@ -102,7 +96,7 @@ async def run(session_id: str) -> None:
         watcher = asyncio.create_task(_watch_interrupt(store, session_id, client))
         try:
             while True:
-                messages = await _wait_for_messages(store, session_id, stay_alive)
+                messages = await _wait_for_messages(store, session_id, config.stay_alive)
                 if not messages:
                     break
                 await client.query("\n\n".join(messages))
@@ -124,7 +118,9 @@ async def run(session_id: str) -> None:
         finally:
             watcher.cancel()
 
-    await asyncio.to_thread(workspace.checkpoint, project, bucket, session_id, root)
+    await asyncio.to_thread(
+        workspace.checkpoint, config.project, config.bucket, session_id, config.work_dir
+    )
     await store.release_session(
         session_id,
         status="idle",
