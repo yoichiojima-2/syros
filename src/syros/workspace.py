@@ -36,13 +36,19 @@ def restore(project: str, bucket_name: str, prefix: str, root: Path) -> int:
     return count
 
 
-def checkpoint(project: str, bucket_name: str, prefix: str, root: Path) -> int:
+def checkpoint(
+    project: str, bucket_name: str, prefix: str, root: Path, exclude: tuple[str, ...] = ()
+) -> int:
+    """Upload root to the prefix, skipping relative paths under any exclude prefix
+    (mounted artifact spaces checkpoint to their own prefix, not into session state)."""
     from google.cloud import storage
 
     bucket = storage.Client(project=project).bucket(bucket_name)
     count = 0
     for path in root.rglob("*"):
         if not path.is_file() or path.is_symlink():
+            continue
+        if any(str(path.relative_to(root)).startswith(skip) for skip in exclude):
             continue
         bucket.blob(prefix + str(path.relative_to(root))).upload_from_filename(path)
         count += 1

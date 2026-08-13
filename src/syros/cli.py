@@ -6,6 +6,12 @@ syros approvals <session_id>            list pending approvals
 syros approvals <session_id> allow <call_hash>
 syros approvals <session_id> deny <call_hash> [-m reason]
 syros kill <session_id>                 flip the kill switch
+syros artifacts                         list shared artifact spaces
+syros artifacts <space>                 list files in a space
+syros artifacts <space> push <path...>  upload local files/dirs into a space
+syros artifacts <space> pull [dest]     download a space
+syros artifacts <space> publish <session_id> <file...>
+                                        copy files out of a session's workspace
 syros console                           serve the web console (localhost or Cloud Run)
 syros export                            snapshot Firestore into BigQuery for analysis
 """
@@ -80,6 +86,45 @@ async def _kill(args) -> None:
     print(f"disabled: {args.session_id}")
 
 
+async def _artifacts(args) -> None:
+    from pathlib import Path
+
+    from . import artifacts, workspace
+
+    project = _project(args)
+    bucket = env.default_bucket(args.bucket, project)
+    if not args.space:
+        for space in await asyncio.to_thread(artifacts.list_spaces, project, bucket):
+            print(space)
+        return
+    if args.action == "list":
+        for item in await asyncio.to_thread(artifacts.list_artifacts, project, bucket, args.space):
+            updated = item.updated.strftime("%Y-%m-%d %H:%M") if item.updated else ""
+            print(f"{item.name}  {item.size}  {updated}")
+        return
+    if args.action == "push":
+        paths = [Path(p) for p in args.args]
+        count = await asyncio.to_thread(artifacts.push, project, bucket, args.space, paths)
+        print(f"pushed {count} file(s) to {args.space}")
+        return
+    if args.action == "pull":
+        dest = Path(args.args[0]) if args.args else Path(args.space)
+        count = await asyncio.to_thread(artifacts.pull, project, bucket, args.space, dest)
+        print(f"pulled {count} file(s) into {dest}")
+        return
+    # publish: copy files out of a session's checkpointed working directory
+    session_id, names = args.args[0], args.args[1:]
+    session = await _store(args).get_session(session_id)
+    if not session:
+        raise SystemExit(f"no such session: {session_id}")
+    shared = (session.get("options") or {}).get("workspace")
+    source = (
+        workspace.workspace_prefix(shared) if shared else workspace.session_prefix(session_id, "ws")
+    )
+    count = await asyncio.to_thread(artifacts.publish, project, bucket, args.space, source, names)
+    print(f"published {count} file(s) from {session_id} to {args.space}")
+
+
 async def _export(args) -> None:
     from .analytics import collect, load
 
@@ -124,6 +169,15 @@ def main() -> None:
     kill.add_argument("session_id")
     kill.set_defaults(func=_kill)
 
+    artifacts = sub.add_parser("artifacts")
+    artifacts.add_argument("space", nargs="?")
+    artifacts.add_argument(
+        "action", nargs="?", default="list", choices=["list", "push", "pull", "publish"]
+    )
+    artifacts.add_argument("args", nargs="*")
+    artifacts.add_argument("--bucket", default=None)
+    artifacts.set_defaults(func=_artifacts)
+
     export = sub.add_parser("export")
     export.add_argument("--dataset", default=os.environ.get("SYROS_DATASET") or "syros")
     export.set_defaults(func=_export)
@@ -144,6 +198,11 @@ def main() -> None:
     args = parser.parse_args()
     if getattr(args, "action", None) in ("allow", "deny") and not args.call_hash:
         parser.error("allow/deny require a call_hash")
+    if args.command == "artifacts":
+        if args.action == "push" and not args.args:
+            parser.error("push requires at least one path")
+        if args.action == "publish" and len(args.args) < 2:
+            parser.error("publish requires a session_id and at least one file")
     try:
         asyncio.run(args.func(args))
     except KeyboardInterrupt:

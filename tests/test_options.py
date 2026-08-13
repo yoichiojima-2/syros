@@ -125,3 +125,26 @@ def test_model_env_anthropic_backend_without_key_raises():
 def test_model_env_ignores_ambient_key_on_vertex_backend(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     assert model_env(AgentOptions(project="proj-1"))["CLAUDE_CODE_USE_VERTEX"] == "1"
+
+
+def test_artifacts_str_means_one_rw_space():
+    options = AgentOptions(project="proj-1", artifacts="team")
+    options.validate()
+    assert options.resolved_artifacts() == {"team": "rw"}
+    assert options.serialize()["artifacts"] == "team"
+
+
+def test_artifacts_dict_modes():
+    options = AgentOptions(project="proj-1", artifacts={"team": "rw", "inputs": "ro"})
+    options.validate()
+    assert options.resolved_artifacts() == {"team": "rw", "inputs": "ro"}
+
+
+def test_artifacts_bad_name_raises():
+    with pytest.raises(OptionsError, match="artifact space"):
+        AgentOptions(project="proj-1", artifacts="Team/Reports").validate()
+
+
+def test_artifacts_bad_mode_raises():
+    with pytest.raises(OptionsError, match="mode must be"):
+        AgentOptions(project="proj-1", artifacts={"team": "write"}).validate()

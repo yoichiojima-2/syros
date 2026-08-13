@@ -72,17 +72,20 @@ def fake_harness(monkeypatch):
 @pytest.fixture
 def gcs_sync(monkeypatch):
     """Record every restore/checkpoint as (prefix, root dir name)."""
-    calls = {"restore": [], "checkpoint": []}
-    monkeypatch.setattr(
-        syros.runner.workspace,
-        "restore",
-        lambda project, bucket, prefix, root: calls["restore"].append((prefix, root.name)) or 0,
-    )
-    monkeypatch.setattr(
-        syros.runner.workspace,
-        "checkpoint",
-        lambda project, bucket, prefix, root: calls["checkpoint"].append((prefix, root.name)) or 0,
-    )
+    calls = {"restore": [], "checkpoint": [], "exclude": []}
+
+    def record_restore(project, bucket, prefix, root):
+        calls["restore"].append((prefix, root.name))
+        return 0
+
+    def record_checkpoint(project, bucket, prefix, root, exclude=()):
+        calls["checkpoint"].append((prefix, root.name))
+        if exclude:
+            calls["exclude"].append((prefix, exclude))
+        return 0
+
+    monkeypatch.setattr(syros.runner.workspace, "restore", record_restore)
+    monkeypatch.setattr(syros.runner.workspace, "checkpoint", record_checkpoint)
     return calls
 
 
@@ -155,6 +158,28 @@ async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gc
     # claimed during the run, released after
     assert store.workspaces["shared"]["lease_session_id"] is None
     assert store.workspaces["shared"]["lease_expires"] == 0.0
+
+
+async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync):
+    await store.create_session(SID, {"artifacts": {"team": "rw", "inputs": "ro"}})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    assert gcs_sync["restore"] == [
+        (f"sessions/{SID}/state/ws/", "ws"),
+        (f"sessions/{SID}/state/home/", "home"),
+        ("artifacts/team/", "team"),
+        ("artifacts/inputs/", "inputs"),
+    ]
+    # rw spaces checkpoint to their own prefix; ro spaces never checkpoint,
+    # and the ws checkpoint excludes the mounts.
+    assert gcs_sync["checkpoint"] == [
+        (f"sessions/{SID}/state/ws/", "ws"),
+        (f"sessions/{SID}/state/home/", "home"),
+        ("artifacts/team/", "team"),
+    ]
+    assert gcs_sync["exclude"] == [(f"sessions/{SID}/state/ws/", ("artifacts/",))]
 
 
 async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, gcs_sync):
