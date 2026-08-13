@@ -147,3 +147,13 @@ async def test_attach_session_without_agent_records_none():
     store = FakeStore()
     session_id, _ = await attach_session(store, AgentOptions(project="p"))
     assert store.sessions[session_id]["agent"] is None
+
+
+def test_merge_inherits_and_overrides_connectors():
+    base = AgentOptions(connectors=["slack", "github"], model="m")
+    # unset on the override side -> inherited from the persona
+    merged = agents.merge(base, AgentOptions(project="p"))
+    assert merged.connectors == ["slack", "github"]
+    # set on the override side -> replaces (not unions), like allowed_tools
+    merged = agents.merge(base, AgentOptions(project="p", connectors=["notion"]))
+    assert merged.connectors == ["notion"]

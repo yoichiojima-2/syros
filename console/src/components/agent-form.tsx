@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ChoiceField, Field, MODELS, TOOLS } from "@/components/option-fields";
+import { ChoiceField, ConnectorPicker, Field, MODELS, TOOLS } from "@/components/option-fields";
 import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -42,6 +42,7 @@ export function AgentForm({
   const [extraTools, setExtraTools] = useState(
     ((stored.allowed_tools as string[]) ?? []).filter((tool) => !TOOLS.includes(tool)).join(", "),
   );
+  const [connectors, setConnectors] = useState<string[]>((stored.connectors as string[]) ?? []);
   const [budget, setBudget] = useState(
     stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
   );
@@ -69,6 +70,7 @@ export function AgentForm({
         .filter((tool) => tool && !tools.includes(tool)),
     ];
     if (allowed.length) options.allowed_tools = allowed;
+    if (connectors.length) options.connectors = connectors;
     if (budget.trim()) options.max_budget_usd = Number(budget);
     if (maxTurns.trim()) options.max_turns = Number(maxTurns);
     try {
@@ -204,6 +206,9 @@ export function AgentForm({
                 className="h-7 w-52 font-mono text-[11px]"
               />
             </div>
+          </Field>
+          <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
+            <ConnectorPicker value={connectors} onChange={setConnectors} />
           </Field>
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">

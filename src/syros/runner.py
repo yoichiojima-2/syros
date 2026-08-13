@@ -20,7 +20,7 @@ from .gate import Gate
 from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store
 from .types import ResultMessage, SystemMessage, UserMessage, message_to_doc
-from . import artifacts, workspace
+from . import artifacts, connectors, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -99,6 +99,38 @@ async def run(session_id: str) -> None:
             session_id, status="idle", stop_reason="workspace_busy", seq_head=seq
         )
         return
+
+    # Expand connectors into mcp_servers before any restore work: a missing or
+    # unrefreshable credential fails the run fast, mirroring workspace_busy.
+    # Expansion happens here, in the sandbox, and is never written back to the
+    # session document — tokens stay out of Firestore.
+    if options.connectors:
+        try:
+            servers = await asyncio.to_thread(
+                connectors.mcp_servers_for, config.project, options.connectors
+            )
+        except connectors.ConnectorError as error:
+            seq = int(session.get("seq_head") or 0) + 1
+            doc = message_to_doc(
+                ResultMessage(
+                    subtype="connector_error",
+                    duration_ms=0,
+                    duration_api_ms=0,
+                    is_error=True,
+                    num_turns=0,
+                    session_id=session.get("claude_session_id") or "",
+                    total_cost_usd=0.0,
+                    result=str(error),
+                )
+            )
+            await store.append_event(session_id, seq, doc)
+            if options.workspace:
+                await store.release_workspace(options.workspace, session_id)
+            await store.release_session(
+                session_id, status="idle", stop_reason="connector_error", seq_head=seq
+            )
+            return
+        options.mcp_servers = {**servers, **options.mcp_servers}
 
     ws, home = config.work_dir / "ws", config.work_dir / "home"
     ws.mkdir(parents=True, exist_ok=True)

@@ -188,6 +188,44 @@ a slot that comes due while the previous run is still active is skipped and coun
 Failures are visible, not silent: a deployment whose launch fails records `last_error`,
 and one whose cron can no longer fire is auto-paused with the reason on it.
 
+## Connectors
+
+A connector mounts a platform's *official, vendor-hosted* remote MCP server into a
+session — syros ships no integration code of its own, just the catalog entry and one
+credential in Secret Manager (`syros-connector-{name}`; Terraform creates the empty
+containers). The sandbox runner reads the credential at run start and expands each name
+into ordinary `mcp_servers` entries with an `Authorization` header, so every connector
+tool call flows through the same audit trail and approval gate as any other tool.
+Only names are serialized — tokens never pass through Firestore.
+
+| name | platform | servers | credential |
+|---|---|---|---|
+| `slack` | Slack | `mcp.slack.com` | OAuth (`auth`) |
+| `notion` | Notion | `mcp.notion.com` | OAuth (`auth`), or an integration token (`set`) |
+| `github` | GitHub | `api.githubcopilot.com/mcp` | a PAT (`set`) |
+| `google` | Google Workspace | Drive, Gmail, Calendar, Docs, Sheets (`*mcp.googleapis.com`) | OAuth (`auth --client-secrets`) |
+
+```
+syros connectors                     # catalog + credential status
+syros connectors auth slack          # browser OAuth (MCP-spec, dynamic client registration)
+syros connectors auth google --client-secrets oauth_client.json
+syros connectors set github          # paste a static token (prompted, or --token/--file)
+syros connectors remove notion       # destroy the stored credential
+```
+
+```python
+AgentOptions(connectors=["slack", "github"])   # tools arrive as mcp__slack__*, mcp__github__*
+```
+
+Agents and deployments take the same list (an override replaces the persona's list, like
+`allowed_tools`); the console shows the catalog under Connectors and offers the picker in
+both forms. Notes: tokens are minted once per run, so a run longer than the token's
+lifetime (~1h for Google) loses that connector's tools until the next run; a missing or
+unrefreshable credential fails the run fast with `stop_reason=connector_error`; Slack may
+require a workspace admin to approve the app the OAuth flow registers. Rolling out: deploy
+the new image before creating connector-bearing sessions — older runner images reject the
+new option field.
+
 ## Analysis
 
 Firestore holds all the state but is a poor analysis surface. `syros export` snapshots the
@@ -231,10 +269,13 @@ for a standing feed, point Cloud Scheduler at anything that can run `syros expor
   while that quota is pending: it mounts the `anthropic-api-key` secret and calls the
   Anthropic API directly, which moves model traffic outside GCP. Opt in deliberately.
 - **Credential-less sandbox** — the runner's service account has exactly: `aiplatform.user`,
-  `datastore.user`, and object access on the one session bucket. No secrets are mounted
-  (the `anthropic-api-key` secret is readable only under `model_backend = "anthropic"`).
-  When a tool needs a credential, keep it host-side: the approval/custom-tool round-trip
-  runs on the caller's machine with the caller's identity.
+  `datastore.user`, object access on the one session bucket, and read access on the
+  per-connector secrets (empty until you store a credential; the `anthropic-api-key`
+  secret is readable only under `model_backend = "anthropic"`). No secrets are mounted
+  as env vars; connector credentials are read per run, injected as MCP headers in
+  memory, and never written anywhere. For any other tool credential, keep it host-side:
+  the approval/custom-tool round-trip runs on the caller's machine with the caller's
+  identity.
 - **Audit before execution** — a `PreToolUse` hook writes the tool-call row to
   `sessions/{sid}/tool_calls` and awaits the commit *before* the tool runs, so the gate
   is enforced in code rather than by prompting.

@@ -12,10 +12,12 @@ import base64
 import binascii
 import getpass
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
 from .. import agents, deployments, remote
+from .. import connectors as connectors_mod
 from ..names import validate_name, validate_tags
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
@@ -86,7 +88,8 @@ def run_outcome(session: dict[str, Any]) -> str:
 
     A finished session's verdict is its stop_reason: the harness reports
     `success`/`end_turn` for a clean finish and an `error_*` subtype otherwise,
-    and syros adds `workspace_busy` for a run that lost a workspace lease.
+    and syros adds `workspace_busy` for a run that lost a workspace lease and
+    `connector_error` for one whose connector credential was missing or stale.
 
     Mirrors RunOutcome in console/src/lib/types.ts — keep the two in sync.
     """
@@ -96,7 +99,7 @@ def run_outcome(session: dict[str, Any]) -> str:
     if state in ACTIVE_STATES:
         return state
     stop_reason = session.get("stop_reason") or ""
-    if stop_reason.startswith("error") or stop_reason == "workspace_busy":
+    if stop_reason.startswith("error") or stop_reason in ("workspace_busy", "connector_error"):
         return "failed"
     return "succeeded"
 
@@ -168,11 +171,15 @@ class ConsoleAPI:
         *,
         approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
         objects: ObjectStoreProtocol | None = None,
+        credential_status: Callable[[str], dict[str, dict[str, Any]]] | None = None,
     ) -> None:
         self._store = store
         self._options = options
         self._approval_timeout = approval_timeout
         self._objects = objects
+        # Injectable for tests; defaults to the real Secret Manager metadata
+        # read (version state only — the console never touches payloads).
+        self._credential_status = credential_status or connectors_mod.credential_status
 
     def _bucket_objects(self) -> ObjectStoreProtocol:
         # Built lazily so the console starts (and tests run) without touching
@@ -484,6 +491,27 @@ class ConsoleAPI:
             raise NotFound(f"agent {name} not found")
         await agents.delete(name, store=self._store)
         return {"now": time.time(), "ok": True}
+
+    # --- platform connectors ---
+    #
+    # Read-only: the catalog plus whether each connector has a stored
+    # credential (Secret Manager version metadata — the console's identity
+    # can list versions but never read payloads). Credentials are written
+    # from an operator's machine via `syros connectors auth|set`.
+
+    async def connectors(self) -> dict[str, Any]:
+        status = await asyncio.to_thread(self._credential_status, self._options.resolved_project())
+        rows = [
+            {
+                "name": connector.name,
+                "label": connector.label,
+                "auth": connector.auth,
+                "servers": sorted(connector.servers),
+                **(status.get(connector.name) or {"configured": False, "updated": None}),
+            }
+            for connector in connectors_mod.CATALOG.values()
+        ]
+        return {"now": time.time(), "connectors": to_jsonable(rows)}
 
     # --- shared workspaces ---
 

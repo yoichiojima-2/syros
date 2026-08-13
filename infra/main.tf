@@ -125,6 +125,22 @@ resource "google_secret_manager_secret" "anthropic_api_key" {
   depends_on = [google_project_service.apis]
 }
 
+# Platform connectors: one secret per catalog entry, written by
+# `syros connectors auth|set`, read by the runner at run start to mount the
+# vendor's official hosted MCP server. Containers only, like the key above.
+locals {
+  connectors = toset(["slack", "notion", "github", "google"])
+}
+
+resource "google_secret_manager_secret" "connectors" {
+  for_each  = local.connectors
+  secret_id = "syros-connector-${each.key}"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
 # --- the sandbox identity: least privilege; a secret only on the escape hatch ---
 
 resource "google_service_account" "runner" {
@@ -155,6 +171,16 @@ resource "google_storage_bucket_iam_member" "runner_bucket" {
 resource "google_secret_manager_secret_iam_member" "runner_anthropic_key" {
   count     = var.model_backend == "anthropic" ? 1 : 0
   secret_id = google_secret_manager_secret.anthropic_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runner.email}"
+}
+
+# Connector credentials are the runner's to read — that is the whole feature.
+# Scoped per secret, never project-wide; a container stays empty (and the
+# grant moot) until an operator stores a credential for that connector.
+resource "google_secret_manager_secret_iam_member" "runner_connectors" {
+  for_each  = google_secret_manager_secret.connectors
+  secret_id = each.value.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.runner.email}"
 }
@@ -258,6 +284,17 @@ resource "google_storage_bucket_iam_member" "console_bucket" {
   bucket = google_storage_bucket.sessions.name
   role   = "roles/storage.objectUser"
   member = "serviceAccount:${google_service_account.console.email}"
+}
+
+# The connectors page shows whether each connector has a stored credential.
+# viewer reads secret + version *metadata* (state, create time) only — the
+# console can never access a payload; credentials are written from an
+# operator's machine via `syros connectors auth|set`.
+resource "google_secret_manager_secret_iam_member" "console_connectors_viewer" {
+  for_each  = google_secret_manager_secret.connectors
+  secret_id = each.value.id
+  role      = "roles/secretmanager.viewer"
+  member    = "serviceAccount:${google_service_account.console.email}"
 }
 
 # Who may open the console. No allUsers here by design: reach it with
