@@ -32,7 +32,7 @@ export interface SessionSummary {
   model: string | null;
   workspace: string | null;
   deployment: string | null; // the deployment that started it, if any
-  trigger: string; // "api" | "deployment" | "manual"
+  trigger: string; // "api" | "console" | "deployment" | "manual"
   agent: string | null; // the stored agent its options were resolved from, if any
 }
 

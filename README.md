@@ -98,7 +98,8 @@ syros console                        # web console at localhost:8484
 
 ![Console overview: active sessions, spend, pending approvals, cost by session](docs/img/console-overview.png)
 
-Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
+Sessions — starting new ones from a prompt-plus-options form as well as watching
+existing ones — live transcripts, approve/deny with countdown, prompts into idle sessions
 (re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
 selection at a time (running and starting sessions have to be killed first). The state
 column is liveness rather than raw status: `starting` is a triggered job that hasn't

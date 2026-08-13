@@ -33,6 +33,7 @@ MAX_BODY_BYTES = 16 * 1024 * 1024
 # wildcards, captured in order and passed to the handler after (api, body, query).
 ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     ("GET", ("api", "sessions"), lambda api, body, query: api.sessions()),
+    ("POST", ("api", "sessions"), lambda api, body, query: api.create_session(body)),
     ("GET", ("api", "approvals"), lambda api, body, query: api.approvals()),
     (
         "GET",

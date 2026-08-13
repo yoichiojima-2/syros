@@ -175,8 +175,9 @@ class Store:
                 "claude_session_id": None,
                 "created_by": created_by,
                 # Run provenance: which deployment owns this session (None for an
-                # ordinary query) and what started it — "api", "deployment" for a
-                # cron firing, "manual" for a run-now on a deployment.
+                # ordinary query) and what started it — "api", "console" for the
+                # console's new-session form, "deployment" for a cron firing,
+                # "manual" for a run-now on a deployment.
                 "deployment": deployment,
                 "trigger": trigger,
                 # Which stored agent the options were resolved from, if any —
