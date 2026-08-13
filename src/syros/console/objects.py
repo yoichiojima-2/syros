@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol, runtime_checkable
 
-from .. import artifacts
+from .. import artifacts, workspace
 
 # One artifact preview per request; anything bigger is a download, not a view.
+# Doubles as the ceiling on a workspace file the console will open for editing.
 MAX_PREVIEW_BYTES = 10 * 1024 * 1024
 
 
@@ -20,6 +21,9 @@ MAX_PREVIEW_BYTES = 10 * 1024 * 1024
 class ObjectStoreProtocol(Protocol):
     async def workspace_stats(self) -> dict[str, dict[str, Any]]: ...
     async def workspace_files(self, name: str) -> list[dict[str, Any]]: ...
+    async def read_workspace_file(self, name: str, file: str) -> tuple[bytes, str]: ...
+    async def write_workspace_file(self, name: str, file: str, data: bytes) -> None: ...
+    async def delete_workspace_file(self, name: str, file: str) -> None: ...
     async def space_stats(self) -> dict[str, dict[str, Any]]: ...
     async def list_artifacts(self, space: str) -> list[dict[str, Any]]: ...
     async def read_artifact(self, space: str, name: str) -> tuple[bytes, str]: ...
@@ -62,10 +66,24 @@ class GcsObjects:
         return await asyncio.to_thread(lambda: _stats(self._list("workspaces/"), "workspaces/"))
 
     async def workspace_files(self, name: str) -> list[dict[str, Any]]:
-        from .. import workspace
-
         prefix = workspace.workspace_prefix(name)
         return await asyncio.to_thread(lambda: _files(self._list(prefix), prefix))
+
+    async def read_workspace_file(self, name: str, file: str) -> tuple[bytes, str]:
+        return await asyncio.to_thread(
+            workspace.read_file,
+            self._project,
+            self._bucket,
+            name,
+            file,
+            max_bytes=MAX_PREVIEW_BYTES,
+        )
+
+    async def write_workspace_file(self, name: str, file: str, data: bytes) -> None:
+        await asyncio.to_thread(workspace.write_file, self._project, self._bucket, name, file, data)
+
+    async def delete_workspace_file(self, name: str, file: str) -> None:
+        await asyncio.to_thread(workspace.delete_file, self._project, self._bucket, name, file)
 
     async def space_stats(self) -> dict[str, dict[str, Any]]:
         return await asyncio.to_thread(lambda: _stats(self._list("artifacts/"), "artifacts/"))

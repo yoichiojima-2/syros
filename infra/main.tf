@@ -234,10 +234,12 @@ resource "google_cloud_run_v2_job_iam_member" "console_runs_job" {
 }
 
 # The workspaces and artifacts pages list and preview objects in the session
-# bucket. Read-only: the console never checkpoints — only the runner writes.
+# bucket, and workspace files are editable from the console (edit in place,
+# upload, delete). objectUser rather than the runner's objectAdmin: the console
+# needs to read, write and delete objects, never to set IAM policy on them.
 resource "google_storage_bucket_iam_member" "console_bucket" {
   bucket = google_storage_bucket.sessions.name
-  role   = "roles/storage.objectViewer"
+  role   = "roles/storage.objectUser"
   member = "serviceAccount:${google_service_account.console.email}"
 }
 

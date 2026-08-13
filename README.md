@@ -98,7 +98,9 @@ syros console                        # web console at localhost:8484
 
 Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
 (re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
-selection at a time (running sessions have to be killed first). It also deploys to Cloud Run
+selection at a time (running sessions have to be killed first). Shared workspaces are
+editable: open one to edit a file in place, upload, or delete — writes are refused while a
+run holds the lease, since its checkpoint would overwrite them. It also deploys to Cloud Run
 (`syros-console`, IAM-only — no public access), so the same console is reachable without a
 local checkout or GCP client libraries; see [Deploy](#deploy).
 
@@ -194,9 +196,9 @@ job through your VPC.
 
 `syros-console` runs the same image with a different entrypoint (`syros console --host
 0.0.0.0`, binding `$PORT`), scales 0→1, and holds a service account with `datastore.user`,
-read-only object access on the session bucket, and `run.invoker` on the runner job — enough
-to serve every page and to re-trigger a job when you prompt an idle session. It keeps no
-server-side state, so restarts and scale-to-zero cost nothing.
+`storage.objectUser` on the session bucket, and `run.invoker` on the runner job — enough to
+serve every page, edit workspace files, and re-trigger a job when you prompt an idle
+session. It keeps no server-side state, so restarts and scale-to-zero cost nothing.
 
 No `allUsers` binding exists: reach it as yourself over an authenticated proxy.
 
@@ -208,8 +210,8 @@ gcloud run services add-iam-policy-binding syros-console --region asia-northeast
 gcloud run services proxy syros-console --region asia-northeast1  # → localhost:8080
 ```
 
-Anyone who can open the console can approve tool calls and delete sessions, so scope
-`console_invokers` the way you'd scope the project itself. The `getpass` user inside the
+Anyone who can open the console can approve tool calls, delete sessions, and edit workspace
+files, so scope `console_invokers` the way you'd scope the project itself. The `getpass` user inside the
 container is the same for everyone, so approvals made through the deployed console are
 attributed to the container's user, not the human — Cloud Run's access logs are the record
 of who acted.
@@ -239,7 +241,7 @@ doing nothing.
 | `mcp_servers` | http/sse configs only; stdio and in-process servers can't run in the sandbox (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
-| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`); transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore |
+| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`); transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
 | `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 

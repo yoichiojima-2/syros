@@ -123,6 +123,15 @@ export interface WorkspaceFilesResponse {
   files: StoredFile[];
 }
 
+/** Reply shape of the workspace file mutations (write, delete). */
+export interface OkResponse {
+  now: number;
+  ok: boolean;
+  name: string;
+  file: string;
+  size?: number;
+}
+
 export interface SpaceSummary {
   name: string;
   file_count: number;
