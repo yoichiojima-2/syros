@@ -133,6 +133,118 @@ body {
   scrollbar-color: var(--input) transparent;
 }
 
+/* Markdown prose in the transcript — the agent's answers rendered the way
+   claude.ai renders them: quiet headings, tinted code chips, bordered code
+   blocks and tables, all on the warm palette. Scoped under .chat-prose so
+   nothing leaks into the rest of the console. */
+.chat-prose > *:first-child {
+  margin-top: 0;
+}
+.chat-prose > *:last-child {
+  margin-bottom: 0;
+}
+.chat-prose p,
+.chat-prose ul,
+.chat-prose ol,
+.chat-prose blockquote,
+.chat-prose pre,
+.chat-prose table {
+  margin: 0.6em 0;
+}
+.chat-prose h1,
+.chat-prose h2,
+.chat-prose h3,
+.chat-prose h4 {
+  margin: 1.1em 0 0.45em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.chat-prose h1 {
+  font-size: 1.25em;
+}
+.chat-prose h2 {
+  font-size: 1.15em;
+}
+.chat-prose h3,
+.chat-prose h4 {
+  font-size: 1em;
+}
+.chat-prose ul,
+.chat-prose ol {
+  padding-left: 1.4em;
+}
+.chat-prose ul {
+  list-style: disc;
+}
+.chat-prose ol {
+  list-style: decimal;
+}
+.chat-prose li {
+  margin: 0.25em 0;
+}
+.chat-prose li::marker {
+  color: var(--faint);
+}
+.chat-prose a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--secondary);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.chat-prose pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.chat-prose pre code {
+  background: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.chat-prose blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 14px;
+  color: var(--muted-foreground);
+}
+.chat-prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.2em 0;
+}
+.chat-prose table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 0.9em;
+}
+.chat-prose th,
+.chat-prose td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+}
+.chat-prose th {
+  background: var(--surface);
+  font-weight: 600;
+}
+.chat-prose img,
+.chat-prose svg,
+.chat-prose video {
+  max-width: 100%;
+}
+
 /* disclosure triangles for transcript <details> */
 details > summary {
   cursor: pointer;
