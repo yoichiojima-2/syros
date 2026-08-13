@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import { marked } from "marked";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { PreviewKind } from "@/lib/artifacts";
 
@@ -69,6 +69,41 @@ export function CopyButton({ text }: { text: string }) {
       }}
     >
       {copied ? <Check /> : <Copy />}
+    </Button>
+  );
+}
+
+// Fullscreen is a CSS overlay (fixed inset-0), not the Fullscreen API — the
+// browser API can't be triggered for sandboxed iframe content and would drop
+// the header controls; an overlay keeps them and needs no permission.
+export function useFullscreen(): [boolean, (on: boolean) => void] {
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+  return [fullscreen, setFullscreen];
+}
+
+export function FullscreenButton({
+  fullscreen,
+  onToggle,
+}: {
+  fullscreen: boolean;
+  onToggle: (on: boolean) => void;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+      onClick={() => onToggle(!fullscreen)}
+    >
+      {fullscreen ? <Minimize2 /> : <Maximize2 />}
     </Button>
   );
 }
