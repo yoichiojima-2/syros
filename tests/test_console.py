@@ -165,6 +165,41 @@ async def test_interrupt_and_kill():
     assert session["disabled"] is True
 
 
+# --- delete ---
+
+
+async def test_delete_removes_session_and_history():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.append_event("sess_1", 1, {"kind": "user", "content": "hi"})
+    await store.request_approval("sess_1", "hash1", "Bash", {"command": "ls"})
+
+    result = await api(store).delete("sess_1")
+
+    assert result == {"ok": True}
+    assert await store.get_session("sess_1") is None
+    assert "sess_1" not in store.events
+    assert "sess_1" not in store.approvals
+
+
+async def test_delete_running_session_conflicts():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.update_session("sess_1", status="running", lease_expires=time.time() + 60)
+    with pytest.raises(Conflict):
+        await api(store).delete("sess_1")
+
+    # a stalled session (expired lease) is a dead job — deletable
+    await store.update_session("sess_1", lease_expires=time.time() - 1)
+    await api(store).delete("sess_1")
+    assert await store.get_session("sess_1") is None
+
+
+async def test_delete_unknown_session():
+    with pytest.raises(NotFound):
+        await api(FakeStore()).delete("sess_missing")
+
+
 # --- http smoke ---
 
 

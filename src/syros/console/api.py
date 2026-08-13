@@ -180,3 +180,10 @@ class ConsoleAPI:
         await self._session(session_id)
         await self._store.update_session(session_id, status="terminated", disabled=True)
         return {"ok": True}
+
+    async def delete(self, session_id: str) -> dict[str, Any]:
+        session = await self._session(session_id)
+        if derived_state(session) == "running":
+            raise Conflict(f"session {session_id} is running — kill it first")
+        await self._store.delete_session(session_id)
+        return {"ok": True}

@@ -44,6 +44,7 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         lambda api, body, query, sid: api.interrupt(sid),
     ),
     ("POST", ("api", "sessions", None, "kill"), lambda api, body, query, sid: api.kill(sid)),
+    ("POST", ("api", "sessions", None, "delete"), lambda api, body, query, sid: api.delete(sid)),
     (
         "POST",
         ("api", "sessions", None, "approvals", None),
