@@ -99,8 +99,8 @@ syros console                        # web console at localhost:8484
 Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
 (re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
 selection at a time (running sessions have to be killed first). It also deploys to Cloud Run
-(`syros-console`, IAM-only — no public access); connect with
-`gcloud run services proxy syros-console --region asia-northeast1`.
+(`syros-console`, IAM-only — no public access), so the same console is reachable without a
+local checkout or GCP client libraries; see [Deploy](#deploy).
 
 The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind); `make console`
 rebuilds the bundle into `src/syros/console/static/`, which is committed so pip installs
@@ -171,7 +171,7 @@ terraform init
 terraform apply -var project=YOUR_PROJECT \
   -var image=asia-northeast1-docker.pkg.dev/YOUR_PROJECT/syros/runner:latest
 
-# 2. Runner image
+# 2. Runner image — one image serves both the job and the console
 gcloud builds submit --tag asia-northeast1-docker.pkg.dev/YOUR_PROJECT/syros/runner:latest .
 
 # 3. Smoke test
@@ -179,9 +179,40 @@ export SYROS_PROJECT=YOUR_PROJECT
 uv run python examples/hello.py
 ```
 
+Cloud Run resolves an image tag at deploy time, so a fresh project applies twice: the first
+`terraform apply` creates Artifact Registry (and fails on the job/service until an image
+exists), then step 2 pushes, then re-apply. Afterwards `make deploy` rebuilds, pushes, and
+re-pins both the job and the console service to the new digest — pushing `:latest` alone
+leaves them on the old one. `make deploy-console` does the frontend-only path (rebuild the
+Next.js bundle, ship the service).
+
 Callers need `datastore.user`, `run.jobs.run` (e.g. `roles/run.developer`), and read access
 on the session bucket. Optional egress lockdown: pass `-var vpc_connector=...` to route the
 job through your VPC.
+
+### The console on Cloud Run
+
+`syros-console` runs the same image with a different entrypoint (`syros console --host
+0.0.0.0`, binding `$PORT`), scales 0→1, and holds a service account with `datastore.user`,
+read-only object access on the session bucket, and `run.invoker` on the runner job — enough
+to serve every page and to re-trigger a job when you prompt an idle session. It keeps no
+server-side state, so restarts and scale-to-zero cost nothing.
+
+No `allUsers` binding exists: reach it as yourself over an authenticated proxy.
+
+```sh
+# grant access (or -var 'console_invokers=["user:me@example.com"]' at apply time)
+gcloud run services add-iam-policy-binding syros-console --region asia-northeast1 \
+  --member=user:me@example.com --role=roles/run.invoker
+
+gcloud run services proxy syros-console --region asia-northeast1  # → localhost:8080
+```
+
+Anyone who can open the console can approve tool calls and delete sessions, so scope
+`console_invokers` the way you'd scope the project itself. The `getpass` user inside the
+container is the same for everyone, so approvals made through the deployed console are
+attributed to the container's user, not the human — Cloud Run's access logs are the record
+of who acted.
 
 ## How a run works
 
