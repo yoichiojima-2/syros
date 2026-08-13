@@ -74,7 +74,7 @@ SESSION_FIELDS: list[Field] = [
     ("model", "STRING", "NULLABLE", lambda s: (s.get("options") or {}).get("model")),
     ("workspace", "STRING", "NULLABLE", lambda s: (s.get("options") or {}).get("workspace")),
     ("created_by", "STRING", "NULLABLE", _get("created_by")),
-    ("schedule", "STRING", "NULLABLE", _get("schedule")),
+    ("deployment", "STRING", "NULLABLE", _get("deployment")),
     ("trigger", "STRING", "NULLABLE", _get("trigger")),
     ("created_at", "TIMESTAMP", "NULLABLE", _ts("created_at")),
     ("updated_at", "TIMESTAMP", "NULLABLE", _ts("updated_at")),

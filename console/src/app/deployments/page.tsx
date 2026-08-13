@@ -17,14 +17,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { RunBadge } from "@/components/run-badge";
-import { ScheduleForm } from "@/components/schedule-form";
-import { useAction, useNow, useSchedules } from "@/lib/hooks";
+import { DeploymentForm } from "@/components/deployment-form";
+import { useAction, useNow, useDeployments } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { clockTime, relTime, untilTime } from "@/lib/format";
-import type { ScheduleSummary } from "@/lib/types";
+import type { DeploymentSummary } from "@/lib/types";
 
-export default function SchedulesPage() {
-  const { schedules, refresh } = useSchedules();
+export default function DeploymentsPage() {
+  const { deployments, refresh } = useDeployments();
   const now = useNow();
   const router = useRouter();
   const [flash, run] = useAction();
@@ -40,37 +40,37 @@ export default function SchedulesPage() {
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-serif text-2xl tracking-tight">Schedules</h1>
+        <h1 className="font-serif text-2xl tracking-tight">Deployments</h1>
         {!creating && (
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus />
-            New schedule
+            New deployment
           </Button>
         )}
       </div>
       {creating && (
-        <ScheduleForm
+        <DeploymentForm
           onCancel={() => setCreating(false)}
           onCreated={(name) => {
             setCreating(false);
-            router.push(`/schedule?name=${encodeURIComponent(name)}`);
+            router.push(`/deployment?name=${encodeURIComponent(name)}`);
           }}
         />
       )}
       <Card>
         <CardContent className="px-2 py-2">
-          {schedules === null ? (
+          {deployments === null ? (
             <div className="space-y-2 p-2">
               <Skeleton className="h-8" />
               <Skeleton className="h-8" />
             </div>
-          ) : schedules.length === 0 ? (
+          ) : deployments.length === 0 ? (
             <p className="p-10 text-center text-[13px] text-muted-foreground">
-              No schedules yet — a schedule fires a fresh session on a cron.
+              No deployments yet — a deployment fires a fresh session on a cron.
               <br />
               Create one above, or with{" "}
               <code className="font-mono text-xs">
-                syros schedules create nightly --cron &quot;0 9 * * *&quot; --prompt &quot;…&quot;
+                syros deployments create nightly --cron &quot;0 9 * * *&quot; --prompt &quot;…&quot;
               </code>
             </p>
           ) : (
@@ -86,8 +86,8 @@ export default function SchedulesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {schedules.map((schedule) => (
-                  <ScheduleRow key={schedule.name} schedule={schedule} now={now} act={act} />
+                {deployments.map((deployment) => (
+                  <DeploymentRow key={deployment.name} deployment={deployment} now={now} act={act} />
                 ))}
               </TableBody>
             </Table>
@@ -99,34 +99,34 @@ export default function SchedulesPage() {
   );
 }
 
-function ScheduleRow({
-  schedule,
+function DeploymentRow({
+  deployment,
   now,
   act,
 }: {
-  schedule: ScheduleSummary;
+  deployment: DeploymentSummary;
   now: number;
   act: (fn: () => Promise<string>) => void;
 }) {
   const router = useRouter();
-  const href = `/schedule?name=${encodeURIComponent(schedule.name)}`;
-  const paused = !schedule.enabled;
+  const href = `/deployment?name=${encodeURIComponent(deployment.name)}`;
+  const paused = !deployment.enabled;
 
   return (
     <TableRow className="cursor-pointer" onClick={() => router.push(href)}>
       <TableCell className="font-mono text-[13px] font-medium">
         <Link href={href} onClick={(e) => e.stopPropagation()} className="hover:underline">
-          {schedule.name}
+          {deployment.name}
         </Link>
-        {schedule.last_error && (
+        {deployment.last_error && (
           <div className="max-w-[22rem] truncate text-[11px] text-destructive">
-            {schedule.last_error}
+            {deployment.last_error}
           </div>
         )}
       </TableCell>
       <TableCell className="font-mono text-xs text-muted-foreground">
-        {schedule.cron}
-        <span className="pl-2 text-faint">{schedule.timezone}</span>
+        {deployment.cron}
+        <span className="pl-2 text-faint">{deployment.timezone}</span>
       </TableCell>
       <TableCell className="text-xs">
         {paused ? (
@@ -135,17 +135,17 @@ function ScheduleRow({
             paused
           </Badge>
         ) : (
-          <span title={clockTime(schedule.next_run_at)}>
-            {untilTime(schedule.next_run_at, now)}
+          <span title={clockTime(deployment.next_run_at)}>
+            {untilTime(deployment.next_run_at, now)}
           </span>
         )}
       </TableCell>
       <TableCell>
-        {schedule.last_run ? (
+        {deployment.last_run ? (
           <span className="flex items-center gap-2">
-            <RunBadge outcome={schedule.last_run.outcome} />
+            <RunBadge outcome={deployment.last_run.outcome} />
             <span className="text-[11px] text-muted-foreground">
-              {relTime(schedule.last_run_at, now)}
+              {relTime(deployment.last_run_at, now)}
             </span>
           </span>
         ) : (
@@ -153,13 +153,13 @@ function ScheduleRow({
         )}
       </TableCell>
       <TableCell className="text-right font-mono text-xs tabular-nums">
-        {schedule.runs}
-        {schedule.skips > 0 && (
+        {deployment.runs}
+        {deployment.skips > 0 && (
           <span
             className="pl-2 text-[11px] text-faint"
             title="Slots that fired while the previous run was still active"
           >
-            {schedule.skips} skipped
+            {deployment.skips} skipped
           </span>
         )}
       </TableCell>
@@ -172,7 +172,7 @@ function ScheduleRow({
           onClick={() =>
             act(async () => {
               const { session_id } = await post<{ session_id: string }>(
-                `/api/schedules/${encodeURIComponent(schedule.name)}/run`,
+                `/api/deployments/${encodeURIComponent(deployment.name)}/run`,
               );
               return `started ${session_id}`;
             })
@@ -187,10 +187,10 @@ function ScheduleRow({
           title={paused ? "Resume" : "Pause"}
           onClick={() =>
             act(async () => {
-              await post(`/api/schedules/${encodeURIComponent(schedule.name)}/enabled`, {
+              await post(`/api/deployments/${encodeURIComponent(deployment.name)}/enabled`, {
                 enabled: paused,
               });
-              return paused ? `resumed ${schedule.name}` : `paused ${schedule.name}`;
+              return paused ? `resumed ${deployment.name}` : `paused ${deployment.name}`;
             })
           }
         >
@@ -200,12 +200,12 @@ function ScheduleRow({
           variant="ghost"
           size="icon"
           className="size-7 hover:text-destructive"
-          title="Delete schedule"
+          title="Delete deployment"
           onClick={() => {
-            if (!confirm(`Delete schedule ${schedule.name}? Its past runs are kept.`)) return;
+            if (!confirm(`Delete deployment ${deployment.name}? Its past runs are kept.`)) return;
             act(async () => {
-              await post(`/api/schedules/${encodeURIComponent(schedule.name)}/delete`);
-              return `deleted ${schedule.name}`;
+              await post(`/api/deployments/${encodeURIComponent(deployment.name)}/delete`);
+              return `deleted ${deployment.name}`;
             });
           }}
         >

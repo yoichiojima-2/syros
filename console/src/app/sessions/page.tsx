@@ -1,9 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { SessionForm } from "@/components/session-form";
 import { SessionTable, deletable } from "@/components/session-table";
 import { StateFilter } from "@/components/state-filter";
 import { useAction, useNow, useSessions } from "@/lib/hooks";
@@ -13,7 +15,9 @@ import type { BulkDeleteResponse, SessionState, SessionSummary } from "@/lib/typ
 export default function SessionsPage() {
   const sessions = useSessions();
   const now = useNow();
+  const router = useRouter();
   const [state, setState] = useState<SessionState | null>(null);
+  const [creating, setCreating] = useState(false);
   const [flash, run] = useAction();
   // Deleted ids drop from the table immediately; the 4s poll agrees once the
   // server-side delete lands.
@@ -85,8 +89,25 @@ export default function SessionsPage() {
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-serif text-2xl tracking-tight">Sessions</h1>
-        <StateFilter sessions={sessions} value={state} onChange={setState} />
+        <div className="flex flex-wrap items-center gap-3">
+          <StateFilter sessions={sessions} value={state} onChange={setState} />
+          {!creating && (
+            <Button size="sm" onClick={() => setCreating(true)}>
+              <Plus />
+              New session
+            </Button>
+          )}
+        </div>
       </div>
+      {creating && (
+        <SessionForm
+          onCancel={() => setCreating(false)}
+          onCreated={(sid) => {
+            setCreating(false);
+            router.push(`/session?sid=${sid}`);
+          }}
+        />
+      )}
       {selectedIds.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2">
           <span className="text-[13px] tabular-nums">
@@ -116,7 +137,7 @@ export default function SessionsPage() {
             onSelect={select}
             emptyMessage={
               state === null
-                ? undefined
+                ? "No sessions yet — start one with New session, or run a query from the SDK."
                 : `No ${state} sessions.`
             }
           />

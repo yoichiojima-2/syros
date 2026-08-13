@@ -1,7 +1,7 @@
 import pytest
 
 from syros.errors import OptionsError
-from syros.options import AgentOptions, build_sdk_options, model_env
+from syros.options import AgentOptions, build_sdk_options, model_env, options_from_doc
 
 
 def test_requires_project():
@@ -193,3 +193,28 @@ def test_artifacts_bad_name_raises():
 def test_artifacts_bad_mode_raises():
     with pytest.raises(OptionsError, match="mode must be"):
         AgentOptions(project="proj-1", artifacts={"team": "write"}).validate()
+
+
+def test_connectors_serialize_and_validate():
+    options = AgentOptions(project="p", connectors=["slack", "google"])
+    options.validate()
+    doc = options.serialize()
+    assert doc["connectors"] == ["slack", "google"]
+    assert options_from_doc({"connectors": ["github"]}).connectors == ["github"]
+    # old docs predating the field still rebuild (missing key, not unknown key)
+    assert options_from_doc({"model": "m"}).connectors is None
+
+
+def test_connectors_unknown_name_rejected():
+    with pytest.raises(OptionsError):
+        AgentOptions(project="p", connectors=["jira"]).validate()
+
+
+def test_connectors_mcp_server_collision_rejected():
+    options = AgentOptions(
+        project="p",
+        connectors=["google"],
+        mcp_servers={"gmail": {"type": "http", "url": "https://x"}},
+    )
+    with pytest.raises(OptionsError):
+        options.validate()

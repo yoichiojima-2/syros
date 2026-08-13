@@ -4,9 +4,9 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
+import { ChoiceField, ConnectorPicker, Field, MODELS, TOOLS } from "@/components/option-fields";
+import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -19,12 +19,6 @@ const PRESETS: { label: string; cron: string }[] = [
   { label: "Every 15m", cron: "*/15 * * * *" },
 ];
 
-// The models people actually pick from; anything else goes through "custom".
-const MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5"];
-
-// The tools people actually allowlist; anything else is typed into "more".
-const TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch", "Task"];
-
 function browserZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -33,10 +27,10 @@ function browserZone(): string {
   }
 }
 
-/** New-schedule form. Run options mirror the AgentOptions subset a session
+/** New-deployment form. Run options mirror the AgentOptions subset a session
  *  stores, and are posted as that same serialized dict — the server rejects
  *  anything it doesn't recognize rather than dropping it. */
-export function ScheduleForm({
+export function DeploymentForm({
   onCreated,
   onCancel,
 }: {
@@ -45,7 +39,9 @@ export function ScheduleForm({
 }) {
   const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
+  const { agents } = useAgents();
   const [name, setName] = useState("");
+  const [agent, setAgent] = useState("");
   const [cron, setCron] = useState("0 9 * * *");
   const [timezone, setTimezone] = useState(browserZone());
   const [prompt, setPrompt] = useState("");
@@ -54,6 +50,7 @@ export function ScheduleForm({
   const [artifacts, setArtifacts] = useState("");
   const [tools, setTools] = useState<string[]>([]);
   const [extraTools, setExtraTools] = useState("");
+  const [connectors, setConnectors] = useState<string[]>([]);
   const [budget, setBudget] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -76,13 +73,15 @@ export function ScheduleForm({
         .filter((tool) => tool && !tools.includes(tool)),
     ];
     if (allowed.length) options.allowed_tools = allowed;
+    if (connectors.length) options.connectors = connectors;
     if (budget.trim()) options.max_budget_usd = Number(budget);
     try {
-      await post("/api/schedules", {
+      await post("/api/deployments", {
         name: name.trim(),
         cron: cron.trim(),
         timezone: timezone.trim(),
         prompt,
+        agent: agent.trim() || null,
         options,
       });
       onCreated(name.trim());
@@ -96,7 +95,7 @@ export function ScheduleForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New schedule</CardTitle>
+        <CardTitle>New deployment</CardTitle>
         <CardDescription>
           Every firing starts a fresh session with these options and this prompt.
         </CardDescription>
@@ -157,7 +156,15 @@ export function ScheduleForm({
               className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
             />
           </Field>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            <Field label="Agent" hint="stored defaults">
+              <ChoiceField
+                value={agent}
+                onChange={setAgent}
+                choices={(agents ?? []).map((a) => a.name)}
+                noneLabel="none"
+              />
+            </Field>
             <Field label="Model">
               <ChoiceField
                 value={model}
@@ -225,10 +232,13 @@ export function ScheduleForm({
               />
             </div>
           </Field>
+          <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
+            <ConnectorPicker value={connectors} onChange={setConnectors} />
+          </Field>
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
             <Button type="submit" size="sm" disabled={busy}>
-              {busy ? "Creating…" : "Create schedule"}
+              {busy ? "Creating…" : "Create deployment"}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
               Cancel
@@ -240,92 +250,5 @@ export function ScheduleForm({
         </form>
       </CardContent>
     </Card>
-  );
-}
-
-const CUSTOM = " custom"; // sentinel no real name can collide with
-
-/** A select over known choices, with an escape hatch to type anything else.
- *  Empty string means unset, matching how the form serializes options. */
-function ChoiceField({
-  value,
-  onChange,
-  choices,
-  noneLabel,
-  customLabel = "custom…",
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  choices: string[];
-  noneLabel: string;
-  customLabel?: string;
-}) {
-  const [custom, setCustom] = useState(false);
-  if (custom || (value && !choices.includes(value))) {
-    return (
-      <span className="flex items-center gap-1.5">
-        <Input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="font-mono"
-          autoFocus
-        />
-        <button
-          type="button"
-          className="text-[11px] text-muted-foreground hover:text-foreground"
-          title="Back to the list"
-          onClick={() => {
-            setCustom(false);
-            onChange("");
-          }}
-        >
-          ×
-        </button>
-      </span>
-    );
-  }
-  return (
-    <Select
-      value={value}
-      className="font-mono"
-      onChange={(e) => {
-        if (e.target.value === CUSTOM) {
-          setCustom(true);
-          onChange("");
-        } else {
-          onChange(e.target.value);
-        }
-      }}
-    >
-      <option value="">{noneLabel}</option>
-      {choices.map((choice) => (
-        <option key={choice} value={choice}>
-          {choice}
-        </option>
-      ))}
-      <option value={CUSTOM}>{customLabel}</option>
-    </Select>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block space-y-1.5">
-      <span className="flex items-baseline gap-1.5">
-        <span className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
-          {label}
-        </span>
-        {hint && <span className="text-[10px] text-faint">{hint}</span>}
-      </span>
-      {children}
-    </label>
   );
 }

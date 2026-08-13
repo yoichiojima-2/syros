@@ -12,14 +12,16 @@ import base64
 import binascii
 import getpass
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .. import remote, schedules
+from .. import agents, deployments, remote
+from .. import connectors as connectors_mod
 from ..names import validate_name, validate_tags
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
-from ..store import StoreProtocol, lease_active, start_pending
+from ..store import StoreProtocol, lease_active, new_session_id, start_pending
 from .objects import MAX_PREVIEW_BYTES, ObjectStoreProtocol
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
@@ -86,7 +88,8 @@ def run_outcome(session: dict[str, Any]) -> str:
 
     A finished session's verdict is its stop_reason: the harness reports
     `success`/`end_turn` for a clean finish and an `error_*` subtype otherwise,
-    and syros adds `workspace_busy` for a run that lost a workspace lease.
+    and syros adds `workspace_busy` for a run that lost a workspace lease and
+    `connector_error` for one whose connector credential was missing or stale.
 
     Mirrors RunOutcome in console/src/lib/types.ts — keep the two in sync.
     """
@@ -96,7 +99,7 @@ def run_outcome(session: dict[str, Any]) -> str:
     if state in ACTIVE_STATES:
         return state
     stop_reason = session.get("stop_reason") or ""
-    if stop_reason.startswith("error") or stop_reason == "workspace_busy":
+    if stop_reason.startswith("error") or stop_reason in ("workspace_busy", "connector_error"):
         return "failed"
     return "succeeded"
 
@@ -116,9 +119,11 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
             "workspace": options.get("workspace"),
-            # Run provenance, for sessions a schedule created
-            "schedule": session.get("schedule"),
+            # Run provenance, for sessions a deployment created
+            "deployment": session.get("deployment"),
             "trigger": session.get("trigger") or "api",
+            # Which stored agent the options were resolved from, if any
+            "agent": session.get("agent"),
         }
     )
 
@@ -166,11 +171,15 @@ class ConsoleAPI:
         *,
         approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
         objects: ObjectStoreProtocol | None = None,
+        credential_status: Callable[[str], dict[str, dict[str, Any]]] | None = None,
     ) -> None:
         self._store = store
         self._options = options
         self._approval_timeout = approval_timeout
         self._objects = objects
+        # Injectable for tests; defaults to the real Secret Manager metadata
+        # read (version state only — the console never touches payloads).
+        self._credential_status = credential_status or connectors_mod.credential_status
 
     def _bucket_objects(self) -> ObjectStoreProtocol:
         # Built lazily so the console starts (and tests run) without touching
@@ -193,6 +202,42 @@ class ConsoleAPI:
     async def sessions(self) -> dict[str, Any]:
         sessions = await self._store.list_sessions(limit=50)
         return {"now": time.time(), "sessions": [_summary(s) for s in sessions]}
+
+    async def create_session(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Start a fresh session from the console's form.
+
+        Exactly the three steps a client's query() takes — create the session
+        document, queue the prompt, trigger the job — so a console-started
+        session is an ordinary session and nothing downstream knows the console
+        exists. Run options arrive as the serialized dict a session stores, like
+        create_deployment, so an option the console doesn't know is rejected by
+        options_from_doc rather than silently dropped.
+        """
+        prompt = str(body.get("prompt") or "")
+        if not prompt.strip():
+            raise ValueError("a session needs a prompt")
+        run_options = options_from_doc(dict(body.get("options") or {}))
+        # An agent reference resolves now, once — stored options as defaults,
+        # the form's explicit fields as overrides — and the merged result is
+        # snapshotted onto the session, exactly as a deployment firing does.
+        agent_name = (str(body["agent"]).strip() or None) if body.get("agent") else None
+        run_options.agent = agent_name
+        run_options = await agents.resolve(self._store, run_options)
+        # It runs in the console's project, so validate against it here rather
+        # than letting the job trigger be what finds the problem — a rejected
+        # form beats a session stuck in "queued".
+        run_options.project = run_options.project or self._options.project
+        run_options.validate()
+        session_id = new_session_id()
+        await self._store.create_session(
+            session_id,
+            run_options.serialize(),
+            created_by=_decided_by(),
+            trigger="console",
+            agent=agent_name,
+        )
+        await remote.send_prompt(self._store, session_id, self._options, prompt)
+        return {"now": time.time(), "ok": True, "session_id": session_id}
 
     async def poll(self, session_id: str, after: int) -> dict[str, Any]:
         """One polling unit: session summary, events past the cursor, pending
@@ -320,59 +365,60 @@ class ConsoleAPI:
             ],
         }
 
-    # --- schedules ---
+    # --- deployments ---
 
-    async def _schedule_row(self, schedule: dict[str, Any]) -> dict[str, Any]:
-        """A schedule plus the run it last started, for the schedules list."""
-        session_id = schedule.get("last_session_id")
+    async def _deployment_row(self, deployment: dict[str, Any]) -> dict[str, Any]:
+        """A deployment plus the run it last started, for the deployments list."""
+        session_id = deployment.get("last_session_id")
         session = await self._store.get_session(session_id) if session_id else None
         if session is not None:
             session["id"] = session_id
         return to_jsonable(
             {
-                "name": schedule.get("name"),
-                "cron": schedule.get("cron"),
-                "timezone": schedule.get("timezone") or schedules.DEFAULT_TIMEZONE,
-                "prompt": schedule.get("prompt") or "",
-                "options": schedule.get("options") or {},
-                "enabled": bool(schedule.get("enabled")),
-                "next_run_at": float(schedule.get("next_run_at") or 0.0) or None,
-                "last_run_at": schedule.get("last_run_at"),
-                "last_skipped_at": schedule.get("last_skipped_at"),
-                "last_error": schedule.get("last_error"),
-                "runs": int(schedule.get("runs") or 0),
-                "skips": int(schedule.get("skips") or 0),
-                "created_by": schedule.get("created_by"),
-                "created_at": schedule.get("created_at"),
+                "name": deployment.get("name"),
+                "cron": deployment.get("cron"),
+                "timezone": deployment.get("timezone") or deployments.DEFAULT_TIMEZONE,
+                "prompt": deployment.get("prompt") or "",
+                "agent": deployment.get("agent"),
+                "options": deployment.get("options") or {},
+                "enabled": bool(deployment.get("enabled")),
+                "next_run_at": float(deployment.get("next_run_at") or 0.0) or None,
+                "last_run_at": deployment.get("last_run_at"),
+                "last_skipped_at": deployment.get("last_skipped_at"),
+                "last_error": deployment.get("last_error"),
+                "runs": int(deployment.get("runs") or 0),
+                "skips": int(deployment.get("skips") or 0),
+                "created_by": deployment.get("created_by"),
+                "created_at": deployment.get("created_at"),
                 "last_run": _run(session) if session else None,
             }
         )
 
-    async def schedules(self) -> dict[str, Any]:
-        rows = await schedules.list_all(store=self._store)
+    async def deployments(self) -> dict[str, Any]:
+        rows = await deployments.list_all(store=self._store)
         return {
             "now": time.time(),
-            "schedules": await asyncio.gather(*(self._schedule_row(s) for s in rows)),
+            "deployments": await asyncio.gather(*(self._deployment_row(s) for s in rows)),
         }
 
-    async def _require_schedule(self, name: str) -> dict[str, Any]:
-        schedule = await self._store.get_schedule(name)
-        if schedule is None:
-            raise NotFound(f"schedule {name} not found")
-        return schedule
+    async def _require_deployment(self, name: str) -> dict[str, Any]:
+        deployment = await self._store.get_deployment(name)
+        if deployment is None:
+            raise NotFound(f"deployment {name} not found")
+        return deployment
 
-    async def schedule(self, name: str, limit: int = 50) -> dict[str, Any]:
-        """One schedule and its run history — the run-status view's payload."""
-        schedule = await self._require_schedule(name)
-        runs = await schedules.runs(name, limit=limit, store=self._store)
+    async def deployment(self, name: str, limit: int = 50) -> dict[str, Any]:
+        """One deployment and its run history — the run-status view's payload."""
+        deployment = await self._require_deployment(name)
+        runs = await deployments.runs(name, limit=limit, store=self._store)
         return {
             "now": time.time(),
-            "schedule": await self._schedule_row(schedule),
+            "deployment": await self._deployment_row(deployment),
             "runs": [_run(r) for r in runs],
         }
 
-    async def create_schedule(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Define a schedule from the console's form.
+    async def create_deployment(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Define a deployment from the console's form.
 
         Run options arrive as the same serialized dict a session stores, so the
         console never has to track which options the sandbox honours — options
@@ -380,40 +426,128 @@ class ConsoleAPI:
         rejected by options_from_doc rather than silently dropped.
         """
         name = str(body.get("name") or "").strip()
-        if await self._store.get_schedule(name) is not None:
-            raise Conflict(f"schedule {name} already exists")
+        if await self._store.get_deployment(name) is not None:
+            raise Conflict(f"deployment {name} already exists")
         run_options = options_from_doc(dict(body.get("options") or {}))
         run_options.project = run_options.project or self._options.project
-        schedule = await schedules.create(
+        deployment = await deployments.create(
             name,
             str(body.get("cron") or ""),
             str(body.get("prompt") or ""),
             run_options,
             options=self._options,
-            timezone=str(body.get("timezone") or schedules.DEFAULT_TIMEZONE),
+            agent=(str(body["agent"]).strip() or None) if body.get("agent") else None,
+            timezone=str(body.get("timezone") or deployments.DEFAULT_TIMEZONE),
             enabled=bool(body.get("enabled", True)),
             created_by=_decided_by(),
             store=self._store,
         )
-        return {"now": time.time(), "schedule": await self._schedule_row(schedule)}
+        return {"now": time.time(), "deployment": await self._deployment_row(deployment)}
 
-    async def set_schedule_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
-        await self._require_schedule(name)
-        await schedules.set_enabled(name, enabled, store=self._store)
+    async def set_deployment_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        await self._require_deployment(name)
+        await deployments.set_enabled(name, enabled, store=self._store)
         return {"now": time.time(), "ok": True, "enabled": enabled}
 
-    async def run_schedule(self, name: str) -> dict[str, Any]:
-        """Fire a schedule off-cycle. Its own clock is untouched."""
-        await self._require_schedule(name)
-        session_id = await schedules.run_now(
+    async def run_deployment(self, name: str) -> dict[str, Any]:
+        """Fire a deployment off-cycle. Its own clock is untouched."""
+        await self._require_deployment(name)
+        session_id = await deployments.run_now(
             name, options=self._options, store=self._store, created_by=_decided_by()
         )
         return {"now": time.time(), "ok": True, "session_id": session_id}
 
-    async def delete_schedule(self, name: str) -> dict[str, Any]:
-        await self._require_schedule(name)
-        await schedules.delete(name, store=self._store)
+    async def delete_deployment(self, name: str) -> dict[str, Any]:
+        await self._require_deployment(name)
+        await deployments.delete(name, store=self._store)
         return {"now": time.time(), "ok": True}
+
+    # --- agents (stored run configurations) ---
+
+    def _agent_row(self, agent: dict[str, Any]) -> dict[str, Any]:
+        return to_jsonable(
+            {
+                "name": agent.get("name"),
+                "description": agent.get("description"),
+                "options": agent.get("options") or {},
+                "created_by": agent.get("created_by"),
+                "created_at": agent.get("created_at"),
+                "updated_at": agent.get("updated_at"),
+            }
+        )
+
+    async def agents(self) -> dict[str, Any]:
+        rows = await agents.list_all(store=self._store)
+        return {"now": time.time(), "agents": [self._agent_row(a) for a in rows]}
+
+    async def agent(self, name: str) -> dict[str, Any]:
+        agent = await self._store.get_agent(name)
+        if agent is None:
+            raise NotFound(f"agent {name} not found")
+        return {"now": time.time(), "agent": self._agent_row(agent)}
+
+    async def create_agent(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Define an agent from the console's form. Options arrive as the same
+        serialized dict a session stores — unknown ones are rejected by
+        options_from_doc rather than silently dropped."""
+        name = str(body.get("name") or "").strip()
+        if await self._store.get_agent(name) is not None:
+            raise Conflict(f"agent {name} already exists")
+        run_options = options_from_doc(dict(body.get("options") or {}))
+        run_options.project = run_options.project or self._options.project
+        agent = await agents.create(
+            name,
+            run_options,
+            options=self._options,
+            description=(str(body.get("description") or "").strip() or None),
+            created_by=_decided_by(),
+            store=self._store,
+        )
+        return {"now": time.time(), "agent": self._agent_row(agent)}
+
+    async def update_agent(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace an agent's options. Running sessions keep their snapshot;
+        the next run referencing this agent picks up the new configuration."""
+        existing = await self._store.get_agent(name)
+        if existing is None:
+            raise NotFound(f"agent {name} not found")
+        run_options = options_from_doc(dict(body.get("options") or {}))
+        run_options.project = run_options.project or self._options.project
+        agent = await agents.update(
+            name,
+            run_options,
+            options=self._options,
+            description=(str(body.get("description") or "").strip() or None),
+            store=self._store,
+        )
+        return {"now": time.time(), "agent": self._agent_row(agent)}
+
+    async def delete_agent(self, name: str) -> dict[str, Any]:
+        if await self._store.get_agent(name) is None:
+            raise NotFound(f"agent {name} not found")
+        await agents.delete(name, store=self._store)
+        return {"now": time.time(), "ok": True}
+
+    # --- platform connectors ---
+    #
+    # Read-only: the catalog plus whether each connector has a stored
+    # credential (Secret Manager version metadata — the console's identity
+    # can list versions but never read payloads). Credentials are written
+    # from an operator's machine via `syros connectors auth|set`.
+
+    async def connectors(self) -> dict[str, Any]:
+        status = await asyncio.to_thread(self._credential_status, self._options.resolved_project())
+        rows = [
+            {
+                "name": connector.name,
+                "label": connector.label,
+                "auth": connector.auth,
+                "servers": sorted(connector.servers),
+                **(status.get(connector.name) or {"configured": False, "updated": None}),
+            }
+            for connector in connectors_mod.CATALOG.values()
+        ]
+        return {"now": time.time(), "connectors": to_jsonable(rows)}
 
     # --- shared workspaces ---
 

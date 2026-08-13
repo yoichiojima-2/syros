@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_args
 
 from . import env
+from .connectors import server_names, validate_connectors
 from .errors import OptionsError
 from .names import validate_name
 from .types import CanUseTool
@@ -32,6 +33,7 @@ _SERIALIZED_FIELDS = (
     "max_budget_usd",
     "workspace",
     "artifacts",
+    "connectors",
 )
 
 ArtifactMode = Literal["rw", "ro"]
@@ -59,6 +61,11 @@ class AgentOptions:
     can_use_tool: CanUseTool | None = None
 
     # --- syros ---
+    # Named stored agent (agents/{name} in Firestore): its saved options become
+    # the defaults for this run, and any field set explicitly here overrides
+    # them. Resolved when the session is created; the session stores the merged
+    # result, so later edits to the agent never change a running session.
+    agent: str | None = None
     # Named shared GCS workspace: sessions with the same name share one working
     # directory (workspaces/{name}/ in the bucket). HOME stays per-session, so
     # transcripts and resume are unaffected. Fixed at session creation; on
@@ -72,6 +79,11 @@ class AgentOptions:
     # checkpoints are per-file last-writer-wins, so use "rw" to publish
     # outputs, not for concurrent editing of one file.
     artifacts: str | dict[str, ArtifactMode] | None = None
+    # Named platform connectors (connectors.CATALOG): each expands, inside the
+    # sandbox only, into http mcp_servers entries for the vendor's official
+    # hosted MCP server with the stored credential injected as a header. Only
+    # the names are serialized — tokens never travel through Firestore.
+    connectors: list[str] | None = None
     project: str | None = None  # default: $SYROS_PROJECT or $GOOGLE_CLOUD_PROJECT
     region: str | None = None  # Cloud Run region; default: $SYROS_REGION or asia-northeast1
     vertex_region: str | None = None  # default: $CLOUD_ML_REGION or global
@@ -119,10 +131,22 @@ class AgentOptions:
             raise OptionsError("system_prompt must be a plain string in syros")
         if self.workspace is not None:
             validate_name("workspace", self.workspace)
+        if self.agent is not None:
+            validate_name("agent", self.agent)
         for space, mode in self.resolved_artifacts().items():
             validate_name("artifact space", space)
             if mode not in get_args(ArtifactMode):
                 raise OptionsError(f"artifact space {space!r}: mode must be 'rw' or 'ro'")
+        if self.connectors is not None:
+            taken = server_names(validate_connectors(self.connectors))
+            # The runner merges expanded connectors under the explicit
+            # mcp_servers, so a name collision would silently drop one side's
+            # config (and the connector's auth header). Reject it up front.
+            if collisions := sorted(taken & set(self.mcp_servers)):
+                raise OptionsError(
+                    f"mcp server name(s) {', '.join(collisions)} collide with a connector —"
+                    " rename the mcp_servers entry or drop the connector"
+                )
         for name, config in self.mcp_servers.items():
             if not isinstance(config, dict):
                 raise OptionsError(
@@ -158,7 +182,7 @@ def options_from_doc(doc: dict[str, Any]) -> AgentOptions:
     """Rebuild AgentOptions from a serialized dict (the inverse of serialize()).
 
     Unknown keys are an error rather than a silent drop: this is the path
-    untrusted input takes when the console defines a schedule, and an option
+    untrusted input takes when the console defines a deployment, and an option
     that quietly did nothing would be worse than a rejected form.
     """
     unknown = sorted(set(doc) - set(_SERIALIZED_FIELDS))

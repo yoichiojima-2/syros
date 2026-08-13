@@ -98,7 +98,8 @@ syros console                        # web console at localhost:8484
 
 ![Console overview: active sessions, spend, pending approvals, cost by session](docs/img/console-overview.png)
 
-Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
+Sessions — starting new ones from a prompt-plus-options form as well as watching
+existing ones — live transcripts, approve/deny with countdown, prompts into idle sessions
 (re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
 selection at a time (running and starting sessions have to be killed first). The state
 column is liveness rather than raw status: `starting` is a triggered job that hasn't
@@ -115,43 +116,116 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
 Docker image builds its own copy in a Node stage, so deploys need no local build.
 
-## Schedules
+## Agents
 
-A schedule is a cron expression plus a prompt plus the usual run options, stored as one
+An agent is a named, stored run configuration — the persona a session runs as: system
+prompt, model, allowed tools, permission mode, workspace, artifact spaces, budgets. One
+Firestore document, mirroring Claude Managed Agents' Agent object (minus versioning:
+the document is mutable, and every session snapshots the options it resolved at creation,
+so editing an agent changes future runs only).
+
+Reference it from the SDK with `AgentOptions(agent=...)`: the stored options become the
+defaults, and any field set explicitly alongside it overrides them per field:
+
+```python
+from syros import query, AgentOptions
+
+async for message in query(
+    prompt="review the diff in the workspace",
+    options=AgentOptions(agent="reviewer", model="claude-opus-5"),  # model overrides
+):
+    ...
+```
+
+```
+syros agents create reviewer   --system-prompt "You are a careful code reviewer."   --allow Read --allow Grep --model claude-sonnet-5
+
+syros agents                     # list agents
+syros agents show|update|delete reviewer
+```
+
+The console has an Agents view with the same create/edit/delete surface, and sessions
+show which agent they ran as. Deployments can reference an agent too (below).
+
+## Deployments
+
+A deployment is a cron expression plus a prompt plus the usual run options, stored as one
 Firestore document. Each firing starts a *fresh ordinary session* — same list, transcript,
-approval queue, audit trail, kill switch — tagged with the schedule's name, so scheduled
-work is governed exactly like interactive work. Nothing in the runner knows schedules
+approval queue, audit trail, kill switch — tagged with the deployment's name, so scheduled
+work is governed exactly like interactive work. Nothing in the runner knows deployments
 exist.
 
 ```
-syros schedules create nightly-report \
+syros deployments create nightly-report \
   --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "profile the CSVs and rewrite report.md" \
   --model claude-sonnet-5 --workspace reports --allow Read --allow Write
 
-syros schedules                      # each schedule, its next slot, last run
-syros schedules runs nightly-report  # run history: outcome, trigger, cost
-syros schedules run nightly-report   # fire once, off-cycle (clock untouched)
-syros schedules pause|resume|delete nightly-report
+syros deployments                      # each deployment, its next slot, last run
+syros deployments runs nightly-report  # run history: outcome, trigger, cost
+syros deployments run nightly-report   # fire once, off-cycle (clock untouched)
+syros deployments pause|resume|delete nightly-report
 ```
 
-The console has the same surface with a run-status view per schedule: outcome/duration
+A deployment can name an agent (`--agent reviewer`) whose stored options become the run
+defaults — resolved fresh at each firing, so an agent edit reaches the next run without
+touching the deployment; the deployment's own options still override per field.
+
+The console has the same surface with a run-status view per deployment: outcome/duration
 bars over the run history (click a bar for that run's transcript), success rate, average
 duration, spend, and a create/pause/run-now/delete UI. Cron is the standard 5-field
-syntax (`@daily` etc. work), evaluated as wall-clock time in the schedule's IANA
-timezone, so a 9am schedule stays at 9am across DST.
+syntax (`@daily` etc. work), evaluated as wall-clock time in the deployment's IANA
+timezone, so a 9am deployment stays at 9am across DST.
 
-![Schedule detail: outcome/duration bars over the run history, success rate, spend](docs/img/console-schedule.png)
+![Deployment detail: outcome/duration bars over the run history, success rate, spend](docs/img/console-deployment.png)
 
-What advances the clock is `syros tick`, which fires every due schedule and exits;
+What advances the clock is `syros tick`, which fires every due deployment and exits;
 Terraform wires Cloud Scheduler → a `syros-scheduler` Cloud Run Job to run it every
 minute (`tick_schedule` to change — its cadence is the effective granularity of all
-schedules). The tick is transactional and idempotent: overlapping ticks can't
+deployments). The tick is transactional and idempotent: overlapping ticks can't
 double-fire, an outage catches up with one run rather than replaying missed slots, and
 a slot that comes due while the previous run is still active is skipped and counted
-(one live run per schedule — also what a shared workspace's lease would force anyway).
-Failures are visible, not silent: a schedule whose launch fails records `last_error`,
+(one live run per deployment — also what a shared workspace's lease would force anyway).
+Failures are visible, not silent: a deployment whose launch fails records `last_error`,
 and one whose cron can no longer fire is auto-paused with the reason on it.
+
+## Connectors
+
+A connector mounts a platform's *official, vendor-hosted* remote MCP server into a
+session — syros ships no integration code of its own, just the catalog entry and one
+credential in Secret Manager (`syros-connector-{name}`; Terraform creates the empty
+containers). The sandbox runner reads the credential at run start and expands each name
+into ordinary `mcp_servers` entries with an `Authorization` header, so every connector
+tool call flows through the same audit trail and approval gate as any other tool.
+Only names are serialized — tokens never pass through Firestore.
+
+| name | platform | servers | credential |
+|---|---|---|---|
+| `slack` | Slack | `mcp.slack.com` | OAuth (`auth`) |
+| `notion` | Notion | `mcp.notion.com` | OAuth (`auth`), or an integration token (`set`) |
+| `github` | GitHub | `api.githubcopilot.com/mcp` | a PAT (`set`) |
+| `google` | Google Workspace | Drive, Gmail, Calendar, Docs, Sheets (`*mcp.googleapis.com`) | OAuth (`auth --client-secrets`) |
+
+```
+syros connectors                     # catalog + credential status
+syros connectors auth slack          # browser OAuth (MCP-spec, dynamic client registration)
+syros connectors auth google --client-secrets oauth_client.json
+syros connectors set github          # paste a static token (prompted, or --token/--file)
+syros connectors remove notion       # destroy the stored credential
+```
+
+```python
+AgentOptions(connectors=["slack", "github"])   # tools arrive as mcp__slack__*, mcp__github__*
+```
+
+Agents and deployments take the same list (an override replaces the persona's list, like
+`allowed_tools`); the console shows the catalog under Connectors and offers the picker in
+both forms. Notes: tokens are minted once per run, so a run longer than the token's
+lifetime (~1h for Google) loses that connector's tools until the next run; a missing or
+unrefreshable credential fails the run fast with `stop_reason=connector_error`; Slack may
+require a workspace admin to approve the app the OAuth flow registers. Rolling out: deploy
+the new image before creating connector-bearing sessions — older runner images reject the
+new option field.
 
 ## Analysis
 
@@ -231,10 +305,13 @@ rows back. One side effect worth knowing: the audit session's own queries land i
   while that quota is pending: it mounts the `anthropic-api-key` secret and calls the
   Anthropic API directly, which moves model traffic outside GCP. Opt in deliberately.
 - **Credential-less sandbox** — by default the runner's service account has exactly:
-  `aiplatform.user`, `datastore.user`, and object access on the one session bucket. No
-  secrets are mounted (the `anthropic-api-key` secret is readable only under
-  `model_backend = "anthropic"`). When a tool needs a credential, keep it host-side: the
-  approval/custom-tool round-trip runs on the caller's machine with the caller's identity.
+  `aiplatform.user`, `datastore.user`, object access on the one session bucket, and read
+  access on the per-connector secrets (empty until you store a credential; the
+  `anthropic-api-key` secret is readable only under `model_backend = "anthropic"`). No
+  secrets are mounted as env vars; connector credentials are read per run, injected as
+  MCP headers in memory, and never written anywhere. For any other tool credential, keep
+  it host-side: the approval/custom-tool round-trip runs on the caller's machine with
+  the caller's identity.
 - **The BigQuery widening, and it is a real one** — `sandbox_bigquery = true` adds
   project-level `roles/bigquery.jobUser` + `roles/bigquery.dataViewer` to the runner:
   read access to **every dataset in the project**, for **every** session — including

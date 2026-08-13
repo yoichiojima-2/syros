@@ -51,14 +51,14 @@ resource "google_firestore_backup_schedule" "weekly" {
   }
 }
 
-# a schedule's run history filters sessions by schedule and orders by
+# a deployment's run history filters sessions by deployment and orders by
 # created_at; equality + order-by on different fields needs a composite index
-resource "google_firestore_index" "sessions_by_schedule" {
+resource "google_firestore_index" "sessions_by_deployment" {
   database   = google_firestore_database.default.name
   collection = "sessions"
 
   fields {
-    field_path = "schedule"
+    field_path = "deployment"
     order      = "ASCENDING"
   }
   fields {
@@ -125,6 +125,22 @@ resource "google_secret_manager_secret" "anthropic_api_key" {
   depends_on = [google_project_service.apis]
 }
 
+# Platform connectors: one secret per catalog entry, written by
+# `syros connectors auth|set`, read by the runner at run start to mount the
+# vendor's official hosted MCP server. Containers only, like the key above.
+locals {
+  connectors = toset(["slack", "notion", "github", "google"])
+}
+
+resource "google_secret_manager_secret" "connectors" {
+  for_each  = local.connectors
+  secret_id = "syros-connector-${each.key}"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
 # --- the sandbox identity: least privilege; a secret only on the escape hatch ---
 
 resource "google_service_account" "runner" {
@@ -175,6 +191,16 @@ resource "google_project_iam_member" "runner_bigquery_data" {
 resource "google_secret_manager_secret_iam_member" "runner_anthropic_key" {
   count     = var.model_backend == "anthropic" ? 1 : 0
   secret_id = google_secret_manager_secret.anthropic_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runner.email}"
+}
+
+# Connector credentials are the runner's to read — that is the whole feature.
+# Scoped per secret, never project-wide; a container stays empty (and the
+# grant moot) until an operator stores a credential for that connector.
+resource "google_secret_manager_secret_iam_member" "runner_connectors" {
+  for_each  = google_secret_manager_secret.connectors
+  secret_id = each.value.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.runner.email}"
 }
@@ -294,6 +320,17 @@ resource "google_storage_bucket_iam_member" "console_bucket" {
   member = "serviceAccount:${google_service_account.console.email}"
 }
 
+# The connectors page shows whether each connector has a stored credential.
+# viewer reads secret + version *metadata* (state, create time) only — the
+# console can never access a payload; credentials are written from an
+# operator's machine via `syros connectors auth|set`.
+resource "google_secret_manager_secret_iam_member" "console_connectors_viewer" {
+  for_each  = google_secret_manager_secret.connectors
+  secret_id = each.value.id
+  role      = "roles/secretmanager.viewer"
+  member    = "serviceAccount:${google_service_account.console.email}"
+}
+
 # Who may open the console. No allUsers here by design: reach it with
 # `gcloud run services proxy`, which authenticates as the caller.
 resource "google_cloud_run_v2_service_iam_member" "console_invokers" {
@@ -305,13 +342,13 @@ resource "google_cloud_run_v2_service_iam_member" "console_invokers" {
 }
 
 # --- the scheduler: Cloud Scheduler fires `syros tick` on a fixed cadence ---
-# The tick reads schedules/ from Firestore, fires whatever is due (create
+# The tick reads deployments/ from Firestore, fires whatever is due (create
 # session, queue prompt, trigger the runner job) and exits. It is idempotent —
 # a slot is consumed by a Firestore transaction — so overlap and retry are safe.
 
 resource "google_service_account" "scheduler" {
   account_id   = "syros-scheduler"
-  display_name = "syros schedule tick"
+  display_name = "syros deployment tick"
 }
 
 resource "google_project_iam_member" "scheduler_firestore" {
@@ -382,7 +419,7 @@ resource "google_cloud_scheduler_job" "tick" {
   name        = "syros-tick"
   region      = var.region
   schedule    = var.tick_schedule
-  description = "Fire due syros schedules (the tick cadence bounds schedule granularity)"
+  description = "Fire due syros deployments (the tick cadence bounds deployment granularity)"
 
   http_target {
     http_method = "POST"

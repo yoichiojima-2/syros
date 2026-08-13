@@ -18,7 +18,7 @@ from syros.console.api import (
     derived_state,
     to_jsonable,
 )
-from syros.errors import OptionsError
+from syros.errors import OptionsError, SyrosError
 from syros.names import validate_file
 from syros.options import AgentOptions
 from syros.skills import skill_prefix
@@ -325,6 +325,78 @@ async def test_approvals_across_sessions():
     assert rows["hash1"]["session_id"] == "sess_1"
     assert rows["hash2"]["session_id"] == "sess_2"
     assert rows["hash1"]["deadline"] == pytest.approx(result["now"] + 10.0, abs=1.0)
+
+
+# --- create session ---
+
+
+async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "profile the CSVs",
+            "options": {"model": "claude-sonnet-5", "workspace": "team", "allowed_tools": ["Read"]},
+        }
+    )
+
+    sid = result["session_id"]
+    assert result["ok"] is True
+    session = store.sessions[sid]
+    assert session["options"]["model"] == "claude-sonnet-5"
+    assert session["options"]["workspace"] == "team"
+    assert session["options"]["allowed_tools"] == ["Read"]
+    assert session["trigger"] == "console"
+    assert session["created_by"]
+    assert store.inbox[sid] == [{"kind": "message", "text": "profile the CSVs", "consumed": False}]
+    assert no_job_trigger == [("proj-1", "asia-northeast1", "syros-runner", sid)]
+    # and it shows up as an ordinary session, on its way up
+    assert (await api(store).poll(sid, after=0))["session"]["state"] == "starting"
+
+
+async def test_create_session_resolves_agent(no_job_trigger):
+    store = FakeStore()
+    await store.create_agent(
+        "reviewer", {"options": {"model": "claude-sonnet-5", "allowed_tools": ["Read", "Grep"]}}
+    )
+
+    result = await api(store).create_session(
+        {"prompt": "review the diff", "agent": "reviewer", "options": {"model": "claude-opus-5"}}
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["agent"] == "reviewer"
+    # stored options are the defaults; the form's explicit model overrides
+    assert session["options"]["model"] == "claude-opus-5"
+    assert session["options"]["allowed_tools"] == ["Read", "Grep"]
+
+
+async def test_create_session_unknown_agent(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(SyrosError):
+        await api(store).create_session({"prompt": "go", "agent": "ghost", "options": {}})
+    assert store.sessions == {}
+
+
+async def test_create_session_requires_a_prompt(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(ValueError):
+        await api(store).create_session({"prompt": "   ", "options": {}})
+    assert store.sessions == {}
+
+
+async def test_create_session_rejects_unknown_option(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(OptionsError):
+        await api(store).create_session({"prompt": "go", "options": {"cwd": "/tmp"}})
+    assert store.sessions == {}
+
+
+async def test_create_session_rejects_invalid_option(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(OptionsError):
+        await api(store).create_session({"prompt": "go", "options": {"workspace": "../escape"}})
+    assert store.sessions == {}
 
 
 # --- prompt / interrupt / kill ---
@@ -906,6 +978,17 @@ async def test_http_smoke():
 
         status, body = await asyncio.to_thread(fetch, "GET", "/api/sessions/sess_x/poll")
         assert status == 404
+
+        # create: POST on the collection, next to its GET
+        status, body = await asyncio.to_thread(
+            fetch, "POST", "/api/sessions", {"prompt": "hello", "options": {"model": "m"}}
+        )
+        assert status == 200
+        created = json.loads(body)["session_id"]
+        assert store.sessions[created]["options"]["model"] == "m"
+
+        status, body = await asyncio.to_thread(fetch, "POST", "/api/sessions", {"prompt": ""})
+        assert status == 400
 
         status, body = await asyncio.to_thread(
             fetch, "POST", "/api/sessions/sess_1/prompt", {"text": "hi"}
