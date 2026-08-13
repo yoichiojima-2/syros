@@ -222,6 +222,20 @@ export interface BulkFilesResponse {
   failed: { name: string; error: string }[];
 }
 
+export interface ConnectorSummary {
+  name: string;
+  label: string;
+  auth: string;
+  servers: string[];
+  configured: boolean;
+  updated: number | null;
+}
+
+export interface ConnectorsResponse {
+  now: number;
+  connectors: ConnectorSummary[];
+}
+
 export interface SkillSummary {
   name: string;
   file_count: number;

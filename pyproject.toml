@@ -11,6 +11,7 @@ dependencies = [
     "google-cloud-storage>=2.18",
     "google-cloud-run>=0.10",
     "google-cloud-secret-manager>=2.20",
+    "google-auth-oauthlib>=1.2",
 ]
 
 [dependency-groups]

@@ -9,6 +9,8 @@ import type {
   Approval,
   ApprovalsResponse,
   ApprovalWithSession,
+  ConnectorsResponse,
+  ConnectorSummary,
   PollResponse,
   RunSummary,
   DeploymentResponse,
@@ -237,6 +239,18 @@ export function useWorkspaceFiles(
     };
   }, [name, intervalMs, nonce]);
   return { files, refresh: () => setNonce((n) => n + 1) };
+}
+
+/** Platform connectors: catalog + credential status. Secret metadata changes
+ *  rarely, so a slow poll is plenty. */
+export function useConnectors(intervalMs = 15000): ConnectorSummary[] | null {
+  const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
+  usePolling(() => {
+    api<ConnectorsResponse>("/api/connectors")
+      .then((data) => setConnectors(data.connectors))
+      .catch(() => {});
+  }, intervalMs);
+  return connectors;
 }
 
 export function useSkills(intervalMs = 8000): SkillSummary[] | null {

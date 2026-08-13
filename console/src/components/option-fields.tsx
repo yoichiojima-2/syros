@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { useConnectors } from "@/lib/hooks";
+import { cn } from "@/lib/utils";
 
 // The models people actually pick from; anything else goes through "custom".
 export const MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5"];
@@ -82,6 +84,53 @@ export function ChoiceField({
       ))}
       <option value={CUSTOM}>{customLabel}</option>
     </Select>
+  );
+}
+
+/** Toggle-chip row over the connector catalog (platforms whose official
+ *  hosted MCP servers a session can mount). Unconfigured connectors stay
+ *  selectable — the credential can be stored later, before the run. */
+export function ConnectorPicker({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (value: string[]) => void;
+}) {
+  const connectors = useConnectors();
+  if (connectors === null) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {connectors.map((connector) => {
+        const on = value.includes(connector.name);
+        return (
+          <button
+            key={connector.name}
+            type="button"
+            aria-pressed={on}
+            title={
+              connector.configured
+                ? connector.label
+                : `${connector.label} — no credential yet (syros connectors ${
+                    connector.auth === "token" ? "set" : "auth"
+                  } ${connector.name})`
+            }
+            onClick={() =>
+              onChange(on ? value.filter((n) => n !== connector.name) : [...value, connector.name])
+            }
+            className={cn(
+              "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+              on
+                ? "border-transparent bg-primary-soft text-foreground"
+                : "border-border text-muted-foreground hover:bg-secondary",
+            )}
+          >
+            {connector.name}
+            {!connector.configured && <span className="text-faint"> ∅</span>}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

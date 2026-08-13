@@ -278,3 +278,60 @@ async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, g
     assert store.workspaces["shared"]["lease_session_id"] == "sess_other"
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]
+
+
+async def test_runner_expands_connectors_into_mcp_servers(env, store, fake_harness, monkeypatch):
+    monkeypatch.setattr(
+        syros.runner.connectors,
+        "mcp_servers_for",
+        lambda project, names: {
+            "github": {
+                "type": "http",
+                "url": "https://api.githubcopilot.com/mcp/",
+                "headers": {"Authorization": "Bearer tok"},
+            }
+        },
+    )
+    await store.create_session(
+        SID,
+        {"connectors": ["github"], "mcp_servers": {"docs": {"type": "http", "url": "https://d"}}},
+    )
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    # expanded connector servers merge under the explicit mcp_servers
+    assert client.options.mcp_servers["github"]["headers"] == {"Authorization": "Bearer tok"}
+    assert client.options.mcp_servers["docs"] == {"type": "http", "url": "https://d"}
+    # the token stayed out of the stored session document
+    session = await store.get_session(SID)
+    assert "github" not in (session["options"].get("mcp_servers") or {})
+    assert "tok" not in str(session["options"])
+
+
+async def test_runner_fails_fast_on_connector_error(
+    env, store, fake_harness, gcs_sync, monkeypatch
+):
+    def boom(project, names):
+        raise syros.runner.connectors.ConnectorError("connector 'github' has no stored credential")
+
+    monkeypatch.setattr(syros.runner.connectors, "mcp_servers_for", boom)
+    await store.create_session(SID, {"connectors": ["github"], "workspace": "shared"})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    assert fake_harness == []  # never started the harness
+    assert gcs_sync["restore"] == []
+    session = await store.get_session(SID)
+    assert session["status"] == "idle"
+    assert session["stop_reason"] == "connector_error"
+    (event,) = store.events[SID]
+    assert event["message"]["kind"] == "result"
+    assert event["message"]["subtype"] == "connector_error"
+    assert event["message"]["is_error"] is True
+    # the workspace lease claimed just before the connector check is released
+    assert store.workspaces["shared"]["lease_session_id"] is None
+    # the prompt stays queued for a retry
+    assert [m["consumed"] for m in store.inbox[SID]] == [False]

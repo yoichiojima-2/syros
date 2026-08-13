@@ -9,6 +9,7 @@ import {
   ChartColumn,
   FolderGit2,
   LayoutDashboard,
+  Plug,
   ListTree,
   Package,
   ShieldCheck,
@@ -27,6 +28,7 @@ const NAV = [
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/workspaces", label: "Workspaces", icon: FolderGit2 },
   { href: "/skills", label: "Skills", icon: Sparkles },
+  { href: "/connectors", label: "Connectors", icon: Plug },
   { href: "/artifacts", label: "Artifacts", icon: Package },
 ];
 

@@ -23,6 +23,11 @@ syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
 syros skills sync                       seed skills/ from the official anthropics/skills repo
+syros connectors                        list platform connectors and credential status
+syros connectors auth <name>            OAuth into a connector; stores the credential
+syros connectors set <name> [--token X | --file p]
+                                        store a static credential (e.g. a GitHub PAT)
+syros connectors remove <name>          destroy the stored credential
 syros console                           serve the web console (localhost or Cloud Run)
 syros export                            snapshot Firestore into BigQuery for analysis
 """
@@ -355,6 +360,184 @@ async def _skills(args) -> None:
         print(f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']} bytes")
 
 
+async def _oauth_login(server_url: str, port: int) -> dict:
+    """MCP-spec OAuth 2.1 against a hosted server: discovery, dynamic client
+    registration, browser consent, loopback callback — all handled by the mcp
+    SDK's own client. Returns the credential dict connectors.resolve_token
+    understands (token endpoint included, so the runner can refresh)."""
+    import threading
+    import webbrowser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    from mcp.client.auth import OAuthClientProvider, TokenStorage
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.shared.auth import OAuthClientMetadata
+
+    class MemoryStorage(TokenStorage):
+        tokens = None
+        client_info = None
+
+        async def get_tokens(self):
+            return self.tokens
+
+        async def set_tokens(self, tokens):
+            self.tokens = tokens
+
+        async def get_client_info(self):
+            return self.client_info
+
+        async def set_client_info(self, client_info):
+            self.client_info = client_info
+
+    result: dict = {}
+    done = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    class Callback(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+            pass
+
+        def do_GET(self):
+            query = parse_qs(urlparse(self.path).query)
+            result["code"] = (query.get("code") or [""])[0]
+            result["state"] = (query.get("state") or [None])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"authorized - you can close this tab")
+            loop.call_soon_threadsafe(done.set)
+
+    server = HTTPServer(("127.0.0.1", port), Callback)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    async def on_redirect(url: str) -> None:
+        print(f"open to authorize:\n  {url}")
+        webbrowser.open(url)
+
+    async def on_callback() -> tuple[str, str | None]:
+        await done.wait()
+        return result.get("code") or "", result.get("state")
+
+    storage = MemoryStorage()
+    provider = OAuthClientProvider(
+        server_url=server_url,
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[f"http://localhost:{port}/callback"],
+            client_name="syros",
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+        ),
+        storage=storage,
+        redirect_handler=on_redirect,
+        callback_handler=on_callback,
+    )
+    try:
+        # initialize() forces the handshake, which forces the OAuth flow
+        async with streamablehttp_client(server_url, auth=provider) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+    finally:
+        server.shutdown()
+
+    tokens, client_info = storage.tokens, storage.client_info
+    if not tokens or not tokens.access_token:
+        raise SystemExit("authorization did not produce a token")
+    metadata = provider.context.oauth_metadata
+    return {
+        "type": "oauth",
+        "server_url": server_url,
+        "token_endpoint": str(metadata.token_endpoint) if metadata else None,
+        "client_id": client_info.client_id if client_info else None,
+        "client_secret": client_info.client_secret if client_info else None,
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+    }
+
+
+def _google_login(client_secrets: str | None, port: int) -> str:
+    """Standard Google installed-app flow -> authorized-user JSON (the same
+    shape gcloud writes), which the runner refreshes with google-auth."""
+    from .connectors import GOOGLE_SCOPES
+
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError:
+        raise SystemExit(
+            "the google flow needs google-auth-oauthlib (run `uv sync` / pip install"
+            " google-auth-oauthlib), or store a ready authorized-user JSON with"
+            " `syros connectors set google --file <authorized_user.json>`"
+        ) from None
+    if not client_secrets:
+        raise SystemExit(
+            "auth google requires --client-secrets <oauth_client.json> — create an OAuth"
+            " client (Desktop app) in the Google Cloud console and download its JSON"
+        )
+    flow = InstalledAppFlow.from_client_secrets_file(client_secrets, scopes=list(GOOGLE_SCOPES))
+    return flow.run_local_server(port=port).to_json()
+
+
+async def _connectors(args) -> None:
+    from . import connectors
+
+    project = _project(args)
+
+    if args.action == "list":
+        status = await asyncio.to_thread(connectors.credential_status, project)
+        for connector in connectors.CATALOG.values():
+            state = status.get(connector.name) or {}
+            configured = bool(state.get("configured"))
+            print(
+                f"{connector.name:<8}  {connector.label:<18}  {connector.auth:<7}"
+                f"  {'configured' if configured else '—':<12}"
+                f"  {_local(state.get('updated')) if configured else ''}"
+            )
+        return
+
+    if not args.name:
+        raise SystemExit(f"connectors {args.action} requires a name")
+    connector = connectors.CATALOG.get(args.name)
+    if connector is None:
+        raise SystemExit(
+            f"unknown connector {args.name!r}: choose from {', '.join(sorted(connectors.CATALOG))}"
+        )
+
+    if args.action == "set":
+        if args.token:
+            payload = args.token
+        elif args.file:
+            from pathlib import Path
+
+            payload = Path(args.file).read_text()
+        else:
+            payload = getpass.getpass(f"{args.name} credential: ")
+        if not payload.strip():
+            raise SystemExit("empty credential")
+        await asyncio.to_thread(connectors.write_credential, project, args.name, payload.strip())
+        print(f"stored credential for {args.name} in {connectors.secret_id(args.name)}")
+        return
+
+    if args.action == "remove":
+        destroyed = await asyncio.to_thread(connectors.clear_credential, project, args.name)
+        print(f"destroyed {destroyed} version(s) of {connectors.secret_id(args.name)}")
+        return
+
+    # auth
+    if connector.auth == "token":
+        raise SystemExit(
+            f"{args.name} uses a static token (e.g. a GitHub PAT scoped to what the"
+            f" agent should reach):\n  syros connectors set {args.name}"
+        )
+    if connector.auth == "google":
+        payload = await asyncio.to_thread(_google_login, args.client_secrets, args.port)
+    else:
+        server_url = next(iter(connector.servers.values()))
+        payload = json.dumps(await _oauth_login(server_url, args.port))
+    await asyncio.to_thread(connectors.write_credential, project, args.name, payload)
+    print(f"authorized {args.name}; credential stored in {connectors.secret_id(args.name)}")
+
+
 async def _export(args) -> None:
     from .analytics import collect, load
 
@@ -465,6 +648,21 @@ def main() -> None:
     skills.add_argument("action", nargs="?", default="list", choices=["list", "sync"])
     skills.add_argument("--bucket", default=None)
     skills.set_defaults(func=_skills)
+
+    connectors = sub.add_parser("connectors")
+    connectors.add_argument(
+        "action", nargs="?", default="list", choices=["list", "auth", "set", "remove"]
+    )
+    connectors.add_argument("name", nargs="?")
+    connectors.add_argument("--token", default=None, help="credential value for `set`")
+    connectors.add_argument("--file", default=None, help="read the credential from a file")
+    connectors.add_argument(
+        "--client-secrets", default=None, help="OAuth client JSON for `auth google`"
+    )
+    connectors.add_argument(
+        "--port", type=int, default=8765, help="loopback port for the OAuth callback"
+    )
+    connectors.set_defaults(func=_connectors)
 
     export = sub.add_parser("export")
     export.add_argument("--dataset", default=os.environ.get("SYROS_DATASET") or "syros")

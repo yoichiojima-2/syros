@@ -159,6 +159,7 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             name, str(body.get("folder") or "")
         ),
     ),
+    ("GET", ("api", "connectors"), lambda api, body, query: api.connectors()),
     ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
     ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
     (
