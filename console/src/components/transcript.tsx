@@ -1,7 +1,9 @@
 "use client";
 
 import { useLayoutEffect, useRef } from "react";
+import { FileCode2 } from "lucide-react";
 import type { ContentBlock, TranscriptEvent, TranscriptMessage } from "@/lib/types";
+import { artifactToolPath } from "@/lib/artifacts";
 import { compact, cost, pretty } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -50,7 +52,42 @@ function UserText({ text }: { text: string }) {
   );
 }
 
-function MessageView({ message }: { message: TranscriptMessage }) {
+// A Write/Edit call renders as a Claude-style artifact card instead of a raw
+// tool row: the payload is a document, and the panel is where you read it.
+function ArtifactCard({
+  block,
+  path,
+  onOpen,
+}: {
+  block: ContentBlock;
+  path: string;
+  onOpen: (path: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onOpen(path)}
+      className="flex w-full max-w-sm items-center gap-3 rounded-xl border border-border bg-card px-3.5 py-2.5 text-left transition-colors hover:border-input hover:bg-secondary/40"
+    >
+      <FileCode2 className="size-5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-[13px] font-medium">
+          {path.split("/").pop()}
+        </span>
+        <span className="block text-[11px] text-muted-foreground">
+          {block.name} · click to open
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function MessageView({
+  message,
+  onOpenArtifact,
+}: {
+  message: TranscriptMessage;
+  onOpenArtifact?: (path: string) => void;
+}) {
   if (message.kind === "user") {
     return (
       <>
@@ -93,7 +130,12 @@ function MessageView({ message }: { message: TranscriptMessage }) {
                 </div>
               </details>
             );
-          if (block.type === "tool_use" || block.type === "server_tool_use")
+          if (block.type === "tool_use" || block.type === "server_tool_use") {
+            const artifactPath = onOpenArtifact && artifactToolPath(block);
+            if (artifactPath)
+              return (
+                <ArtifactCard key={i} block={block} path={artifactPath} onOpen={onOpenArtifact} />
+              );
             return (
               <CollapsibleRow
                 key={i}
@@ -106,6 +148,7 @@ function MessageView({ message }: { message: TranscriptMessage }) {
                 detail={JSON.stringify(block.input || {}, null, 2)}
               />
             );
+          }
           return null;
         })}
       </>
@@ -141,9 +184,11 @@ function MessageView({ message }: { message: TranscriptMessage }) {
 export function Transcript({
   events,
   placeholder,
+  onOpenArtifact,
 }: {
   events: TranscriptEvent[];
   placeholder: string | null;
+  onOpenArtifact?: (path: string) => void;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   // Follow new messages only while the user is at the bottom; once they
@@ -171,7 +216,11 @@ export function Transcript({
           <p className="pt-16 text-center text-[13px] text-muted-foreground">{placeholder}</p>
         )}
         {events.map((event) => (
-          <MessageView key={event.seq} message={event.message || {}} />
+          <MessageView
+            key={event.seq}
+            message={event.message || {}}
+            onOpenArtifact={onOpenArtifact}
+          />
         ))}
       </div>
     </div>

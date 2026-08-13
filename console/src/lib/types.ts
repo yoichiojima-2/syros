@@ -39,10 +39,12 @@ export interface ApprovalWithSession extends Approval {
 
 export interface ContentBlock {
   type: string;
+  id?: string;
   text?: string;
   thinking?: string;
   name?: string;
   input?: unknown;
+  tool_use_id?: string;
   content?: unknown;
   is_error?: boolean;
 }
