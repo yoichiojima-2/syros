@@ -269,10 +269,13 @@ resource "google_project_iam_member" "console_firestore" {
   member  = "serviceAccount:${google_service_account.console.email}"
 }
 
+# The runner is always triggered with a container override (the session id is
+# passed as the job argument), which needs run.jobs.runWithOverrides — a
+# permission run.invoker does not carry.
 resource "google_cloud_run_v2_job_iam_member" "console_runs_job" {
   name     = google_cloud_run_v2_job.runner.name
   location = var.region
-  role     = "roles/run.invoker"
+  role     = "roles/run.jobsExecutorWithOverrides"
   member   = "serviceAccount:${google_service_account.console.email}"
 }
 
@@ -323,11 +326,13 @@ resource "google_project_iam_member" "scheduler_firestore" {
   member  = "serviceAccount:${google_service_account.scheduler.email}"
 }
 
-# The tick triggers the runner job for each firing, exactly as a client would.
+# The tick triggers the runner job for each firing, exactly as a client would —
+# with a container override carrying the session id, hence
+# jobsExecutorWithOverrides rather than plain run.invoker.
 resource "google_cloud_run_v2_job_iam_member" "scheduler_runs_job" {
   name     = google_cloud_run_v2_job.runner.name
   location = var.region
-  role     = "roles/run.invoker"
+  role     = "roles/run.jobsExecutorWithOverrides"
   member   = "serviceAccount:${google_service_account.scheduler.email}"
 }
 

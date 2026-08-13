@@ -310,7 +310,9 @@ re-pins both the job and the console service to the new digest — pushing `:lat
 leaves them on the old one. `make deploy-console` does the frontend-only path (rebuild the
 Next.js bundle, ship the service).
 
-Callers need `datastore.user`, `run.jobs.run` (e.g. `roles/run.developer`), and read access
+Callers need `datastore.user`, `run.jobs.runWithOverrides` (e.g. `roles/run.developer`, or
+`roles/run.jobsExecutorWithOverrides` on the runner job — the job is always triggered with
+a container override carrying the session id, so plain `run.invoker` is not enough), and read access
 on the session bucket. Optional egress lockdown: pass `-var vpc_connector=...` to route the
 job through your VPC.
 
@@ -318,7 +320,7 @@ job through your VPC.
 
 `syros-console` runs the same image with a different entrypoint (`syros console --host
 0.0.0.0`, binding `$PORT`), scales 0→1, and holds a service account with `datastore.user`,
-`storage.objectUser` on the session bucket, and `run.invoker` on the runner job — enough to
+`storage.objectUser` on the session bucket, and `run.jobsExecutorWithOverrides` on the runner job — enough to
 serve every page, edit workspace files, and re-trigger a job when you prompt an idle
 session. It keeps no server-side state, so restarts and scale-to-zero cost nothing.
 
