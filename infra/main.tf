@@ -150,6 +150,26 @@ resource "google_storage_bucket_iam_member" "runner_bucket" {
   member = "serviceAccount:${google_service_account.runner.email}"
 }
 
+# Granted only when the deployment opts sessions into BigQuery (the built-in
+# `bigquery` MCP server), so the default runner identity still can't read a
+# single table. Project-level on purpose: the point is auditing *and* ad-hoc
+# analysis of the project's own data. For a narrower deployment, replace these
+# with a google_bigquery_dataset_iam_member on google_bigquery_dataset.analytics
+# (dataViewer) plus jobUser alone.
+resource "google_project_iam_member" "runner_bigquery_jobs" {
+  count   = var.sandbox_bigquery ? 1 : 0
+  project = var.project
+  role    = "roles/bigquery.jobUser"
+  member  = "serviceAccount:${google_service_account.runner.email}"
+}
+
+resource "google_project_iam_member" "runner_bigquery_data" {
+  count   = var.sandbox_bigquery ? 1 : 0
+  project = var.project
+  role    = "roles/bigquery.dataViewer"
+  member  = "serviceAccount:${google_service_account.runner.email}"
+}
+
 # Granted only when the sandbox actually calls Anthropic directly, so the default
 # deployment keeps a runner identity that can read no secret at all.
 resource "google_secret_manager_secret_iam_member" "runner_anthropic_key" {
@@ -195,6 +215,20 @@ resource "google_cloud_run_v2_job" "runner" {
         env {
           name  = "SYROS_MODEL_BACKEND"
           value = var.model_backend
+        }
+        # Inert without the sandbox_bigquery IAM grants below; set
+        # unconditionally so the job spec stays stable when the flag flips.
+        env {
+          name  = "SYROS_DATASET"
+          value = var.dataset_id
+        }
+        env {
+          name  = "SYROS_BQ_MAX_BYTES"
+          value = tostring(var.bq_max_bytes)
+        }
+        env {
+          name  = "SYROS_BQ_MAX_ROWS"
+          value = tostring(var.bq_max_rows)
         }
 
         dynamic "env" {

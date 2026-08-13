@@ -183,9 +183,44 @@ SELECT session_id, seq, JSON_VALUE(message.total_cost_usd) AS cost
 FROM syros.events WHERE kind = 'result';
 ```
 
-Like the rest of the ops surface it runs with the caller's identity — the sandbox gains no
-BigQuery access. Exporting needs `roles/bigquery.jobUser` plus write access on the dataset;
-for a standing feed, point Cloud Scheduler at anything that can run `syros export`.
+Like the rest of the ops surface it runs with the caller's identity. Exporting needs
+`roles/bigquery.jobUser` plus write access on the dataset; for a standing feed, point
+Cloud Scheduler at anything that can run `syros export`.
+
+The same tables are queryable *from inside a session*. `mcp_servers` takes a reference to
+a built-in in-process server — options travel through Firestore, so the session names the
+builtin and the runner swaps in the live server — and the agent gets an ordinary MCP tool
+named after your key, audited and gateable like any other:
+
+```python
+AgentOptions(
+    mcp_servers={"bq": {"type": "builtin", "name": "bigquery"}},
+    allowed_tools=["mcp__bq__query"],   # otherwise every query waits for approval
+)
+```
+
+which is what makes an unattended audit a schedule rather than a person:
+
+```
+syros schedules create nightly-audit --cron "0 9 * * *" --tz Asia/Tokyo \
+  --prompt "Query the syros BigQuery tables: yesterday's spend by model, any
+            denied or killed tool calls, approvals that timed out. Write
+            findings.md to the audit artifact space." \
+  --model claude-sonnet-5 --artifacts audit
+```
+
+Two things to know. The sandbox reads BigQuery only where the deployment allows it —
+`terraform apply -var sandbox_bigquery=true` (see [Security model](#security-model)); off
+by default, the tool exists but every query comes back as a permission error. And the
+tables are a snapshot: as fresh as the last `syros export`, which runs with the caller's
+identity — so schedule the export ahead of the audit, or the agent audits yesterday's
+yesterday. The tool's description says so, and the tables carry `updated_at`.
+
+The tool is read-only, dry-run-costed, and capped: only `SELECT` (anything BigQuery's dry
+run parses as a script or a write is refused before it runs), refused above
+`bq_max_bytes` scanned, `maximum_bytes_billed` set on the job, and at most `bq_max_rows`
+rows back. One side effect worth knowing: the audit session's own queries land in the
+*next* export's `tool_calls` — the audit audits itself.
 
 ## Security model
 
@@ -195,11 +230,23 @@ for a standing feed, point Cloud Scheduler at anything that can run `syros expor
   request it before relying on this. `model_backend = "anthropic"` is the escape hatch
   while that quota is pending: it mounts the `anthropic-api-key` secret and calls the
   Anthropic API directly, which moves model traffic outside GCP. Opt in deliberately.
-- **Credential-less sandbox** — the runner's service account has exactly: `aiplatform.user`,
-  `datastore.user`, and object access on the one session bucket. No secrets are mounted
-  (the `anthropic-api-key` secret is readable only under `model_backend = "anthropic"`).
-  When a tool needs a credential, keep it host-side: the approval/custom-tool round-trip
-  runs on the caller's machine with the caller's identity.
+- **Credential-less sandbox** — by default the runner's service account has exactly:
+  `aiplatform.user`, `datastore.user`, and object access on the one session bucket. No
+  secrets are mounted (the `anthropic-api-key` secret is readable only under
+  `model_backend = "anthropic"`). When a tool needs a credential, keep it host-side: the
+  approval/custom-tool round-trip runs on the caller's machine with the caller's identity.
+- **The BigQuery widening, and it is a real one** — `sandbox_bigquery = true` adds
+  project-level `roles/bigquery.jobUser` + `roles/bigquery.dataViewer` to the runner:
+  read access to **every dataset in the project**, for **every** session — including
+  sessions whose prompt came from a schedule or from anyone who can open the console.
+  Turn it on only where the project's BigQuery data sits inside the same trust boundary
+  as the agents; for a narrower deployment, swap the project-level grant for dataset-level
+  `dataViewer` on the `syros` dataset alone (the comment in `infra/main.tf` shows how).
+  What the code adds on top: IAM makes writes impossible, the tool refuses anything
+  BigQuery doesn't parse as a `SELECT`, `maximum_bytes_billed` caps one query, and every
+  query is written to the audit trail with its SQL before it executes. Per-query caps
+  bound a query, not a day — use a BigQuery custom quota for a hard ceiling — and query
+  results land in the transcript and in whatever the agent writes to an artifact space.
 - **Audit before execution** — a `PreToolUse` hook writes the tool-call row to
   `sessions/{sid}/tool_calls` and awaits the commit *before* the tool runs, so the gate
   is enforced in code rather than by prompting.
@@ -235,7 +282,8 @@ Next.js bundle, ship the service).
 
 Callers need `datastore.user`, `run.jobs.run` (e.g. `roles/run.developer`), and read access
 on the session bucket. Optional egress lockdown: pass `-var vpc_connector=...` to route the
-job through your VPC.
+job through your VPC. `-var sandbox_bigquery=true` lets sessions use the built-in BigQuery
+tool (see [Security model](#security-model) before flipping it).
 
 ### The console on Cloud Run
 
@@ -284,7 +332,7 @@ doing nothing.
 |---|---|
 | `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness) |
 | `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
-| `mcp_servers` | http/sse configs only; stdio and in-process servers can't run in the sandbox (`OptionsError`) |
+| `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
 | `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`); transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
@@ -295,7 +343,7 @@ doing nothing.
 
 REST API (the SDK is the surface; `syros console` is a pure Firestore client, not a
 control plane — deleting it loses nothing), versioned agent registry (options travel with the session; pin by
-committing code), vaults/egress proxy (the sandbox is credential-less; keep secrets
+committing code), vaults/egress proxy (the sandbox holds no secrets; keep them
 host-side), multi-env tenancy (one project per trust boundary).
 
 ## Development

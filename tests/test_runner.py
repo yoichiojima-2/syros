@@ -278,3 +278,36 @@ async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, g
     assert store.workspaces["shared"]["lease_session_id"] == "sess_other"
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]
+
+
+async def test_runner_resolves_builtin_mcp_server(env, store, fake_harness, monkeypatch):
+    monkeypatch.setattr(
+        syros.runner, "BUILTIN_SERVERS", {"bigquery": lambda key, project: ("server", key, project)}
+    )
+    await store.create_session(
+        SID, {"mcp_servers": {"bq": {"type": "builtin", "name": "bigquery"}}}
+    )
+    await store.push_inbox(SID, "message", "audit")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    assert client.options.mcp_servers == {"bq": ("server", "bq", "proj-1")}
+
+
+async def test_runner_passes_http_mcp_servers_through(env, store, fake_harness):
+    config = {"type": "http", "url": "https://example.com/mcp"}
+    await store.create_session(SID, {"mcp_servers": {"gh": config}})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    assert client.options.mcp_servers == {"gh": config}
+
+
+def test_every_declared_builtin_resolves():
+    # A builtin accepted client-side must be resolvable in the sandbox.
+    import syros.options
+
+    assert set(syros.runner.BUILTIN_SERVERS) == set(syros.options.BUILTIN_MCP_SERVERS)

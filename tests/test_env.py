@@ -55,3 +55,11 @@ def test_runner_env_overrides(monkeypatch):
 def test_runner_env_requires_project():
     with pytest.raises(SystemExit):
         env.RunnerEnv.from_env()
+
+
+def test_dataset_default_and_override(monkeypatch):
+    assert env.dataset() == "syros"
+    assert env.dataset("explicit") == "explicit"
+    monkeypatch.setenv("SYROS_DATASET", "audit")
+    assert env.dataset() == "audit"
+    assert env.dataset("explicit") == "explicit"
