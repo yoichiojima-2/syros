@@ -112,9 +112,29 @@ function MessageView({
     );
   }
   if (message.kind === "assistant") {
+    // Fold runs of consecutive thinking blocks into one disclosure so a
+    // reasoning-heavy turn doesn't stack a column of "thinking" rows.
+    const blocks = blockList(message.content);
+    const grouped: (ContentBlock | { thinkingRun: string[] })[] = [];
+    for (const block of blocks) {
+      const last = grouped[grouped.length - 1];
+      if (block.type === "thinking") {
+        if (last && "thinkingRun" in last) last.thinkingRun.push(block.thinking || "");
+        else grouped.push({ thinkingRun: [block.thinking || ""] });
+      } else grouped.push(block);
+    }
     return (
       <>
-        {blockList(message.content).map((block, i) => {
+        {grouped.map((block, i) => {
+          if ("thinkingRun" in block)
+            return (
+              <details key={i} className="text-[13px] text-muted-foreground">
+                <summary className="text-[11px] tracking-wide uppercase">thinking</summary>
+                <div className="mt-1.5 max-h-64 overflow-y-auto border-l-2 border-border pl-3 whitespace-pre-wrap italic">
+                  {block.thinkingRun.join("\n\n")}
+                </div>
+              </details>
+            );
           if (block.type === "text")
             return (
               <div
@@ -122,15 +142,6 @@ function MessageView({
                 className="chat-prose text-[15px] leading-7 [overflow-wrap:break-word]"
                 dangerouslySetInnerHTML={{ __html: renderMarkdown(block.text || "") }}
               />
-            );
-          if (block.type === "thinking")
-            return (
-              <details key={i} className="text-[13px] text-muted-foreground">
-                <summary className="text-[11px] tracking-wide uppercase">thinking</summary>
-                <div className="mt-1.5 border-l-2 border-border pl-3 whitespace-pre-wrap italic">
-                  {block.thinking || ""}
-                </div>
-              </details>
             );
           if (block.type === "tool_use" || block.type === "server_tool_use") {
             // Only a write that actually landed becomes a card. A denied,
