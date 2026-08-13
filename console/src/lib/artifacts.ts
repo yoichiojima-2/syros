@@ -11,6 +11,7 @@ export type PreviewKind = "html" | "markdown" | "svg" | "code";
 
 export interface ArtifactVersion {
   seq: number; // seq of the event carrying the tool_use
+  order: number; // global write order; seq ties when one message writes twice
   op: "write" | "edit";
   content: string;
 }
@@ -21,6 +22,11 @@ export interface Artifact {
   ext: string;
   kind: PreviewKind;
   versions: ArtifactVersion[]; // oldest first; last is current
+  // An edit we couldn't replay (its old_string was missing) means the real
+  // file has diverged from what we're showing — something outside Write/Edit
+  // touched it. The panel says so rather than presenting stale content as
+  // authoritative.
+  stale: boolean;
 }
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit"]);
@@ -52,18 +58,32 @@ interface EditSpec {
   replace_all?: unknown;
 }
 
+/** Literal (non-regex) replacement. String.replace would expand $&, $`, $$ in
+ * the replacement, silently corrupting any file whose edit inserts a `$`. */
 function applyEdit(content: string, edit: EditSpec): string | null {
   const oldStr = typeof edit.old_string === "string" ? edit.old_string : "";
   const newStr = typeof edit.new_string === "string" ? edit.new_string : "";
-  if (!oldStr || !content.includes(oldStr)) return null;
-  return edit.replace_all ? content.split(oldStr).join(newStr) : content.replace(oldStr, newStr);
+  if (!oldStr) return null;
+  if (edit.replace_all) {
+    if (!content.includes(oldStr)) return null;
+    return content.split(oldStr).join(newStr);
+  }
+  const at = content.indexOf(oldStr);
+  if (at < 0) return null;
+  return content.slice(0, at) + newStr + content.slice(at + oldStr.length);
+}
+
+interface FileState {
+  versions: ArtifactVersion[];
+  stale: boolean;
 }
 
 /** Replay confirmed Write/Edit calls into per-file version histories,
- * most recently updated file first. */
+ * most recently written file first. */
 export function deriveArtifacts(events: TranscriptEvent[]): Artifact[] {
   const pending = new Map<string, { seq: number; tool: string; input: Record<string, unknown> }>();
-  const files = new Map<string, ArtifactVersion[]>();
+  const files = new Map<string, FileState>();
+  let order = 0;
 
   for (const event of events) {
     const message = event.message || {};
@@ -86,7 +106,7 @@ export function deriveArtifacts(events: TranscriptEvent[]): Artifact[] {
       if (block.is_error) continue;
       const path = typeof call.input.file_path === "string" ? call.input.file_path : "";
       if (!path) continue;
-      const versions = files.get(path) || [];
+      const state = files.get(path) || { versions: [], stale: false };
       let next: string | null;
       let op: ArtifactVersion["op"];
       if (call.tool === "Write") {
@@ -94,7 +114,7 @@ export function deriveArtifacts(events: TranscriptEvent[]): Artifact[] {
         op = "write";
       } else {
         // An edit only replays on top of content we've seen written.
-        next = versions.length ? versions[versions.length - 1].content : null;
+        next = state.versions.length ? state.versions[state.versions.length - 1].content : null;
         op = "edit";
         const edits =
           call.tool === "Edit"
@@ -102,23 +122,44 @@ export function deriveArtifacts(events: TranscriptEvent[]): Artifact[] {
             : Array.isArray(call.input.edits)
               ? (call.input.edits as EditSpec[])
               : [];
+        if (!edits.length) next = null;
         for (const edit of edits) next = next === null ? null : applyEdit(next, edit);
       }
-      if (next === null) continue;
-      versions.push({ seq: call.seq, op, content: next });
-      files.set(path, versions);
+      if (next === null) {
+        // The write landed in the workspace but we can't reproduce it, so what
+        // we hold is no longer the file. Only meaningful once we have content.
+        if (state.versions.length) {
+          state.stale = true;
+          files.set(path, state);
+        }
+        continue;
+      }
+      state.versions.push({ seq: call.seq, order: order++, op, content: next });
+      files.set(path, state);
     }
   }
 
   return [...files.entries()]
-    .map(([path, versions]) => ({
+    .filter(([, state]) => state.versions.length > 0)
+    .map(([path, state]) => ({
       path,
       name: path.split("/").pop() || path,
       ext: extension(path),
       kind: previewKind(path),
-      versions,
+      versions: state.versions,
+      stale: state.stale,
     }))
     .sort(
-      (a, b) => b.versions[b.versions.length - 1].seq - a.versions[a.versions.length - 1].seq,
+      (a, b) =>
+        b.versions[b.versions.length - 1].order - a.versions[a.versions.length - 1].order,
     );
+}
+
+/** Disambiguating label: bare basename unless another artifact shares it, in
+ * which case enough trailing path segments to tell them apart. */
+export function artifactLabel(artifact: Artifact, all: Artifact[]): string {
+  const clashes = all.filter((a) => a !== artifact && a.name === artifact.name);
+  if (!clashes.length) return artifact.name;
+  const segments = artifact.path.split("/").filter(Boolean);
+  return segments.slice(-2).join("/") || artifact.path;
 }

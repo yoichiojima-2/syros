@@ -83,9 +83,11 @@ function ArtifactCard({
 
 function MessageView({
   message,
+  artifactPaths,
   onOpenArtifact,
 }: {
   message: TranscriptMessage;
+  artifactPaths?: ReadonlySet<string>;
   onOpenArtifact?: (path: string) => void;
 }) {
   if (message.kind === "user") {
@@ -131,11 +133,12 @@ function MessageView({
               </details>
             );
           if (block.type === "tool_use" || block.type === "server_tool_use") {
-            const artifactPath = onOpenArtifact && artifactToolPath(block);
-            if (artifactPath)
-              return (
-                <ArtifactCard key={i} block={block} path={artifactPath} onOpen={onOpenArtifact} />
-              );
+            // Only a write that actually landed becomes a card. A denied,
+            // pending, or unreplayable one keeps its tool row, so its input
+            // stays inspectable and no card opens a different document.
+            const path = artifactToolPath(block);
+            if (onOpenArtifact && path && artifactPaths?.has(path))
+              return <ArtifactCard key={i} block={block} path={path} onOpen={onOpenArtifact} />;
             return (
               <CollapsibleRow
                 key={i}
@@ -184,10 +187,12 @@ function MessageView({
 export function Transcript({
   events,
   placeholder,
+  artifactPaths,
   onOpenArtifact,
 }: {
   events: TranscriptEvent[];
   placeholder: string | null;
+  artifactPaths?: ReadonlySet<string>;
   onOpenArtifact?: (path: string) => void;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
@@ -219,6 +224,7 @@ export function Transcript({
           <MessageView
             key={event.seq}
             message={event.message || {}}
+            artifactPaths={artifactPaths}
             onOpenArtifact={onOpenArtifact}
           />
         ))}

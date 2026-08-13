@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import { marked } from "marked";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { Artifact } from "@/lib/artifacts";
+import { artifactLabel, type Artifact } from "@/lib/artifacts";
 import { cn } from "@/lib/utils";
 
 // Claude-style artifact panel: workspace files the agent wrote, previewed
@@ -75,8 +75,11 @@ function download(name: string, text: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // revoking synchronously can race the download the click just started
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function ArtifactPanel({
@@ -95,6 +98,11 @@ export function ArtifactPanel({
   const [cursor, setCursor] = useState<{ path: string; index: number } | null>(null);
   const [showSource, setShowSource] = useState(false);
   const { resolvedTheme } = useTheme();
+  // resolvedTheme is undefined until after hydration; rendering the iframe
+  // before it settles mounts every preview twice (light flash, and an HTML
+  // artifact's scripts run twice).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const dark = resolvedTheme === "dark";
 
   const artifact = artifacts.find((a) => a.path === selectedPath) || artifacts[0];
@@ -121,14 +129,25 @@ export function ArtifactPanel({
             className="min-w-0 flex-1 truncate rounded-md border border-transparent bg-transparent px-1.5 py-1 font-mono text-[13px] font-medium hover:border-input focus:outline-none"
           >
             {artifacts.map((a) => (
-              <option key={a.path} value={a.path}>
-                {a.name}
+              <option key={a.path} value={a.path} title={a.path}>
+                {artifactLabel(a, artifacts)}
               </option>
             ))}
           </select>
         ) : (
-          <span className="min-w-0 flex-1 truncate px-1.5 font-mono text-[13px] font-medium" title={artifact.path}>
+          <span
+            className="min-w-0 flex-1 truncate px-1.5 font-mono text-[13px] font-medium"
+            title={artifact.path}
+          >
             {artifact.name}
+          </span>
+        )}
+        {artifact.stale && (
+          <span
+            className="rounded-md bg-warn/15 px-1.5 py-0.5 font-mono text-[10px] text-warn"
+            title="An edit to this file couldn't be replayed — something outside Write/Edit changed it, so the workspace copy has diverged from what's shown here."
+          >
+            diverged
           </span>
         )}
         {artifact.versions.length > 1 && (
@@ -178,12 +197,17 @@ export function ArtifactPanel({
         <pre className="min-h-0 flex-1 overflow-auto px-4 py-3 font-mono text-xs leading-relaxed whitespace-pre">
           {version.content}
         </pre>
+      ) : !mounted ? (
+        <div className="min-h-0 flex-1" />
       ) : (
         <iframe
           // remount when the document changes so stateful HTML restarts clean.
           // keyed on the version index, not seq — one assistant message can
-          // carry two writes to the same file, which share a seq.
-          key={`${artifact.path}:${index}:${dark}`}
+          // carry two writes to the same file, which share a seq. `dark` is
+          // only in the key for the kinds whose document embeds the palette;
+          // an HTML artifact would otherwise reload (losing its state) on a
+          // theme toggle that doesn't affect it.
+          key={`${artifact.path}:${index}${artifact.kind === "html" ? "" : `:${dark}`}`}
           title={artifact.name}
           sandbox={artifact.kind === "html" ? "allow-scripts" : ""}
           srcDoc={

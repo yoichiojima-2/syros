@@ -23,17 +23,23 @@ export function SessionDetail({ sid }: { sid: string }) {
   // opens itself when a version lands and stays closed once dismissed, until
   // the next write — mirroring how claude.ai surfaces artifacts.
   const artifacts = useMemo(() => deriveArtifacts(events), [events]);
+  const artifactPaths = useMemo(() => new Set(artifacts.map((a) => a.path)), [artifacts]);
   const [panelOpen, setPanelOpen] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const versionCount = artifacts.reduce((n, a) => n + a.versions.length, 0);
   const seenVersionsRef = useRef(0);
   useEffect(() => {
-    if (versionCount > seenVersionsRef.current) {
-      seenVersionsRef.current = versionCount;
-      setSelectedPath(artifacts[0].path); // most recently updated
-      setPanelOpen(true);
+    if (versionCount <= seenVersionsRef.current) return;
+    seenVersionsRef.current = versionCount;
+    // Don't yank a reader off the artifact they chose: follow the newest write
+    // only when the panel isn't already showing something.
+    if (!panelOpen) {
+      setSelectedPath(artifacts[0].path);
+      // Below lg the panel takes the column over, so only volunteer it where
+      // it sits beside the transcript; a narrow viewport opens on request.
+      if (window.matchMedia("(min-width: 1024px)").matches) setPanelOpen(true);
     }
-  }, [versionCount, artifacts]);
+  }, [versionCount, artifacts, panelOpen]);
   useEffect(() => {
     // new sid: the poll hook resets events, so reset the artifact state too
     seenVersionsRef.current = 0;
@@ -104,8 +110,10 @@ export function SessionDetail({ sid }: { sid: string }) {
         </Button>
       </div>
 
+      {/* Below lg an open panel takes the row over and the transcript hides —
+          but approvals and the composer live outside it, so a pending decision
+          can never be hidden behind a document while its deadline runs down. */}
       <div className="flex min-h-0 flex-1">
-        {/* on small screens the open panel takes over; the transcript column hides */}
         <div
           className={
             showPanel
@@ -116,25 +124,9 @@ export function SessionDetail({ sid }: { sid: string }) {
           <Transcript
             events={events}
             placeholder={session ? "No messages yet." : "loading…"}
+            artifactPaths={artifactPaths}
             onOpenArtifact={openArtifact}
           />
-
-          {approvals.length > 0 && (
-            <div className="mx-auto w-full max-w-3xl space-y-2.5 px-5">
-              {approvals.map((approval) => (
-                <ApprovalCard
-                  key={approval.call_hash}
-                  approval={approval}
-                  now={now}
-                  onDecide={decide}
-                />
-              ))}
-            </div>
-          )}
-
-          {flash && <p className="pt-1.5 text-center text-[11px] text-muted-foreground">{flash}</p>}
-
-          <Composer disabled={!session || dead} onSend={sendPrompt} />
         </div>
 
         {showPanel && (
@@ -146,6 +138,18 @@ export function SessionDetail({ sid }: { sid: string }) {
           />
         )}
       </div>
+
+      {approvals.length > 0 && (
+        <div className="mx-auto w-full max-w-3xl space-y-2.5 px-5 pt-2.5">
+          {approvals.map((approval) => (
+            <ApprovalCard key={approval.call_hash} approval={approval} now={now} onDecide={decide} />
+          ))}
+        </div>
+      )}
+
+      {flash && <p className="pt-1.5 text-center text-[11px] text-muted-foreground">{flash}</p>}
+
+      <Composer disabled={!session || dead} onSend={sendPrompt} />
     </div>
   );
 }
