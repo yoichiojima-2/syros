@@ -98,11 +98,14 @@ syros console                        # web console at localhost:8484
 
 Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
 (re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
-selection at a time (running sessions have to be killed first). Shared workspaces are
-editable: open one to edit a file in place, upload, or delete — writes are refused while a
-run holds the lease, since its checkpoint would overwrite them. It also deploys to Cloud Run
-(`syros-console`, IAM-only — no public access), so the same console is reachable without a
-local checkout or GCP client libraries; see [Deploy](#deploy).
+selection at a time (running and starting sessions have to be killed first). The state
+column is liveness rather than raw status: `starting` is a triggered job that hasn't
+claimed the session yet, `running` holds a live lease, and either one whose window lapsed
+shows as `stalled` — a job that died or never came up, and deletable as such. Shared
+workspaces are editable: open one to edit a file in place, upload, or delete — writes are
+refused while a run holds the lease, since its checkpoint would overwrite them. It also
+deploys to Cloud Run (`syros-console`, IAM-only — no public access), so the same console is
+reachable without a local checkout or GCP client libraries; see [Deploy](#deploy).
 
 The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind); `make console`
 rebuilds the bundle into `src/syros/console/static/`, which is committed so pip installs
@@ -219,7 +222,8 @@ of who acted.
 ## How a run works
 
 1. `query()` writes `sessions/{sid}` + the prompt to the inbox, then triggers the Cloud Run
-   Job (skipped if an execution already holds the session lease).
+   Job (skipped if an execution already holds the session lease) and marks the session
+   `starting`.
 2. The runner claims the lease, restores the workspace and `claude_agent_sdk` transcript
    from GCS, and runs the harness on Vertex with the gate hooks wired in.
 3. Every message is mirrored to `sessions/{sid}/events`; the client polls and yields them

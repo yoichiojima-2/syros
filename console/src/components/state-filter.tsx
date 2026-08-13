@@ -4,7 +4,15 @@ import { STATE_DOT } from "@/components/state-badge";
 import { cn } from "@/lib/utils";
 import type { SessionState, SessionSummary } from "@/lib/types";
 
-const ORDER: SessionState[] = ["running", "queued", "stalled", "idle", "terminated", "unknown"];
+const ORDER: SessionState[] = [
+  "running",
+  "starting",
+  "queued",
+  "stalled",
+  "idle",
+  "terminated",
+  "unknown",
+];
 
 export function StateFilter({
   sessions,

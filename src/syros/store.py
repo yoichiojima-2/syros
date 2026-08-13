@@ -20,6 +20,11 @@ from typing import Any, Protocol, runtime_checkable
 # Firestore's hard cap on writes in one batch.
 DELETE_BATCH_SIZE = 500
 
+# How long a triggered job gets to claim its session before "starting" stops
+# meaning "on its way" and starts meaning "it never came up". Cloud Run Job
+# startup is seconds; the slack is for image pulls and queued executions.
+START_GRACE_SECONDS = 120.0
+
 
 def new_session_id() -> str:
     return f"sess_{secrets.token_hex(12)}"
@@ -37,6 +42,20 @@ def lease_active(session: dict[str, Any] | None, now: float | None = None) -> bo
     return float(session.get("lease_expires") or 0) > (now if now is not None else time.time())
 
 
+def start_pending(session: dict[str, Any] | None, now: float | None = None) -> bool:
+    """Whether a triggered execution is still plausibly on its way.
+
+    The "starting" counterpart of lease_active: a session sits in that status
+    from the moment the job is triggered until the runner claims the lease, and
+    nothing clears it if the execution never starts. Past the grace window the
+    status is stale, so treat the session as dead rather than starting.
+    """
+    if not session or session.get("status") != "starting":
+        return False
+    triggered_at = float(session.get("triggered_at") or 0)
+    return (now if now is not None else time.time()) - triggered_at < START_GRACE_SECONDS
+
+
 @runtime_checkable
 class StoreProtocol(Protocol):
     """The store contract shared by Store and the in-memory test fake.
@@ -52,6 +71,7 @@ class StoreProtocol(Protocol):
     async def update_session(self, session_id: str, **fields: Any) -> None: ...
     async def list_sessions(self, limit: int | None = 20) -> list[dict[str, Any]]: ...
     async def delete_session(self, session_id: str) -> None: ...
+    async def mark_starting(self, session_id: str) -> None: ...
     async def claim_session(
         self, session_id: str, lease_id: str, ttl_seconds: float
     ) -> dict[str, Any] | None: ...
@@ -120,6 +140,7 @@ class Store:
                 "seq_head": 0,
                 "lease_id": None,
                 "lease_expires": 0.0,
+                "triggered_at": 0.0,
                 "claude_session_id": None,
                 "created_by": created_by,
                 "created_at": self._firestore.SERVER_TIMESTAMP,
@@ -163,6 +184,36 @@ class Store:
         # orphaned subcollections.
         batch.delete(reference)
         await batch.commit()
+
+    async def mark_starting(self, session_id: str) -> None:
+        """Record that a job execution has been triggered for this session.
+
+        Transactional and best-effort: a run that claimed the session between
+        the trigger and this write is already past "starting", and walking it
+        back would make a live session look like it never started.
+        """
+        transaction = self._db.transaction()
+        reference = self._session(session_id)
+        firestore = self._firestore
+
+        @firestore.async_transactional
+        async def _mark(transaction):
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return
+            session = snapshot.to_dict()
+            if session.get("disabled") or session.get("status") in ("running", "terminated"):
+                return
+            transaction.update(
+                reference,
+                {
+                    "status": "starting",
+                    "triggered_at": time.time(),
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+            )
+
+        await _mark(transaction)
 
     async def claim_session(
         self, session_id: str, lease_id: str, ttl_seconds: float

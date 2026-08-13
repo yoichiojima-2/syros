@@ -108,6 +108,9 @@ async def send_prompt(
             options.resolved_job(),
             session_id,
         )
+        # Only once the trigger landed: a session that failed to be triggered
+        # is not starting, and the caller sees the error either way.
+        await store.mark_starting(session_id)
 
 
 async def stream_response(

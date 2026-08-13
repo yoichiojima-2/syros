@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 const DAYS = 14;
 const STATE_ORDER: SessionState[] = [
   "running",
+  "starting",
   "queued",
   "stalled",
   "idle",
