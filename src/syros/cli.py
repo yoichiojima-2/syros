@@ -43,10 +43,12 @@ def _store(args: argparse.Namespace) -> Store:
 async def _sessions(args) -> None:
     store = _store(args)
     for session in await store.list_sessions():
+        published = session.get("published")
         print(
             f"{session['id']}  {session.get('status'):<10}"
             f"  ${float(session.get('cost_usd') or 0):.4f}"
             f"  {session.get('stop_reason') or '':<14}"
+            f"  {'' if published is None else f'{published} published':<14}"
             f"  {(session.get('options') or {}).get('workspace') or ''}"
         )
 

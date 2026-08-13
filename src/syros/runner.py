@@ -120,6 +120,11 @@ async def run(session_id: str) -> None:
             workspace.restore, config.project, config.bucket, artifacts.space_prefix(space), mount
         )
 
+    # The mounts are invisible to the agent otherwise — without this a session
+    # can succeed while writing its output somewhere that never persists.
+    if mounts := artifacts.mount_prompt(spaces):
+        options.system_prompt = "\n\n".join(filter(None, (options.system_prompt, mounts)))
+
     gate = Gate(store, session_id, approval_timeout=env.approval_timeout())
     sdk_options = build_sdk_options(
         options,
@@ -185,9 +190,10 @@ async def run(session_id: str) -> None:
         ("artifacts/",) if spaces else (),
     )
     await asyncio.to_thread(workspace.checkpoint, config.project, config.bucket, home_prefix, home)
+    published = 0
     for space, mode in spaces.items():
         if mode == "rw":
-            await asyncio.to_thread(
+            published += await asyncio.to_thread(
                 workspace.checkpoint,
                 config.project,
                 config.bucket,
@@ -203,6 +209,9 @@ async def run(session_id: str) -> None:
         seq_head=seq,
         cost_usd=cost,
         claude_session_id=claude_session_id,
+        # File count in rw artifact spaces at release: a quick "did this
+        # session actually leave anything behind" signal for `syros sessions`.
+        **({"published": published} if spaces else {}),
     )
 
 
