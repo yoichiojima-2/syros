@@ -19,6 +19,34 @@ export function SessionDetail({ sid }: { sid: string }) {
   const [flash, run] = useAction();
   const dead = session?.state === "terminated";
 
+  // Prompts echo in the transcript the moment they're sent; each dimmed copy
+  // drops when the runner mirrors the real event back into the feed.
+  const [pending, setPending] = useState<string[]>([]);
+  const scannedRef = useRef(0);
+  useEffect(() => {
+    const fresh = events.slice(scannedRef.current);
+    scannedRef.current = events.length;
+    if (!fresh.length) return;
+    setPending((prev) => {
+      let next = prev;
+      for (const event of fresh) {
+        const message = event.message;
+        if (message?.kind !== "user" || typeof message.content !== "string") continue;
+        const i = next.indexOf(message.content);
+        if (i !== -1) next = [...next.slice(0, i), ...next.slice(i + 1)];
+      }
+      return next;
+    });
+  }, [events]);
+
+  // The agent owes a response while a prompt waits in the inbox or a live
+  // turn hasn't reached its result row yet — that's when the typing dots show.
+  const lastKind = events.length ? events[events.length - 1].message?.kind : undefined;
+  const working =
+    !dead &&
+    (pending.length > 0 ||
+      ((session?.state === "running" || session?.state === "queued") && lastKind !== "result"));
+
   // Artifacts replay from the transcript (see lib/artifacts.ts). The panel
   // opens itself when a version lands and stays closed once dismissed, until
   // the next write — mirroring how claude.ai surfaces artifacts.
@@ -45,6 +73,8 @@ export function SessionDetail({ sid }: { sid: string }) {
     seenVersionsRef.current = 0;
     setPanelOpen(false);
     setSelectedPath(null);
+    setPending([]);
+    scannedRef.current = 0;
   }, [sid]);
 
   const openArtifact = (path: string) => {
@@ -63,8 +93,18 @@ export function SessionDetail({ sid }: { sid: string }) {
 
   const sendPrompt = (text: string) =>
     run(async () => {
-      const result = await post<{ triggered: boolean }>(`/api/sessions/${sid}/prompt`, { text });
-      return result.triggered ? "queued · runner starting…" : "queued";
+      setPending((prev) => [...prev, text]);
+      try {
+        const result = await post<{ triggered: boolean }>(`/api/sessions/${sid}/prompt`, { text });
+        return result.triggered ? "queued · runner starting…" : "queued";
+      } catch (err) {
+        // the POST never landed, so the optimistic bubble comes back out
+        setPending((prev) => {
+          const i = prev.lastIndexOf(text);
+          return i === -1 ? prev : [...prev.slice(0, i), ...prev.slice(i + 1)];
+        });
+        throw err;
+      }
     });
 
   const interrupt = () =>
@@ -124,6 +164,8 @@ export function SessionDetail({ sid }: { sid: string }) {
           <Transcript
             events={events}
             placeholder={session ? "No messages yet." : "loading…"}
+            pending={pending}
+            working={working}
             artifactPaths={artifactPaths}
             onOpenArtifact={openArtifact}
           />

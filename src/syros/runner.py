@@ -142,35 +142,37 @@ async def run(session_id: str) -> None:
                 messages = await _wait_for_messages(store, session_id, config.stay_alive)
                 if not messages:
                     break
-                # Mirror the consumed prompts to the event feed: the SDK stream
-                # echoes tool results as user messages but never the prompt
-                # itself, and the chat view needs it.
+                # One query per prompt, so each gets its own turn (and its own
+                # result row) instead of being glued into one mega-prompt.
                 for text in messages:
+                    # Mirror the prompt to the event feed: the SDK stream echoes
+                    # tool results as user messages but never the prompt itself,
+                    # and the chat view needs it.
                     seq += 1
                     await store.append_event(
                         session_id, seq, message_to_doc(UserMessage(content=text))
                     )
-                await client.query("\n\n".join(messages))
-                async for message in client.receive_response():
-                    if (
-                        isinstance(message, SystemMessage)
-                        and message.subtype in NOISY_SYSTEM_SUBTYPES
-                    ):
-                        continue
-                    doc = message_to_doc(message)
-                    if doc is not None:
-                        seq += 1
-                        await store.append_event(session_id, seq, doc)
-                    if isinstance(message, ResultMessage):
-                        cost += message.total_cost_usd or 0.0
-                        claude_session_id = message.session_id
-                        stop_reason = message.subtype
-                await store.update_session(
-                    session_id,
-                    seq_head=seq,
-                    cost_usd=cost,
-                    claude_session_id=claude_session_id,
-                )
+                    await client.query(text)
+                    async for message in client.receive_response():
+                        if (
+                            isinstance(message, SystemMessage)
+                            and message.subtype in NOISY_SYSTEM_SUBTYPES
+                        ):
+                            continue
+                        doc = message_to_doc(message)
+                        if doc is not None:
+                            seq += 1
+                            await store.append_event(session_id, seq, doc)
+                        if isinstance(message, ResultMessage):
+                            cost += message.total_cost_usd or 0.0
+                            claude_session_id = message.session_id
+                            stop_reason = message.subtype
+                    await store.update_session(
+                        session_id,
+                        seq_head=seq,
+                        cost_usd=cost,
+                        claude_session_id=claude_session_id,
+                    )
         finally:
             watcher.cancel()
 

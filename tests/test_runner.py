@@ -122,6 +122,27 @@ async def test_runner_full_turn(env, store, fake_harness):
     assert session["lease_expires"] == 0.0
 
 
+async def test_runner_runs_queued_prompts_as_separate_turns(env, store, fake_harness):
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "first")
+    await store.push_inbox(SID, "message", "second")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    # never glued into one mega-prompt: each prompt gets its own query...
+    assert client.prompts == ["first", "second"]
+    # ...and the feed interleaves each prompt with its own turn
+    kinds = [e["message"]["kind"] for e in store.events[SID]]
+    assert kinds == ["user", "system", "assistant", "result"] * 2
+    assert store.events[SID][0]["message"]["content"] == "first"
+    assert store.events[SID][4]["message"]["content"] == "second"
+
+    session = await store.get_session(SID)
+    assert session["cost_usd"] == 0.5
+    assert session["seq_head"] == 8
+
+
 async def test_runner_exits_when_lease_held(env, store, fake_harness):
     await store.create_session(SID, {})
     await store.claim_session(SID, "other-lease", 3600)
