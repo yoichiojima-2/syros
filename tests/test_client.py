@@ -19,7 +19,7 @@ def no_job_trigger(monkeypatch):
 
 
 def make_client(store, **kwargs):
-    client = SyrosClient(AgentOptions(sandbox="gcp", project="proj-1", **kwargs))
+    client = SyrosClient(AgentOptions(project="proj-1", **kwargs))
     client._store = store
     return client
 
@@ -79,28 +79,7 @@ async def test_interrupt_and_terminate():
         assert session["disabled"] is True
 
 
-async def test_local_terminate_disconnects(monkeypatch):
-    class FakeSDKClient:
-        def __init__(self, options):
-            self.disconnected = False
-
-        async def connect(self):
-            pass
-
-        async def disconnect(self):
-            self.disconnected = True
-
-    import claude_agent_sdk
-
-    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", FakeSDKClient)
-    client = SyrosClient(AgentOptions(sandbox="local"))
-    await client.connect()
-    inner = client._backend._client
-    await client.terminate()  # locally terminate == disconnect, not an error
-    assert inner.disconnected is True
-
-
 async def test_query_before_connect_raises():
-    client = SyrosClient(AgentOptions(sandbox="gcp", project="proj-1"))
+    client = SyrosClient(AgentOptions(project="proj-1"))
     with pytest.raises(SyrosError, match="not connected"):
         await client.query("x")
