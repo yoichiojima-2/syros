@@ -8,7 +8,7 @@ class SyrosError(Exception):
 
 
 class OptionsError(SyrosError):
-    """An AgentOptions value is invalid or unsupported for the chosen sandbox."""
+    """An AgentOptions value is invalid or unsupported in the sandbox."""
 
 
 class SessionTerminated(SyrosError):

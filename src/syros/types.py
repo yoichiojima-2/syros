@@ -1,8 +1,8 @@
 """Message and permission types, plus their Firestore-document serialization.
 
 The types are claude_agent_sdk's own — re-exported, not redefined — so
-`isinstance` checks and pattern matching work identically whether a message
-came from a local run or was deserialized from a remote session's event feed.
+`isinstance` checks and pattern matching work exactly as they do against the
+SDK, even though every message was deserialized from a session's event feed.
 """
 
 from __future__ import annotations

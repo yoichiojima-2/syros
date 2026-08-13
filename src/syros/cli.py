@@ -95,7 +95,7 @@ async def _console(args) -> None:
     from .options import AgentOptions
 
     project = _project(args)
-    options = AgentOptions(sandbox="gcp", project=project, region=args.region, job=args.job)
+    options = AgentOptions(project=project, region=args.region, job=args.job)
     api = ConsoleAPI(Store(project), options, approval_timeout=args.approval_timeout)
     local = args.host in ("127.0.0.1", "localhost", "::1")
     await run(api, args.host, args.port, open_browser=local and not args.no_open)

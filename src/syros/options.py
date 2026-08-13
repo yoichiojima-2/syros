@@ -1,9 +1,9 @@
 """AgentOptions — the serializable, sandbox-safe subset of ClaudeAgentOptions.
 
-Only options that behave identically in both sandboxes are defined here.
-Machine-local ClaudeAgentOptions (cwd, env, hooks, add_dirs, setting_sources,
-stdio MCP servers, ...) are deliberately absent: passing them raises TypeError
-at the constructor rather than silently diverging between local and remote.
+Only options the GCP sandbox can honour are defined here. Machine-local
+ClaudeAgentOptions (cwd, env, hooks, add_dirs, setting_sources, stdio MCP
+servers, ...) are deliberately absent: passing them raises TypeError at the
+constructor rather than silently doing nothing in the sandbox.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ _SERIALIZED_FIELDS = (
 
 @dataclass
 class AgentOptions:
-    # --- mirrored from claude_agent_sdk; identical semantics in both sandboxes ---
+    # --- mirrored from claude_agent_sdk; same semantics, run in the sandbox ---
     system_prompt: str | None = None
     model: str | None = None
     tools: list[str] | None = None
@@ -44,11 +44,10 @@ class AgentOptions:
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)  # http/sse only
     max_turns: int | None = None
     max_budget_usd: float | None = None
-    resume: str | None = None  # local: claude session uuid; gcp: syros session id
+    resume: str | None = None  # syros session id (sess_...)
     can_use_tool: CanUseTool | None = None
 
     # --- syros ---
-    sandbox: Literal["local", "gcp"] = "local"
     project: str | None = None  # default: $SYROS_PROJECT or $GOOGLE_CLOUD_PROJECT
     region: str | None = None  # Cloud Run region; default: $SYROS_REGION or asia-northeast1
     vertex_region: str | None = None  # default: $CLOUD_ML_REGION or global
@@ -57,7 +56,6 @@ class AgentOptions:
     model_backend: ModelBackend | None = None  # default: $SYROS_MODEL_BACKEND or vertex
     bucket: str | None = None  # default: $SYROS_BUCKET or {project}-syros
     job: str | None = None  # Cloud Run Job name; default: $SYROS_JOB or syros-runner
-    workspace: str | None = None  # local sandbox only: the agent's working directory
 
     def resolved_project(self) -> str:
         project = env.find_project(self.project)
@@ -98,14 +96,7 @@ class AgentOptions:
                     f"mcp server {name!r}: type must be 'http' or 'sse' — stdio and"
                     " in-process servers cannot run in the sandbox"
                 )
-        if self.sandbox == "gcp":
-            if self.workspace is not None:
-                raise OptionsError(
-                    "workspace is managed by the sandbox in gcp mode; it lives in GCS"
-                )
-            self.resolved_project()
-        elif self.sandbox != "local":
-            raise OptionsError(f"unknown sandbox {self.sandbox!r}: use 'local' or 'gcp'")
+        self.resolved_project()
 
     def serialize(self) -> dict[str, Any]:
         """The option subset that travels to the remote runner (JSON/Firestore-safe)."""
@@ -120,11 +111,7 @@ def build_sdk_options(
     resume: str | None = None,
     env: dict[str, str] | None = None,
 ) -> Any:
-    """Build a ClaudeAgentOptions from the shared option subset.
-
-    Used by both the local backend and the remote runner, so the harness the
-    agent runs on is configured identically in both sandboxes.
-    """
+    """Build a ClaudeAgentOptions from the serializable option subset."""
     from claude_agent_sdk import ClaudeAgentOptions
 
     return ClaudeAgentOptions(
@@ -147,21 +134,17 @@ def build_sdk_options(
 def model_env(options: AgentOptions) -> dict[str, str]:
     """Env vars that route claude_agent_sdk's model calls to a backend.
 
-    Vertex by default, keyed on the GCP project; empty when none is configured
-    (local dev falls back to the harness's own ambient credentials). Backend
-    "anthropic" calls the Anthropic API instead — the escape hatch for a project
-    with no Vertex Claude quota. Model traffic then leaves GCP, so it is an
-    explicit opt-in, never a fallback when a key happens to be present.
+    Vertex by default, keyed on the GCP project. Backend "anthropic" calls the
+    Anthropic API instead — the escape hatch for a project with no Vertex Claude
+    quota. Model traffic then leaves GCP, so it is an explicit opt-in, never a
+    fallback when a key happens to be present.
     """
     if options.resolved_model_backend() == "anthropic":
         if not (key := os.environ.get("ANTHROPIC_API_KEY")):
             raise OptionsError("model_backend='anthropic' requires $ANTHROPIC_API_KEY")
         return {"ANTHROPIC_API_KEY": key}
-    project = env.find_project(options.project)
-    if not project:
-        return {}
     return {
         "CLAUDE_CODE_USE_VERTEX": "1",
-        "ANTHROPIC_VERTEX_PROJECT_ID": project,
+        "ANTHROPIC_VERTEX_PROJECT_ID": options.resolved_project(),
         "CLOUD_ML_REGION": options.resolved_vertex_region(),
     }

@@ -4,18 +4,14 @@ from syros.errors import OptionsError
 from syros.options import AgentOptions, build_sdk_options, model_env
 
 
-def test_local_defaults_validate():
-    AgentOptions().validate()
-
-
-def test_gcp_requires_project():
+def test_requires_project():
     with pytest.raises(OptionsError, match="project"):
-        AgentOptions(sandbox="gcp").validate()
+        AgentOptions().validate()
 
 
-def test_gcp_project_from_env(monkeypatch):
+def test_project_from_env(monkeypatch):
     monkeypatch.setenv("SYROS_PROJECT", "proj-1")
-    options = AgentOptions(sandbox="gcp")
+    options = AgentOptions()
     options.validate()
     assert options.resolved_project() == "proj-1"
     assert options.resolved_bucket() == "proj-1-syros"
@@ -23,24 +19,16 @@ def test_gcp_project_from_env(monkeypatch):
     assert options.resolved_region() == "asia-northeast1"
 
 
-def test_gcp_rejects_workspace():
-    with pytest.raises(OptionsError, match="workspace"):
-        AgentOptions(sandbox="gcp", project="p", workspace="/tmp/x").validate()
-
-
 def test_rejects_stdio_mcp_server():
-    options = AgentOptions(mcp_servers={"local": {"type": "stdio", "command": "server"}})
+    options = AgentOptions(project="p", mcp_servers={"fs": {"type": "stdio", "command": "server"}})
     with pytest.raises(OptionsError, match="stdio"):
         options.validate()
 
 
 def test_accepts_http_mcp_server():
-    AgentOptions(mcp_servers={"gh": {"type": "http", "url": "https://example.com/mcp"}}).validate()
-
-
-def test_unknown_sandbox():
-    with pytest.raises(OptionsError, match="unknown sandbox"):
-        AgentOptions(sandbox="aws").validate()
+    AgentOptions(
+        project="p", mcp_servers={"gh": {"type": "http", "url": "https://example.com/mcp"}}
+    ).validate()
 
 
 def test_machine_local_options_are_type_errors():
@@ -48,6 +36,8 @@ def test_machine_local_options_are_type_errors():
         AgentOptions(cwd="/tmp")  # not a syros option
     with pytest.raises(TypeError):
         AgentOptions(hooks={})
+    with pytest.raises(TypeError):
+        AgentOptions(workspace="/tmp")
 
 
 def test_serialize_round_trip_subset():
@@ -99,10 +89,6 @@ def test_model_env_with_project():
         "ANTHROPIC_VERTEX_PROJECT_ID": "proj-1",
         "CLOUD_ML_REGION": "global",
     }
-
-
-def test_model_env_without_project_is_ambient():
-    assert model_env(AgentOptions()) == {}
 
 
 def test_model_env_anthropic_backend_bypasses_vertex(monkeypatch):

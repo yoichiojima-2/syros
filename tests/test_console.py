@@ -26,7 +26,7 @@ def no_job_trigger(monkeypatch):
 
 
 def api(store, **kwargs):
-    return ConsoleAPI(store, AgentOptions(sandbox="gcp", project="proj-1"), **kwargs)
+    return ConsoleAPI(store, AgentOptions(project="proj-1"), **kwargs)
 
 
 # --- derived_state ---

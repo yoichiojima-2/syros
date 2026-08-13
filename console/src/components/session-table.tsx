@@ -37,7 +37,7 @@ export function SessionTable({
   if (sessions.length === 0) {
     return (
       <p className="px-4 py-10 text-center text-[13px] text-muted-foreground">
-        No sessions yet — run a query with sandbox=&quot;gcp&quot; and it will appear here.
+        No sessions yet — run a query and it will appear here.
       </p>
     );
   }
