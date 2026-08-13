@@ -8,6 +8,8 @@ offset once and render skew-proof countdowns.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import getpass
 import time
 from datetime import datetime
@@ -17,7 +19,7 @@ from .. import remote
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions
 from ..store import StoreProtocol, lease_active
-from .objects import ObjectStoreProtocol
+from .objects import MAX_PREVIEW_BYTES, ObjectStoreProtocol
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
 # browser reloading on a long session — can't wedge a single HTTP request.
@@ -288,6 +290,56 @@ class ConsoleAPI:
             raise NotFound(f"workspace {name} not found")
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
+
+    async def _require_free(self, name: str) -> None:
+        """Refuse to write a workspace a live run holds.
+
+        The runner checkpoints its whole ws/ directory when it goes idle, so an
+        edit saved mid-run would be silently overwritten by the job's own copy.
+        Better to say no than to lose the edit.
+        """
+        lease = next((w for w in await self._store.list_workspaces() if w["name"] == name), None)
+        if lease_active(lease):
+            raise Conflict(
+                f"workspace {name} is busy — session {lease.get('lease_session_id')} holds"
+                " the lease. Wait for the run to finish."
+            )
+
+    async def workspace_file(self, name: str, file: str) -> tuple[bytes, str]:
+        """Raw bytes + content type, same contract as artifact_file."""
+        try:
+            return await self._bucket_objects().read_workspace_file(name, file)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        except ValueError as exc:
+            raise TooLarge(str(exc)) from exc
+
+    async def write_workspace_file(
+        self, name: str, file: str, content: str, encoding: str = "utf-8"
+    ) -> dict[str, Any]:
+        """Create or overwrite one file. Text rides as utf-8, uploads as base64."""
+        if encoding == "base64":
+            try:
+                data = base64.b64decode(content, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"invalid base64 content: {exc}") from exc
+        elif encoding == "utf-8":
+            data = content.encode()
+        else:
+            raise ValueError(f"unknown encoding {encoding!r}: use 'utf-8' or 'base64'")
+        if len(data) > MAX_PREVIEW_BYTES:
+            raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
+        await self._require_free(name)
+        await self._bucket_objects().write_workspace_file(name, file, data)
+        return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
+
+    async def delete_workspace_file(self, name: str, file: str) -> dict[str, Any]:
+        await self._require_free(name)
+        try:
+            await self._bucket_objects().delete_workspace_file(name, file)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        return {"now": time.time(), "ok": True, "name": name, "file": file}
 
     # --- shared artifact spaces ---
 

@@ -14,6 +14,7 @@ import type {
   SpacesResponse,
   StoredFile,
   TranscriptEvent,
+  WorkspaceFilesResponse,
   WorkspacesResponse,
   WorkspaceSummary,
 } from "./types";
@@ -68,6 +69,40 @@ export function useWorkspaces(intervalMs = 4000): WorkspaceSummary[] | null {
       .catch(() => {});
   }, intervalMs);
   return workspaces;
+}
+
+/** Files in one workspace. Unlike the artifact equivalent this exposes a
+ *  refresh, so a save or delete shows up without waiting out the poll. */
+export function useWorkspaceFiles(
+  name: string | null,
+  intervalMs = 8000,
+): { files: StoredFile[] | null; refresh: () => void } {
+  const [files, setFiles] = useState<StoredFile[] | null>(null);
+  const [nonce, setNonce] = useState(0);
+  // reset only when the workspace changes — a refresh must not flash a skeleton
+  useEffect(() => setFiles(null), [name]);
+  useEffect(() => {
+    if (!name) return;
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return;
+      api<WorkspaceFilesResponse>(`/api/workspaces/${encodeURIComponent(name)}/files`)
+        .then((data) => {
+          if (!cancelled) setFiles(data.files);
+        })
+        // an unknown workspace 404s; keep whatever we already had otherwise
+        .catch(() => {
+          if (!cancelled) setFiles((prev) => prev ?? []);
+        });
+    };
+    poll();
+    const timer = setInterval(poll, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [name, intervalMs, nonce]);
+  return { files, refresh: () => setNonce((n) => n + 1) };
 }
 
 export function useArtifactSpaces(intervalMs = 8000): SpaceSummary[] | null {
