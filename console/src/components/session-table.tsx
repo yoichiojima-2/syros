@@ -18,10 +18,12 @@ export function SessionTable({
   sessions,
   now,
   compact = false,
+  emptyMessage = "No sessions yet — run a query and it will appear here.",
 }: {
   sessions: SessionSummary[] | null;
   now: number;
   compact?: boolean;
+  emptyMessage?: string;
 }) {
   const router = useRouter();
 
@@ -37,7 +39,7 @@ export function SessionTable({
   if (sessions.length === 0) {
     return (
       <p className="px-4 py-10 text-center text-[13px] text-muted-foreground">
-        No sessions yet — run a query and it will appear here.
+        {emptyMessage}
       </p>
     );
   }
