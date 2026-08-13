@@ -61,6 +61,7 @@ async def test_poll_events_after_cursor_and_approval_deadline():
 
     assert [e["seq"] for e in result["events"]] == [2, 3]
     assert result["session"]["model"] == "claude-sonnet-5"
+    assert result["session"]["workspace"] is None
     assert result["session"]["state"] == "queued"
     (approval,) = result["approvals"]
     assert approval["tool_name"] == "Bash"

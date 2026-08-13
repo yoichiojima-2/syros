@@ -22,6 +22,7 @@ export interface SessionSummary {
   created_at: number | null;
   updated_at: number | null;
   model: string | null;
+  workspace: string | null;
 }
 
 export interface Approval {

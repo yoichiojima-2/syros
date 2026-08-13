@@ -27,7 +27,8 @@ resource "google_project_service" "apis" {
   disable_on_destroy = false
 }
 
-# --- state: Firestore (control plane) + GCS (workspace/transcripts) ---
+# --- state: Firestore (control plane) + GCS (per-session state under
+# sessions/, shared workspaces under workspaces/) ---
 
 resource "google_firestore_database" "default" {
   name        = "(default)"

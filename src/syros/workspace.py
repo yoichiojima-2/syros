@@ -1,8 +1,10 @@
 """Workspace persistence: GCS <-> the sandbox's local state directory.
 
-The state root contains ws/ (the agent's working directory) and home/ (HOME for
-the harness, so claude_agent_sdk transcripts checkpoint too, enabling resume).
-Synchronous on purpose — callers wrap in asyncio.to_thread.
+The sandbox work dir contains ws/ (the agent's working directory) and home/
+(HOME for the harness, so claude_agent_sdk transcripts checkpoint too,
+enabling resume). home/ always syncs to a per-session prefix; ws/ syncs to the
+session prefix, or to a shared workspaces/{name}/ prefix when the session
+names a workspace. Synchronous on purpose — callers wrap in asyncio.to_thread.
 """
 
 from __future__ import annotations
@@ -10,15 +12,18 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def _prefix(session_id: str) -> str:
-    return f"sessions/{session_id}/state/"
+def session_prefix(session_id: str, subdir: str) -> str:
+    return f"sessions/{session_id}/state/{subdir}/"
 
 
-def restore(project: str, bucket_name: str, session_id: str, root: Path) -> int:
+def workspace_prefix(name: str) -> str:
+    return f"workspaces/{name}/"
+
+
+def restore(project: str, bucket_name: str, prefix: str, root: Path) -> int:
     from google.cloud import storage
 
     bucket = storage.Client(project=project).bucket(bucket_name)
-    prefix = _prefix(session_id)
     count = 0
     for blob in bucket.list_blobs(prefix=prefix):
         relative = blob.name[len(prefix) :]
@@ -31,11 +36,10 @@ def restore(project: str, bucket_name: str, session_id: str, root: Path) -> int:
     return count
 
 
-def checkpoint(project: str, bucket_name: str, session_id: str, root: Path) -> int:
+def checkpoint(project: str, bucket_name: str, prefix: str, root: Path) -> int:
     from google.cloud import storage
 
     bucket = storage.Client(project=project).bucket(bucket_name)
-    prefix = _prefix(session_id)
     count = 0
     for path in root.rglob("*"):
         if not path.is_file() or path.is_symlink():

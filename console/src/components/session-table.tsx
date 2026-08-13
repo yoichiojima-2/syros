@@ -49,6 +49,7 @@ export function SessionTable({
           <TableHead>Session</TableHead>
           <TableHead>State</TableHead>
           {!compact && <TableHead>Model</TableHead>}
+          {!compact && <TableHead>Workspace</TableHead>}
           <TableHead className="text-right">Cost</TableHead>
           {!compact && <TableHead className="text-right">Events</TableHead>}
           <TableHead className="text-right">Updated</TableHead>
@@ -70,6 +71,11 @@ export function SessionTable({
             {!compact && (
               <TableCell className="font-mono text-xs text-muted-foreground">
                 {s.model || "—"}
+              </TableCell>
+            )}
+            {!compact && (
+              <TableCell className="font-mono text-xs text-muted-foreground">
+                {s.workspace || "—"}
               </TableCell>
             )}
             <TableCell className="text-right font-mono text-xs tabular-nums">

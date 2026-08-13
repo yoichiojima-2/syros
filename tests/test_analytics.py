@@ -66,6 +66,12 @@ async def test_timestamps_normalize_to_iso8601():
     assert approval_row("s", {"requested_at": when})["requested_at"] == when.isoformat()
 
 
+async def test_workspace_column_reads_from_options():
+    assert session_row({"id": "s", "options": {"workspace": "shared"}})["workspace"] == "shared"
+    assert session_row({"id": "s"})["workspace"] is None
+    assert ("workspace", "STRING", "NULLABLE") in SCHEMAS["sessions"]
+
+
 async def test_unknown_cost_stays_null_not_zero():
     assert session_row({"id": "s"})["cost_usd"] is None
     assert session_row({"id": "s", "cost_usd": 0.0})["cost_usd"] == 0.0

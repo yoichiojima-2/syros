@@ -9,6 +9,7 @@ constructor rather than silently doing nothing in the sandbox.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_args
 
@@ -29,7 +30,10 @@ _SERIALIZED_FIELDS = (
     "mcp_servers",
     "max_turns",
     "max_budget_usd",
+    "workspace",
 )
+
+_WORKSPACE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
 
 @dataclass
@@ -48,6 +52,11 @@ class AgentOptions:
     can_use_tool: CanUseTool | None = None
 
     # --- syros ---
+    # Named shared GCS workspace: sessions with the same name share one working
+    # directory (workspaces/{name}/ in the bucket). HOME stays per-session, so
+    # transcripts and resume are unaffected. Fixed at session creation; on
+    # resume the stored options win, like every serialized field.
+    workspace: str | None = None
     project: str | None = None  # default: $SYROS_PROJECT or $GOOGLE_CLOUD_PROJECT
     region: str | None = None  # Cloud Run region; default: $SYROS_REGION or asia-northeast1
     vertex_region: str | None = None  # default: $CLOUD_ML_REGION or global
@@ -86,6 +95,11 @@ class AgentOptions:
     def validate(self) -> None:
         if self.system_prompt is not None and not isinstance(self.system_prompt, str):
             raise OptionsError("system_prompt must be a plain string in syros")
+        if self.workspace is not None and not _WORKSPACE_NAME.fullmatch(self.workspace):
+            raise OptionsError(
+                "workspace must be a short name matching [a-z0-9][a-z0-9_-]*"
+                " (max 64 chars), not a path"
+            )
         for name, config in self.mcp_servers.items():
             if not isinstance(config, dict):
                 raise OptionsError(
