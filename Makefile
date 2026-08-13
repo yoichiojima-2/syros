@@ -5,8 +5,9 @@ REGION  ?= asia-northeast1
 JOB     ?= syros-runner
 SERVICE ?= syros-console
 
-# Rebuild the web console (Node required); output is committed into
-# src/syros/console/static/ so pip installs and Docker need no Node.
+# Rebuild the web console locally (Node required); output lands in
+# src/syros/console/static/, which is gitignored — the Docker build
+# produces its own copy, so this is only needed for local `syros console`.
 console:
 	cd console && npm install && npm run build
 
@@ -23,8 +24,9 @@ deploy:
 	gcloud run jobs update $(JOB) --image $(IMAGE) --region $(REGION)
 	gcloud run services update $(SERVICE) --image $(IMAGE) --region $(REGION)
 
-# Frontend-only change: rebuild the bundle, then ship it to the console service.
-deploy-console: console
+# Frontend-only change: the image build compiles the console itself, so just
+# rebuild and ship it to the console service.
+deploy-console:
 	docker build --platform linux/amd64 -t $(IMAGE) .
 	docker push $(IMAGE)
 	gcloud run services update $(SERVICE) --image $(IMAGE) --region $(REGION)

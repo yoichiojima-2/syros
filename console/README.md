@@ -17,7 +17,7 @@ down, and SVG preview in sandboxed iframes with per-file version history.
   `syros console --no-open` alongside.
 - `npm run build` — static export copied into `../src/syros/console/static/`.
 
-The build output is committed so the Python package is self-contained — no Node
-toolchain needed for `pip install` or the Docker image. After changing the
-frontend, run `make console` from the repo root and commit the regenerated
-static files.
+The build output is gitignored — it used to be committed and conflicted on
+nearly every merge. The Docker image builds the frontend in its own Node
+stage, so deploys are unaffected; for a local `syros console`, run
+`make console` from the repo root once (and again after frontend changes).
