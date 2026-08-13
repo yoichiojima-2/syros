@@ -107,7 +107,7 @@ claimed the session yet, `running` holds a live lease, and either one whose wind
 shows as `stalled` — a job that died or never came up, and deletable as such. Shared
 workspaces are editable: open one to edit a file in place, upload, or delete — writes are
 refused while a run holds the lease, since its checkpoint would overwrite them. It also
-deploys to Cloud Run (`syros-console`, IAM-only — no public access), so the same console is
+deploys to Cloud Run (`syros-console`, public URL behind IAP, IAM-gated), so the same console is
 reachable without a local checkout or GCP client libraries; see [Deploy](#deploy).
 
 ![Session transcript with a pending Write approval and its countdown](docs/img/console-session.png)
@@ -322,13 +322,23 @@ job through your VPC.
 serve every page, edit workspace files, and re-trigger a job when you prompt an idle
 session. It keeps no server-side state, so restarts and scale-to-zero cost nothing.
 
-No `allUsers` binding exists: reach it as yourself over an authenticated proxy.
+No `allUsers` binding exists. By default (`console_iap = true`) the service sits behind
+[Identity-Aware Proxy](https://cloud.google.com/iap/docs/enabling-cloud-run): the service
+URL (the `console_url` terraform output) is reachable from any browser, IAP handles the
+Google sign-in, and only principals listed in `console_invokers` get through — public
+endpoint, IAM-gated access.
 
 ```sh
-# grant access (or -var 'console_invokers=["user:me@example.com"]' at apply time)
-gcloud run services add-iam-policy-binding syros-console --region asia-northeast1 \
-  --member=user:me@example.com --role=roles/run.invoker
+# grant access at apply time
+terraform apply -var 'console_invokers=["user:me@example.com"]' ...
 
+open $(terraform output -raw console_url)   # sign in with Google; IAP checks IAM
+```
+
+With `-var console_iap=false` there is no unauthenticated surface at all; reach it as
+yourself over an authenticated proxy instead:
+
+```sh
 gcloud run services proxy syros-console --region asia-northeast1  # → localhost:8080
 ```
 
