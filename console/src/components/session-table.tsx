@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -16,20 +17,33 @@ import { StateBadge } from "@/components/state-badge";
 import { cost, relTime, shortId } from "@/lib/format";
 import type { SessionSummary } from "@/lib/types";
 
+/** A running session holds a live lease — the server refuses to delete it, so
+ * the row is neither selectable nor individually deletable. */
+export function deletable(session: SessionSummary): boolean {
+  return session.state !== "running";
+}
+
 export function SessionTable({
   sessions,
   now,
   compact = false,
   emptyMessage = "No sessions yet — run a query and it will appear here.",
   onDelete,
+  selected,
+  onSelect,
 }: {
   sessions: SessionSummary[] | null;
   now: number;
   compact?: boolean;
   emptyMessage?: string;
   onDelete?: (session: SessionSummary) => void;
+  // Selection is opt-in: pass both to get the checkbox column. onSelect takes
+  // a batch so the header box is one call rather than one per row.
+  selected?: ReadonlySet<string>;
+  onSelect?: (ids: string[], value: boolean) => void;
 }) {
   const router = useRouter();
+  const selectable = selected !== undefined && onSelect !== undefined;
 
   if (sessions === null) {
     return (
@@ -48,10 +62,26 @@ export function SessionTable({
     );
   }
 
+  const selectableIds = sessions.filter(deletable).map((s) => s.id);
+  const selectedCount = selectableIds.filter((id) => selected?.has(id)).length;
+  const allSelected = selectableIds.length > 0 && selectedCount === selectableIds.length;
+
   return (
     <Table>
       <TableHeader>
         <TableRow>
+          {selectable && (
+            <TableHead className="w-8">
+              <Checkbox
+                aria-label={allSelected ? "Clear selection" : "Select all deletable sessions"}
+                title={allSelected ? "Clear selection" : "Select all deletable sessions"}
+                checked={allSelected}
+                indeterminate={selectedCount > 0 && !allSelected}
+                disabled={selectableIds.length === 0}
+                onChange={() => onSelect(selectableIds, !allSelected)}
+              />
+            </TableHead>
+          )}
           <TableHead>Session</TableHead>
           <TableHead>State</TableHead>
           {!compact && <TableHead>Model</TableHead>}
@@ -69,6 +99,17 @@ export function SessionTable({
             className="cursor-pointer"
             onClick={() => router.push(`/session?sid=${s.id}`)}
           >
+            {selectable && (
+              <TableCell className="w-8" onClick={(e) => e.stopPropagation()}>
+                <Checkbox
+                  aria-label={`Select ${s.id}`}
+                  title={deletable(s) ? `Select ${s.id}` : "Kill the session before deleting it"}
+                  checked={selected.has(s.id)}
+                  disabled={!deletable(s)}
+                  onChange={(e) => onSelect([s.id], e.target.checked)}
+                />
+              </TableCell>
+            )}
             <TableCell className="font-mono text-xs" title={s.id}>
               {shortId(s.id)}
             </TableCell>
@@ -103,11 +144,9 @@ export function SessionTable({
                   size="icon"
                   className="size-7 text-muted-foreground hover:text-destructive"
                   title={
-                    s.state === "running"
-                      ? "Kill the session before deleting it"
-                      : `Delete ${s.id}`
+                    deletable(s) ? `Delete ${s.id}` : "Kill the session before deleting it"
                   }
-                  disabled={s.state === "running"}
+                  disabled={!deletable(s)}
                   onClick={(e) => {
                     e.stopPropagation();
                     onDelete(s);

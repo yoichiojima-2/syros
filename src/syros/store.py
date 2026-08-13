@@ -17,6 +17,10 @@ import time
 from typing import Any, Protocol, runtime_checkable
 
 
+# Firestore's hard cap on writes in one batch.
+DELETE_BATCH_SIZE = 500
+
+
 def new_session_id() -> str:
     return f"sess_{secrets.token_hex(12)}"
 
@@ -139,12 +143,26 @@ class Store:
 
     async def delete_session(self, session_id: str) -> None:
         """Remove the session and everything under it. Deleting a document
-        doesn't cascade in Firestore, so each subcollection is drained first."""
+        doesn't cascade in Firestore, so each subcollection is drained first.
+
+        Batched: a long session's event mirror runs to thousands of docs, and
+        one round trip per doc makes bulk deletion of several such sessions
+        take longer than any caller is willing to wait."""
         reference = self._session(session_id)
+        batch = self._db.batch()
+        pending = 0
         for name in ("events", "inbox", "approvals", "tool_calls"):
             async for snapshot in reference.collection(name).stream():
-                await snapshot.reference.delete()
-        await reference.delete()
+                batch.delete(snapshot.reference)
+                pending += 1
+                if pending == DELETE_BATCH_SIZE:
+                    await batch.commit()
+                    batch, pending = self._db.batch(), 0
+        # The parent goes last: if a commit fails partway the session doc is
+        # still there, so the caller sees a session to retry rather than
+        # orphaned subcollections.
+        batch.delete(reference)
+        await batch.commit()
 
     async def claim_session(
         self, session_id: str, lease_id: str, ttl_seconds: float
