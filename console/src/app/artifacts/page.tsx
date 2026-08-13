@@ -5,7 +5,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Download, FileCode2, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArtifactFrame, CopyButton, download } from "@/components/artifact-viewer";
+import {
+  ArtifactFrame,
+  CopyButton,
+  download,
+  FullscreenButton,
+  useFullscreen,
+} from "@/components/artifact-viewer";
 import { useArtifactSpaces, useNow, useSpaceArtifacts } from "@/lib/hooks";
 import { previewKind, type PreviewKind } from "@/lib/artifacts";
 import { bytes, relTime } from "@/lib/format";
@@ -158,6 +164,7 @@ function FileViewer({
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showSource, setShowSource] = useState(false);
+  const [fullscreen, setFullscreen] = useFullscreen();
   const updated = files?.find((f) => f.name === file)?.updated ?? null;
 
   useEffect(() => {
@@ -192,7 +199,12 @@ function FileViewer({
   const source = !previewable || showSource;
 
   return (
-    <>
+    <div
+      className={cn(
+        "flex min-h-0 min-w-0 flex-1 flex-col",
+        fullscreen && "fixed inset-0 z-50 bg-card",
+      )}
+    >
       <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
         <span className="min-w-0 flex-1 truncate px-1.5 font-mono text-[13px] font-medium" title={file}>
           {file}
@@ -227,6 +239,7 @@ function FileViewer({
         >
           <Download />
         </Button>
+        <FullscreenButton fullscreen={fullscreen} onToggle={setFullscreen} />
       </div>
       {image ? (
         <div className="grid min-h-0 flex-1 place-items-center overflow-auto bg-card p-4">
@@ -251,6 +264,6 @@ function FileViewer({
           frameKey={`${space}/${file}:${updated ?? ""}`}
         />
       )}
-    </>
+    </div>
   );
 }
