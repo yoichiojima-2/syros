@@ -3,13 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ListTree, ShieldCheck } from "lucide-react";
+import { ChartColumn, LayoutDashboard, ListTree, ShieldCheck } from "lucide-react";
 import { useOnline } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Dashboard", icon: ChartColumn },
   { href: "/sessions", label: "Sessions", icon: ListTree },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
 ];
