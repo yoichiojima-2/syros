@@ -86,8 +86,13 @@ async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[s
         if session.get("status") == "terminated":
             raise SessionTerminated(session_id)
         return session_id, int(session.get("seq_head") or 0)
+    # An agent reference resolves here, once: the session stores the merged
+    # options, so a later edit to the agent never changes this session.
+    from . import agents
+
+    options = await agents.resolve(store, options)
     session_id = new_session_id()
-    await store.create_session(session_id, options.serialize())
+    await store.create_session(session_id, options.serialize(), agent=options.agent)
     return session_id, 0
 
 

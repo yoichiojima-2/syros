@@ -31,8 +31,9 @@ export interface SessionSummary {
   updated_at: number | null;
   model: string | null;
   workspace: string | null;
-  schedule: string | null; // the schedule that started it, if any
-  trigger: string; // "api" | "console" | "schedule" | "manual"
+  deployment: string | null; // the deployment that started it, if any
+  trigger: string; // "api" | "console" | "deployment" | "manual"
+  agent: string | null; // the stored agent its options were resolved from, if any
 }
 
 // Mirrors run_outcome() in src/syros/console/api.py — keep the two in sync.
@@ -47,17 +48,18 @@ export type RunOutcome =
   | "failed"
   | "cancelled";
 
-/** A session seen as one run of a schedule. duration_s is null while it runs. */
+/** A session seen as one run of a deployment. duration_s is null while it runs. */
 export interface RunSummary extends SessionSummary {
   outcome: RunOutcome;
   duration_s: number | null;
 }
 
-export interface ScheduleSummary {
+export interface DeploymentSummary {
   name: string;
   cron: string;
   timezone: string;
   prompt: string;
+  agent: string | null; // stored agent whose options are the run defaults
   options: Record<string, unknown>;
   enabled: boolean;
   next_run_at: number | null;
@@ -71,15 +73,35 @@ export interface ScheduleSummary {
   last_run: RunSummary | null;
 }
 
-export interface SchedulesResponse {
+export interface DeploymentsResponse {
   now: number;
-  schedules: ScheduleSummary[];
+  deployments: DeploymentSummary[];
 }
 
-export interface ScheduleResponse {
+export interface DeploymentResponse {
   now: number;
-  schedule: ScheduleSummary;
+  deployment: DeploymentSummary;
   runs: RunSummary[];
+}
+
+/** A stored, named run configuration (persona) — agents/{name} in Firestore. */
+export interface AgentSummary {
+  name: string;
+  description: string | null;
+  options: Record<string, unknown>;
+  created_by: string | null;
+  created_at: number | null;
+  updated_at: number | null;
+}
+
+export interface AgentsResponse {
+  now: number;
+  agents: AgentSummary[];
+}
+
+export interface AgentResponse {
+  now: number;
+  agent: AgentSummary;
 }
 
 export interface Approval {

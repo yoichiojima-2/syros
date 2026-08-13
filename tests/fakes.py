@@ -16,10 +16,11 @@ class FakeStore:
         self.approvals: dict[str, dict[str, dict[str, Any]]] = {}
         self.tool_calls: dict[str, list[dict[str, Any]]] = {}
         self.workspaces: dict[str, dict[str, Any]] = {}
-        self.schedules: dict[str, dict[str, Any]] = {}
+        self.deployments: dict[str, dict[str, Any]] = {}
+        self.agents: dict[str, dict[str, Any]] = {}
 
     async def create_session(
-        self, session_id, options, created_by=None, schedule=None, trigger="api"
+        self, session_id, options, created_by=None, deployment=None, trigger="api", agent=None
     ):
         self.sessions[session_id] = {
             "options": options,
@@ -33,8 +34,9 @@ class FakeStore:
             "triggered_at": 0.0,
             "claude_session_id": None,
             "created_by": created_by,
-            "schedule": schedule,
+            "deployment": deployment,
             "trigger": trigger,
+            "agent": agent,
             "created_at": time.time(),
             "updated_at": time.time(),
         }
@@ -50,8 +52,10 @@ class FakeStore:
         rows = [{"id": k, **v} for k, v in self.sessions.items()]
         return rows if limit is None else rows[:limit]
 
-    async def list_schedule_sessions(self, schedule, limit=50):
-        rows = [{"id": k, **v} for k, v in self.sessions.items() if v.get("schedule") == schedule]
+    async def list_deployment_sessions(self, deployment, limit=50):
+        rows = [
+            {"id": k, **v} for k, v in self.sessions.items() if v.get("deployment") == deployment
+        ]
         rows.sort(key=lambda s: s.get("created_at") or 0, reverse=True)
         return rows[:limit]
 
@@ -186,29 +190,47 @@ class FakeStore:
     async def delete_workspace(self, name):
         self.workspaces.pop(name, None)
 
-    async def create_schedule(self, name, doc):
-        if name in self.schedules:
-            raise ValueError(f"schedule {name} exists")
-        self.schedules[name] = {**doc, "created_at": time.time(), "updated_at": time.time()}
+    async def create_deployment(self, name, doc):
+        if name in self.deployments:
+            raise ValueError(f"deployment {name} exists")
+        self.deployments[name] = {**doc, "created_at": time.time(), "updated_at": time.time()}
 
-    async def get_schedule(self, name):
-        schedule = self.schedules.get(name)
-        return {"name": name, **schedule} if schedule else None
+    async def get_deployment(self, name):
+        deployment = self.deployments.get(name)
+        return {"name": name, **deployment} if deployment else None
 
-    async def update_schedule(self, name, **fields):
-        self.schedules[name].update(fields, updated_at=time.time())
+    async def update_deployment(self, name, **fields):
+        self.deployments[name].update(fields, updated_at=time.time())
 
-    async def list_schedules(self):
-        return [{"name": k, **v} for k, v in self.schedules.items()]
+    async def list_deployments(self):
+        return [{"name": k, **v} for k, v in self.deployments.items()]
 
-    async def delete_schedule(self, name):
-        self.schedules.pop(name, None)
+    async def delete_deployment(self, name):
+        self.deployments.pop(name, None)
 
     async def claim_slot(self, name, due, following):
-        schedule = self.schedules.get(name)
-        if not schedule or not schedule.get("enabled"):
+        deployment = self.deployments.get(name)
+        if not deployment or not deployment.get("enabled"):
             return False
-        if float(schedule.get("next_run_at") or 0) != due:
+        if float(deployment.get("next_run_at") or 0) != due:
             return False
-        schedule["next_run_at"] = following
+        deployment["next_run_at"] = following
         return True
+
+    async def create_agent(self, name, doc):
+        if name in self.agents:
+            raise ValueError(f"agent {name} exists")
+        self.agents[name] = {**doc, "created_at": time.time(), "updated_at": time.time()}
+
+    async def get_agent(self, name):
+        agent = self.agents.get(name)
+        return {"name": name, **agent} if agent else None
+
+    async def update_agent(self, name, **fields):
+        self.agents[name].update(fields, updated_at=time.time())
+
+    async def list_agents(self):
+        return [{"name": k, **v} for k, v in self.agents.items()]
+
+    async def delete_agent(self, name):
+        self.agents.pop(name, None)

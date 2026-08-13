@@ -18,7 +18,7 @@ from syros.console.api import (
     derived_state,
     to_jsonable,
 )
-from syros.errors import OptionsError
+from syros.errors import OptionsError, SyrosError
 from syros.names import validate_file
 from syros.options import AgentOptions
 from syros.skills import skill_prefix
@@ -352,6 +352,30 @@ async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
     assert no_job_trigger == [("proj-1", "asia-northeast1", "syros-runner", sid)]
     # and it shows up as an ordinary session, on its way up
     assert (await api(store).poll(sid, after=0))["session"]["state"] == "starting"
+
+
+async def test_create_session_resolves_agent(no_job_trigger):
+    store = FakeStore()
+    await store.create_agent(
+        "reviewer", {"options": {"model": "claude-sonnet-5", "allowed_tools": ["Read", "Grep"]}}
+    )
+
+    result = await api(store).create_session(
+        {"prompt": "review the diff", "agent": "reviewer", "options": {"model": "claude-opus-5"}}
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["agent"] == "reviewer"
+    # stored options are the defaults; the form's explicit model overrides
+    assert session["options"]["model"] == "claude-opus-5"
+    assert session["options"]["allowed_tools"] == ["Read", "Grep"]
+
+
+async def test_create_session_unknown_agent(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(SyrosError):
+        await api(store).create_session({"prompt": "go", "agent": "ghost", "options": {}})
+    assert store.sessions == {}
 
 
 async def test_create_session_requires_a_prompt(no_job_trigger):

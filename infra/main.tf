@@ -51,14 +51,14 @@ resource "google_firestore_backup_schedule" "weekly" {
   }
 }
 
-# a schedule's run history filters sessions by schedule and orders by
+# a deployment's run history filters sessions by deployment and orders by
 # created_at; equality + order-by on different fields needs a composite index
-resource "google_firestore_index" "sessions_by_schedule" {
+resource "google_firestore_index" "sessions_by_deployment" {
   database   = google_firestore_database.default.name
   collection = "sessions"
 
   fields {
-    field_path = "schedule"
+    field_path = "deployment"
     order      = "ASCENDING"
   }
   fields {
@@ -271,13 +271,13 @@ resource "google_cloud_run_v2_service_iam_member" "console_invokers" {
 }
 
 # --- the scheduler: Cloud Scheduler fires `syros tick` on a fixed cadence ---
-# The tick reads schedules/ from Firestore, fires whatever is due (create
+# The tick reads deployments/ from Firestore, fires whatever is due (create
 # session, queue prompt, trigger the runner job) and exits. It is idempotent —
 # a slot is consumed by a Firestore transaction — so overlap and retry are safe.
 
 resource "google_service_account" "scheduler" {
   account_id   = "syros-scheduler"
-  display_name = "syros schedule tick"
+  display_name = "syros deployment tick"
 }
 
 resource "google_project_iam_member" "scheduler_firestore" {
@@ -348,7 +348,7 @@ resource "google_cloud_scheduler_job" "tick" {
   name        = "syros-tick"
   region      = var.region
   schedule    = var.tick_schedule
-  description = "Fire due syros schedules (the tick cadence bounds schedule granularity)"
+  description = "Fire due syros deployments (the tick cadence bounds deployment granularity)"
 
   http_target {
     http_method = "POST"

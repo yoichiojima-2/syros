@@ -6,42 +6,59 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ChoiceField, Field, MODELS, TOOLS } from "@/components/option-fields";
-import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
+import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import type { AgentSummary } from "@/lib/types";
 
-/** New-session form: a prompt plus the same run options a deployment carries.
- *  Starting one here is what a client's query() does — the session is ordinary,
- *  and the transcript takes over from the moment the job is triggered. */
-export function SessionForm({
-  onCreated,
+/** Create or edit a stored agent (persona). Its options mirror the
+ *  AgentOptions subset a session stores and are posted as that same serialized
+ *  dict — the server rejects anything it doesn't recognize rather than
+ *  dropping it. */
+export function AgentForm({
+  agent,
+  onSaved,
   onCancel,
 }: {
-  onCreated: (sessionId: string) => void;
+  agent?: AgentSummary; // present = edit in place, absent = create
+  onSaved: (name: string) => void;
   onCancel: () => void;
 }) {
   const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
-  const { agents } = useAgents();
-  const [prompt, setPrompt] = useState("");
-  const [agent, setAgent] = useState("");
-  const [model, setModel] = useState("");
-  const [workspace, setWorkspace] = useState("");
-  const [artifacts, setArtifacts] = useState("");
-  const [tools, setTools] = useState<string[]>([]);
-  const [extraTools, setExtraTools] = useState("");
-  const [budget, setBudget] = useState("");
+  const stored = agent?.options ?? {};
+  const [name, setName] = useState(agent?.name ?? "");
+  const [description, setDescription] = useState(agent?.description ?? "");
+  const [systemPrompt, setSystemPrompt] = useState((stored.system_prompt as string) ?? "");
+  const [model, setModel] = useState((stored.model as string) ?? "");
+  const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
+  const [workspace, setWorkspace] = useState((stored.workspace as string) ?? "");
+  const [artifacts, setArtifacts] = useState(
+    typeof stored.artifacts === "string" ? stored.artifacts : "",
+  );
+  const [tools, setTools] = useState<string[]>(
+    ((stored.allowed_tools as string[]) ?? []).filter((tool) => TOOLS.includes(tool)),
+  );
+  const [extraTools, setExtraTools] = useState(
+    ((stored.allowed_tools as string[]) ?? []).filter((tool) => !TOOLS.includes(tool)).join(", "),
+  );
+  const [budget, setBudget] = useState(
+    stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
+  );
+  const [maxTurns, setMaxTurns] = useState(stored.max_turns == null ? "" : String(stored.max_turns));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy || !prompt.trim()) return;
+    if (busy) return;
     setBusy(true);
     setError("");
     // Only send what was filled in: an empty string is "unset", not "".
     const options: Record<string, unknown> = {};
+    if (systemPrompt.trim()) options.system_prompt = systemPrompt;
     if (model.trim()) options.model = model.trim();
+    if (permissionMode.trim()) options.permission_mode = permissionMode.trim();
     if (workspace.trim()) options.workspace = workspace.trim();
     if (artifacts.trim()) options.artifacts = artifacts.trim();
     const allowed = [
@@ -53,13 +70,15 @@ export function SessionForm({
     ];
     if (allowed.length) options.allowed_tools = allowed;
     if (budget.trim()) options.max_budget_usd = Number(budget);
+    if (maxTurns.trim()) options.max_turns = Number(maxTurns);
     try {
-      const { session_id } = await post<{ session_id: string }>("/api/sessions", {
-        prompt: prompt.trim(),
-        agent: agent.trim() || null,
-        options,
-      });
-      onCreated(session_id);
+      const body = { name: name.trim(), description: description.trim(), options };
+      if (agent) {
+        await post(`/api/agents/${encodeURIComponent(agent.name)}/update`, body);
+      } else {
+        await post("/api/agents", body);
+      }
+      onSaved(name.trim());
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -70,46 +89,53 @@ export function SessionForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New session</CardTitle>
+        <CardTitle>{agent ? `Edit ${agent.name}` : "New agent"}</CardTitle>
         <CardDescription>
-          Starts a sandbox run now. Follow-up prompts go to the same session from its transcript.
+          A stored run configuration: sessions and deployments that reference it get these options
+          as defaults. Edits apply to future runs only.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="space-y-4">
-          <Field label="Prompt">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Name" hint="lowercase, no spaces">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="code-reviewer"
+                autoFocus={!agent}
+                disabled={!!agent}
+                required
+              />
+            </Field>
+            <Field label="Description" hint="for humans">
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="careful code reviews"
+              />
+            </Field>
+            <Field label="Permission mode">
+              <ChoiceField
+                value={permissionMode}
+                onChange={setPermissionMode}
+                choices={["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"]}
+                noneLabel="default"
+              />
+            </Field>
+          </div>
+          <Field label="System prompt">
             <Textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                // ⌘/Ctrl+Enter submits; plain Enter stays a newline, since the
-                // options below are part of the same decision.
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
-                  e.currentTarget.form?.requestSubmit();
-              }}
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
               rows={3}
-              required
-              autoFocus
-              placeholder="Profile the CSVs in the workspace and write report.md"
-              className="rounded-lg border border-input bg-card px-3 py-2 text-[13px] leading-relaxed"
+              placeholder="You are a careful data analyst."
+              className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
             />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <Field label="Agent" hint="stored defaults">
-              <ChoiceField
-                value={agent}
-                onChange={setAgent}
-                choices={(agents ?? []).map((a) => a.name)}
-                noneLabel="none"
-              />
-            </Field>
             <Field label="Model">
-              <ChoiceField
-                value={model}
-                onChange={setModel}
-                choices={MODELS}
-                noneLabel="default"
-              />
+              <ChoiceField value={model} onChange={setModel} choices={MODELS} noneLabel="default" />
             </Field>
             <Field label="Workspace">
               <ChoiceField
@@ -134,6 +160,15 @@ export function SessionForm({
                 value={budget}
                 onChange={(e) => setBudget(e.target.value)}
                 inputMode="decimal"
+                placeholder="none"
+                className="font-mono"
+              />
+            </Field>
+            <Field label="Max turns">
+              <Input
+                value={maxTurns}
+                onChange={(e) => setMaxTurns(e.target.value)}
+                inputMode="numeric"
                 placeholder="none"
                 className="font-mono"
               />
@@ -172,14 +207,14 @@ export function SessionForm({
           </Field>
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
-            <Button type="submit" size="sm" disabled={busy || !prompt.trim()}>
-              {busy ? "Starting…" : "Start session"}
+            <Button type="submit" size="sm" disabled={busy}>
+              {busy ? "Saving…" : agent ? "Save agent" : "Create agent"}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
               Cancel
             </Button>
             <span className="text-[11px] text-muted-foreground">
-              Unlisted tools pause for approval.
+              Unlisted tools still pause for approval.
             </span>
           </div>
         </form>

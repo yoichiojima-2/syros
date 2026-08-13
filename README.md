@@ -116,42 +116,77 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
 Docker image builds its own copy in a Node stage, so deploys need no local build.
 
-## Schedules
+## Agents
 
-A schedule is a cron expression plus a prompt plus the usual run options, stored as one
+An agent is a named, stored run configuration — the persona a session runs as: system
+prompt, model, allowed tools, permission mode, workspace, artifact spaces, budgets. One
+Firestore document, mirroring Claude Managed Agents' Agent object (minus versioning:
+the document is mutable, and every session snapshots the options it resolved at creation,
+so editing an agent changes future runs only).
+
+Reference it from the SDK with `AgentOptions(agent=...)`: the stored options become the
+defaults, and any field set explicitly alongside it overrides them per field:
+
+```python
+from syros import query, AgentOptions
+
+async for message in query(
+    prompt="review the diff in the workspace",
+    options=AgentOptions(agent="reviewer", model="claude-opus-5"),  # model overrides
+):
+    ...
+```
+
+```
+syros agents create reviewer   --system-prompt "You are a careful code reviewer."   --allow Read --allow Grep --model claude-sonnet-5
+
+syros agents                     # list agents
+syros agents show|update|delete reviewer
+```
+
+The console has an Agents view with the same create/edit/delete surface, and sessions
+show which agent they ran as. Deployments can reference an agent too (below).
+
+## Deployments
+
+A deployment is a cron expression plus a prompt plus the usual run options, stored as one
 Firestore document. Each firing starts a *fresh ordinary session* — same list, transcript,
-approval queue, audit trail, kill switch — tagged with the schedule's name, so scheduled
-work is governed exactly like interactive work. Nothing in the runner knows schedules
+approval queue, audit trail, kill switch — tagged with the deployment's name, so scheduled
+work is governed exactly like interactive work. Nothing in the runner knows deployments
 exist.
 
 ```
-syros schedules create nightly-report \
+syros deployments create nightly-report \
   --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "profile the CSVs and rewrite report.md" \
   --model claude-sonnet-5 --workspace reports --allow Read --allow Write
 
-syros schedules                      # each schedule, its next slot, last run
-syros schedules runs nightly-report  # run history: outcome, trigger, cost
-syros schedules run nightly-report   # fire once, off-cycle (clock untouched)
-syros schedules pause|resume|delete nightly-report
+syros deployments                      # each deployment, its next slot, last run
+syros deployments runs nightly-report  # run history: outcome, trigger, cost
+syros deployments run nightly-report   # fire once, off-cycle (clock untouched)
+syros deployments pause|resume|delete nightly-report
 ```
 
-The console has the same surface with a run-status view per schedule: outcome/duration
+A deployment can name an agent (`--agent reviewer`) whose stored options become the run
+defaults — resolved fresh at each firing, so an agent edit reaches the next run without
+touching the deployment; the deployment's own options still override per field.
+
+The console has the same surface with a run-status view per deployment: outcome/duration
 bars over the run history (click a bar for that run's transcript), success rate, average
 duration, spend, and a create/pause/run-now/delete UI. Cron is the standard 5-field
-syntax (`@daily` etc. work), evaluated as wall-clock time in the schedule's IANA
-timezone, so a 9am schedule stays at 9am across DST.
+syntax (`@daily` etc. work), evaluated as wall-clock time in the deployment's IANA
+timezone, so a 9am deployment stays at 9am across DST.
 
-![Schedule detail: outcome/duration bars over the run history, success rate, spend](docs/img/console-schedule.png)
+![Deployment detail: outcome/duration bars over the run history, success rate, spend](docs/img/console-deployment.png)
 
-What advances the clock is `syros tick`, which fires every due schedule and exits;
+What advances the clock is `syros tick`, which fires every due deployment and exits;
 Terraform wires Cloud Scheduler → a `syros-scheduler` Cloud Run Job to run it every
 minute (`tick_schedule` to change — its cadence is the effective granularity of all
-schedules). The tick is transactional and idempotent: overlapping ticks can't
+deployments). The tick is transactional and idempotent: overlapping ticks can't
 double-fire, an outage catches up with one run rather than replaying missed slots, and
 a slot that comes due while the previous run is still active is skipped and counted
-(one live run per schedule — also what a shared workspace's lease would force anyway).
-Failures are visible, not silent: a schedule whose launch fails records `last_error`,
+(one live run per deployment — also what a shared workspace's lease would force anyway).
+Failures are visible, not silent: a deployment whose launch fails records `last_error`,
 and one whose cron can no longer fire is auto-paused with the reason on it.
 
 ## Analysis

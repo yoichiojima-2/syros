@@ -8,8 +8,10 @@ Layout:
     sessions/{sid}/tool_calls/{auto}  audit rows, written before the tool executes
     workspaces/{name}                 {lease_session_id, lease_expires, ...} — the
                                       exclusive lease on a shared workspace
-    schedules/{name}                  {cron, timezone, prompt, options, enabled,
+    deployments/{name}                  {cron, timezone, prompt, options, enabled,
                                       next_run_at, ...} — a cron that fires runs
+    agents/{name}                     {options, description, ...} — a stored,
+                                      named run configuration (persona)
 """
 
 from __future__ import annotations
@@ -71,14 +73,15 @@ class StoreProtocol(Protocol):
         session_id: str,
         options: dict[str, Any],
         created_by: str | None = None,
-        schedule: str | None = None,
+        deployment: str | None = None,
         trigger: str = "api",
+        agent: str | None = None,
     ) -> None: ...
     async def get_session(self, session_id: str) -> dict[str, Any] | None: ...
     async def update_session(self, session_id: str, **fields: Any) -> None: ...
     async def list_sessions(self, limit: int | None = 20) -> list[dict[str, Any]]: ...
-    async def list_schedule_sessions(
-        self, schedule: str, limit: int = 50
+    async def list_deployment_sessions(
+        self, deployment: str, limit: int = 50
     ) -> list[dict[str, Any]]: ...
     async def delete_session(self, session_id: str) -> None: ...
     async def mark_starting(self, session_id: str) -> None: ...
@@ -122,12 +125,17 @@ class StoreProtocol(Protocol):
     async def release_workspace(self, name: str, session_id: str) -> None: ...
     async def list_workspaces(self) -> list[dict[str, Any]]: ...
     async def delete_workspace(self, name: str) -> None: ...
-    async def create_schedule(self, name: str, doc: dict[str, Any]) -> None: ...
-    async def get_schedule(self, name: str) -> dict[str, Any] | None: ...
-    async def update_schedule(self, name: str, **fields: Any) -> None: ...
-    async def list_schedules(self) -> list[dict[str, Any]]: ...
-    async def delete_schedule(self, name: str) -> None: ...
+    async def create_deployment(self, name: str, doc: dict[str, Any]) -> None: ...
+    async def get_deployment(self, name: str) -> dict[str, Any] | None: ...
+    async def update_deployment(self, name: str, **fields: Any) -> None: ...
+    async def list_deployments(self) -> list[dict[str, Any]]: ...
+    async def delete_deployment(self, name: str) -> None: ...
     async def claim_slot(self, name: str, due: float, following: float) -> bool: ...
+    async def create_agent(self, name: str, doc: dict[str, Any]) -> None: ...
+    async def get_agent(self, name: str) -> dict[str, Any] | None: ...
+    async def update_agent(self, name: str, **fields: Any) -> None: ...
+    async def list_agents(self) -> list[dict[str, Any]]: ...
+    async def delete_agent(self, name: str) -> None: ...
 
 
 class Store:
@@ -149,8 +157,9 @@ class Store:
         session_id: str,
         options: dict[str, Any],
         created_by: str | None = None,
-        schedule: str | None = None,
+        deployment: str | None = None,
         trigger: str = "api",
+        agent: str | None = None,
     ) -> None:
         await self._session(session_id).create(
             {
@@ -165,12 +174,15 @@ class Store:
                 "triggered_at": 0.0,
                 "claude_session_id": None,
                 "created_by": created_by,
-                # Run provenance: which schedule owns this session (None for an
+                # Run provenance: which deployment owns this session (None for an
                 # ordinary query) and what started it — "api", "console" for the
-                # console's new-session form, "schedule" for a cron firing,
-                # "manual" for a run-now on a schedule.
-                "schedule": schedule,
+                # console's new-session form, "deployment" for a cron firing,
+                # "manual" for a run-now on a deployment.
+                "deployment": deployment,
                 "trigger": trigger,
+                # Which stored agent the options were resolved from, if any —
+                # provenance only; the merged options above are authoritative.
+                "agent": agent,
                 "created_at": self._firestore.SERVER_TIMESTAMP,
                 "updated_at": self._firestore.SERVER_TIMESTAMP,
             }
@@ -190,8 +202,10 @@ class Store:
             query = query.limit(limit)
         return [{"id": s.id, **s.to_dict()} async for s in query.stream()]
 
-    async def list_schedule_sessions(self, schedule: str, limit: int = 50) -> list[dict[str, Any]]:
-        """One schedule's runs, newest first.
+    async def list_deployment_sessions(
+        self, deployment: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """One deployment's runs, newest first.
 
         Equality plus an order_by on another field needs the composite index
         declared in infra/main.tf — without it Firestore rejects the query
@@ -199,7 +213,7 @@ class Store:
         """
         query = (
             self._db.collection("sessions")
-            .where(filter=self._firestore.FieldFilter("schedule", "==", schedule))
+            .where(filter=self._firestore.FieldFilter("deployment", "==", deployment))
             .order_by("created_at", direction="DESCENDING")
             .limit(limit)
         )
@@ -514,14 +528,14 @@ class Store:
         already deleted the GCS prefix and verified no live lease."""
         await self._workspace(name).delete()
 
-    # --- schedules (cron -> runs) ---
+    # --- deployments (cron -> runs) ---
 
-    def _schedule(self, name: str):
-        return self._db.collection("schedules").document(name)
+    def _deployment(self, name: str):
+        return self._db.collection("deployments").document(name)
 
-    async def create_schedule(self, name: str, doc: dict[str, Any]) -> None:
+    async def create_deployment(self, name: str, doc: dict[str, Any]) -> None:
         """Create; the document id is the name, so this fails on a duplicate."""
-        await self._schedule(name).create(
+        await self._deployment(name).create(
             {
                 **doc,
                 "created_at": self._firestore.SERVER_TIMESTAMP,
@@ -529,23 +543,23 @@ class Store:
             }
         )
 
-    async def get_schedule(self, name: str) -> dict[str, Any] | None:
-        snapshot = await self._schedule(name).get()
+    async def get_deployment(self, name: str) -> dict[str, Any] | None:
+        snapshot = await self._deployment(name).get()
         return {"name": name, **snapshot.to_dict()} if snapshot.exists else None
 
-    async def update_schedule(self, name: str, **fields: Any) -> None:
+    async def update_deployment(self, name: str, **fields: Any) -> None:
         fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
-        await self._schedule(name).update(fields)
+        await self._deployment(name).update(fields)
 
-    async def list_schedules(self) -> list[dict[str, Any]]:
-        """Every schedule. Unfiltered and unordered on purpose: the tick wants
-        them all, and a deployment's schedules number in the tens."""
+    async def list_deployments(self) -> list[dict[str, Any]]:
+        """Every deployment. Unfiltered and unordered on purpose: the tick wants
+        them all, and an installation's deployments number in the tens."""
         return [
-            {"name": s.id, **s.to_dict()} async for s in self._db.collection("schedules").stream()
+            {"name": s.id, **s.to_dict()} async for s in self._db.collection("deployments").stream()
         ]
 
-    async def delete_schedule(self, name: str) -> None:
-        await self._schedule(name).delete()
+    async def delete_deployment(self, name: str) -> None:
+        await self._deployment(name).delete()
 
     async def claim_slot(self, name: str, due: float, following: float) -> bool:
         """Atomically take one firing slot: advance next_run_at past `due`.
@@ -556,7 +570,7 @@ class Store:
         off, and the slot is consumed exactly once.
         """
         transaction = self._db.transaction()
-        reference = self._schedule(name)
+        reference = self._deployment(name)
         firestore = self._firestore
 
         @firestore.async_transactional
@@ -564,8 +578,8 @@ class Store:
             snapshot = await reference.get(transaction=transaction)
             if not snapshot.exists:
                 return False
-            schedule = snapshot.to_dict()
-            if not schedule.get("enabled") or float(schedule.get("next_run_at") or 0) != due:
+            deployment = snapshot.to_dict()
+            if not deployment.get("enabled") or float(deployment.get("next_run_at") or 0) != due:
                 return False
             transaction.update(
                 reference,
@@ -574,3 +588,32 @@ class Store:
             return True
 
         return await _claim(transaction)
+
+    # --- agents (stored run configurations) ---
+
+    def _agent(self, name: str):
+        return self._db.collection("agents").document(name)
+
+    async def create_agent(self, name: str, doc: dict[str, Any]) -> None:
+        """Create; the document id is the name, so this fails on a duplicate."""
+        await self._agent(name).create(
+            {
+                **doc,
+                "created_at": self._firestore.SERVER_TIMESTAMP,
+                "updated_at": self._firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+    async def get_agent(self, name: str) -> dict[str, Any] | None:
+        snapshot = await self._agent(name).get()
+        return {"name": name, **snapshot.to_dict()} if snapshot.exists else None
+
+    async def update_agent(self, name: str, **fields: Any) -> None:
+        fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
+        await self._agent(name).update(fields)
+
+    async def list_agents(self) -> list[dict[str, Any]]:
+        return [{"name": s.id, **s.to_dict()} async for s in self._db.collection("agents").stream()]
+
+    async def delete_agent(self, name: str) -> None:
+        await self._agent(name).delete()
