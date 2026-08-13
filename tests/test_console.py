@@ -204,6 +204,48 @@ async def test_http_smoke():
         server.shutdown()
 
 
+def test_route_match():
+    from syros.console.server import _match
+
+    assert _match(("api", "sessions"), ("api", "sessions")) == []
+    assert _match(("api", "sessions", None, "poll"), ("api", "sessions", "sess_1", "poll")) == [
+        "sess_1"
+    ]
+    assert _match(("api", "sessions", None, "approvals", None), ("api", "x")) is None
+    assert _match(("api", "sessions"), ("api", "approvals")) is None
+    assert _match(("api", "sessions"), ("api", "sessions", "extra")) is None
+
+
+async def test_http_post_errors():
+    from syros.console.server import create_server
+
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    server = create_server(api(store), asyncio.get_running_loop(), "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    def fetch(method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(method, path, body=body)
+        response = conn.getresponse()
+        return response.status, response.read()
+
+    try:
+        status, body = await asyncio.to_thread(fetch, "POST", "/api/nope")
+        assert status == 404
+
+        status, body = await asyncio.to_thread(fetch, "POST", "/api/sessions/sess_1/unknown")
+        assert status == 404
+
+        status, body = await asyncio.to_thread(
+            fetch, "POST", "/api/sessions/sess_1/prompt", "not json"
+        )
+        assert status == 400 and b"invalid JSON" in body
+    finally:
+        server.shutdown()
+
+
 async def test_static_serving_next_export():
     from syros.console.server import create_server
 

@@ -41,7 +41,10 @@ def to_jsonable(value: Any) -> Any:
 
 
 def derived_state(session: dict[str, Any]) -> str:
-    """Liveness ≠ status: a "running" session whose lease expired is a dead job."""
+    """Liveness ≠ status: a "running" session whose lease expired is a dead job.
+
+    The value set mirrors SessionState in console/src/lib/types.ts — keep in sync.
+    """
     if session.get("status") == "terminated" or session.get("disabled"):
         return "terminated"
     if session.get("status") == "running":

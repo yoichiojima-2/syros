@@ -5,7 +5,8 @@ import { StatCard } from "@/components/stat-card";
 import { CostChart } from "@/components/cost-chart";
 import { SessionTable } from "@/components/session-table";
 import { useApprovals, useNow, useSessions } from "@/lib/hooks";
-import { ACTIVE_STATES, cost } from "@/lib/format";
+import { cost } from "@/lib/format";
+import { ACTIVE_STATES } from "@/lib/types";
 
 export default function OverviewPage() {
   const sessions = useSessions();

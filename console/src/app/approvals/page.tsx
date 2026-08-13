@@ -3,23 +3,20 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApprovalCard } from "@/components/approval-card";
-import { useApprovals, useFlash, useNow } from "@/lib/hooks";
+import { useAction, useApprovals, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 
 export default function ApprovalsPage() {
   const { approvals, remove } = useApprovals();
   const now = useNow();
-  const [flash, showFlash] = useFlash();
+  const [flash, run] = useAction();
 
-  const decide = async (sessionId: string, callHash: string, allow: boolean, message: string | null) => {
-    try {
+  const decide = (sessionId: string, callHash: string, allow: boolean, message: string | null) =>
+    run(async () => {
       await post(`/api/sessions/${sessionId}/approvals/${callHash}`, { allow, message });
       remove(callHash);
-      showFlash(allow ? "allowed" : "denied");
-    } catch (err) {
-      showFlash(`error: ${(err as Error).message}`);
-    }
-  };
+      return allow ? "allowed" : "denied";
+    });
 
   return (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">

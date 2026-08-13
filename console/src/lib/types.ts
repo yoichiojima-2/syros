@@ -2,10 +2,19 @@
 // All timestamps are epoch seconds (the server flattens Firestore datetimes),
 // and the message/block shapes mirror syros.types' Firestore serialization.
 
+// Mirrors derived_state() in src/syros/console/api.py — keep the two in sync.
+export type SessionState = "running" | "stalled" | "queued" | "idle" | "terminated" | "unknown";
+
+export const ACTIVE_STATES: ReadonlySet<SessionState> = new Set([
+  "running",
+  "queued",
+  "stalled",
+]);
+
 export interface SessionSummary {
   id: string;
   status: string | null;
-  state: string; // derived liveness: running | stalled | queued | idle | terminated | ...
+  state: SessionState; // derived liveness, not raw status
   disabled: boolean;
   stop_reason: string | null;
   cost_usd: number;

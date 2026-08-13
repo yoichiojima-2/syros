@@ -13,13 +13,57 @@ import json
 import mimetypes
 import threading
 import webbrowser
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .api import Conflict, ConsoleAPI, NotFound
 
 CALL_TIMEOUT_SECONDS = 30.0
+
+# The API surface as data: (method, path pattern, handler). None segments are
+# wildcards, captured in order and passed to the handler after (api, body, query).
+ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
+    ("GET", ("api", "sessions"), lambda api, body, query: api.sessions()),
+    ("GET", ("api", "approvals"), lambda api, body, query: api.approvals()),
+    (
+        "GET",
+        ("api", "sessions", None, "poll"),
+        lambda api, body, query, sid: api.poll(sid, int((query.get("after") or ["0"])[0])),
+    ),
+    (
+        "POST",
+        ("api", "sessions", None, "prompt"),
+        lambda api, body, query, sid: api.prompt(sid, str(body.get("text") or "")),
+    ),
+    (
+        "POST",
+        ("api", "sessions", None, "interrupt"),
+        lambda api, body, query, sid: api.interrupt(sid),
+    ),
+    ("POST", ("api", "sessions", None, "kill"), lambda api, body, query, sid: api.kill(sid)),
+    (
+        "POST",
+        ("api", "sessions", None, "approvals", None),
+        lambda api, body, query, sid, call_hash: api.decide(
+            sid, call_hash, allow=bool(body.get("allow")), message=body.get("message")
+        ),
+    ),
+]
+
+
+def _match(pattern: tuple[str | None, ...], parts: tuple[str, ...]) -> list[str] | None:
+    if len(pattern) != len(parts):
+        return None
+    args = []
+    for expected, part in zip(pattern, parts):
+        if expected is None:
+            args.append(part)
+        elif expected != part:
+            return None
+    return args
 
 
 def _load_static() -> dict[str, bytes]:
@@ -86,19 +130,35 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
             return data if isinstance(data, dict) else {}
 
         def do_GET(self) -> None:
+            self._dispatch("GET")
+
+        def do_POST(self) -> None:
+            self._dispatch("POST")
+
+        def _dispatch(self, method: str) -> None:
             url = urlparse(self.path)
-            parts = [p for p in url.path.split("/") if p]
-            if parts == ["api", "sessions"]:
-                self._api(api.sessions())
-            elif parts == ["api", "approvals"]:
-                self._api(api.approvals())
-            elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "poll":
-                after = int((parse_qs(url.query).get("after") or ["0"])[0])
-                self._api(api.poll(parts[2], after))
-            elif parts[:1] == ["api"]:
-                self._json({"error": "not found"}, 404)
-            else:
+            parts = tuple(p for p in url.path.split("/") if p)
+            query = parse_qs(url.query)
+            for route_method, pattern, handler in ROUTES:
+                if route_method != method:
+                    continue
+                args = _match(pattern, parts)
+                if args is None:
+                    continue
+                if method == "POST":
+                    try:
+                        body = self._body()
+                    except json.JSONDecodeError:
+                        self._json({"error": "invalid JSON body"}, 400)
+                        return
+                else:
+                    body = {}
+                self._api(handler(api, body, query, *args))
+                return
+            if method == "GET" and parts[:1] != ("api",):
                 self._static("/".join(parts) or "index.html")
+            else:
+                self._json({"error": "not found"}, 404)
 
         def _static(self, name: str) -> None:
             # next content-hashes everything under _next/, so those are immutable
@@ -112,35 +172,6 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
                 self._send(200, body, _content_type(name), cache)
             elif "404.html" in static:
                 self._send(404, static["404.html"], _content_type("404.html"), "no-cache")
-            else:
-                self._json({"error": "not found"}, 404)
-
-        def do_POST(self) -> None:
-            parts = [p for p in urlparse(self.path).path.split("/") if p]
-            self._route_post(parts)
-
-        def _route_post(self, parts: list[str]) -> None:
-            if len(parts) < 4 or parts[:2] != ["api", "sessions"]:
-                self._json({"error": "not found"}, 404)
-                return
-            sid = parts[2]
-            try:
-                body = self._body()
-            except json.JSONDecodeError:
-                self._json({"error": "invalid JSON body"}, 400)
-                return
-            if parts[3:] == ["prompt"]:
-                self._api(api.prompt(sid, str(body.get("text") or "")))
-            elif parts[3:] == ["interrupt"]:
-                self._api(api.interrupt(sid))
-            elif parts[3:] == ["kill"]:
-                self._api(api.kill(sid))
-            elif len(parts) == 5 and parts[3] == "approvals":
-                self._api(
-                    api.decide(
-                        sid, parts[4], allow=bool(body.get("allow")), message=body.get("message")
-                    )
-                )
             else:
                 self._json({"error": "not found"}, 404)
 

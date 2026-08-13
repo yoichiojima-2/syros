@@ -26,4 +26,3 @@ export function pretty(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-export const ACTIVE_STATES = new Set(["running", "queued", "stalled"]);
