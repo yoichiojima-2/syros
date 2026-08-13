@@ -19,11 +19,16 @@ from . import env
 from .gate import Gate
 from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store
-from .types import ResultMessage, UserMessage, message_to_doc
+from .types import ResultMessage, SystemMessage, UserMessage, message_to_doc
 from . import artifacts, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
+
+# System subtypes the CLI streams as per-chunk progress noise. Mirroring them
+# would put one Firestore write (and one console row) per thinking chunk in
+# the feed; the actual thinking text still arrives in the assistant message.
+NOISY_SYSTEM_SUBTYPES = {"thinking_tokens"}
 
 
 async def _watch_interrupt(store: Store, session_id: str, client: ClaudeSDKClient) -> None:
@@ -147,6 +152,11 @@ async def run(session_id: str) -> None:
                     )
                 await client.query("\n\n".join(messages))
                 async for message in client.receive_response():
+                    if (
+                        isinstance(message, SystemMessage)
+                        and message.subtype in NOISY_SYSTEM_SUBTYPES
+                    ):
+                        continue
                     doc = message_to_doc(message)
                     if doc is not None:
                         seq += 1
