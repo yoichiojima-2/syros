@@ -24,6 +24,10 @@ from .api import Conflict, ConsoleAPI, NotFound, TooLarge
 
 CALL_TIMEOUT_SECONDS = 30.0
 
+# Uploads make the request body caller-controlled, so it needs a ceiling. Sized
+# above the 10 MiB write cap in api.py to leave room for base64's ~33% overhead.
+MAX_BODY_BYTES = 16 * 1024 * 1024
+
 # The API surface as data: (method, path pattern, handler). None segments are
 # wildcards, captured in order and passed to the handler after (api, body, query).
 ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
@@ -58,6 +62,28 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         "GET",
         ("api", "workspaces", None, "files"),
         lambda api, body, query, name: api.workspace_files(name),
+    ),
+    # Workspace file names may contain "/", so — as with artifacts — the file
+    # rides the query string on GET and the JSON body on POST, never a segment.
+    (
+        "GET",
+        ("api", "workspaces", None, "file"),
+        lambda api, body, query, name: api.workspace_file(name, (query.get("name") or [""])[0]),
+    ),
+    (
+        "POST",
+        ("api", "workspaces", None, "file"),
+        lambda api, body, query, name: api.write_workspace_file(
+            name,
+            str(body.get("name") or ""),
+            str(body.get("content") or ""),
+            str(body.get("encoding") or "utf-8"),
+        ),
+    ),
+    (
+        "POST",
+        ("api", "workspaces", None, "file", "delete"),
+        lambda api, body, query, name: api.delete_workspace_file(name, str(body.get("name") or "")),
     ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
     ("GET", ("api", "artifacts", None), lambda api, body, query, space: api.artifacts(space)),
@@ -158,6 +184,8 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
 
         def _body(self) -> dict:
             length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY_BYTES:
+                raise TooLarge(f"request body is {length} bytes (limit {MAX_BODY_BYTES})")
             if not length:
                 return {}
             data = json.loads(self.rfile.read(length))
@@ -184,6 +212,12 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
                         body = self._body()
                     except json.JSONDecodeError:
                         self._json({"error": "invalid JSON body"}, 400)
+                        return
+                    except TooLarge as exc:
+                        # The body is left unread, so the socket can't be reused —
+                        # those bytes would parse as the next pipelined request.
+                        self.close_connection = True
+                        self._json({"error": str(exc)}, 413)
                         return
                 else:
                     body = {}
