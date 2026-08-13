@@ -64,6 +64,21 @@ syros approvals sess_... allow <call_hash>
 syros kill sess_...                  # kill switch: denies every further tool call
 ```
 
+Sharing results with other users goes through artifact spaces — named prefixes
+(`artifacts/{space}/`) in the session bucket that any user with read access on the bucket
+can pull. Nothing new to run or deploy; sharing is the existing IAM story (grant
+`roles/storage.objectViewer` on the bucket):
+
+```
+syros artifacts                              # list spaces
+syros artifacts team                         # list files in a space
+syros artifacts team push report.md out/     # upload files or directories
+syros artifacts team pull ./downloads        # download a space
+syros artifacts team publish sess_... report.md
+                                             # copy straight out of a session's
+                                             # checkpointed workspace (server-side)
+```
+
 Or with one — the console is a pure Firestore client (no server-side state):
 
 ```
