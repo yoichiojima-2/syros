@@ -14,8 +14,8 @@ import type { PreviewKind } from "@/lib/artifacts";
 // agent-authored content can't escape into the page.
 
 export const PALETTE = {
-  light: { bg: "#ffffff", fg: "#141413", muted: "#6f6e69", border: "#e5e2d8", code: "#f0eee6" },
-  dark: { bg: "#262624", fg: "#f5f4ee", muted: "#b7b5ad", border: "#3e3e3a", code: "#1f1e1d" },
+  light: { bg: "#ffffff", fg: "#18181b", muted: "#71717a", border: "#e4e4e7", code: "#f4f4f5" },
+  dark: { bg: "#1b1b1e", fg: "#f4f4f5", muted: "#a1a1aa", border: "#2e2e33", code: "#141416" },
 };
 
 export function markdownDoc(markdown: string, dark: boolean): string {

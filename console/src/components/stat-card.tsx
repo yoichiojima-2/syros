@@ -24,7 +24,7 @@ export function StatCard({
         {value === null ? (
           <Skeleton className="h-9 w-24" />
         ) : (
-          <div className={cn("font-serif text-[30px] leading-none", accent && "text-primary")}>
+          <div className={cn("text-[30px] font-semibold tabular-nums leading-none tracking-tight", accent && "text-primary")}>
             {value}
           </div>
         )}

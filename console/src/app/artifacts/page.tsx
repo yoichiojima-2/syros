@@ -57,7 +57,7 @@ function ArtifactsInner() {
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
       <aside className="flex shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-4 lg:w-72 lg:border-r lg:border-b-0">
         <div>
-          <h1 className="px-1 pb-2 font-serif text-xl tracking-tight">Artifacts</h1>
+          <h1 className="px-1 pb-2 text-xl font-semibold tracking-tight">Artifacts</h1>
           {spaces === null ? (
             <div className="space-y-2">
               <Skeleton className="h-7" />

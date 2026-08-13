@@ -27,7 +27,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <aside className="flex shrink-0 items-center gap-1 border-b border-border bg-surface px-3 py-2.5 md:w-56 md:flex-col md:items-stretch md:gap-0 md:border-r md:border-b-0 md:px-3 md:py-5">
         <div className="flex items-baseline gap-2 md:px-2 md:pb-5">
           <span className="size-2 shrink-0 self-center rounded-full bg-primary" />
-          <span className="font-serif text-[17px] tracking-tight">syros</span>
+          <span className="text-[17px] font-semibold tracking-tight">syros</span>
           <span className="hidden truncate font-mono text-[11px] text-faint md:inline">{host}</span>
         </div>
         <nav className="flex gap-1 md:flex-col md:gap-0.5">
