@@ -13,7 +13,7 @@ from typing import Any
 
 from .errors import SessionTerminated, SyrosError
 from .options import AgentOptions
-from .store import Store, lease_active, new_session_id
+from .store import Store, StoreProtocol, lease_active, new_session_id
 from .types import Message, PermissionResultAllow, ResultMessage, doc_to_message
 
 EVENT_POLL_SECONDS = 0.5
@@ -49,7 +49,7 @@ async def _prompt_texts(prompt: str | AsyncIterable[dict[str, Any]]) -> list[str
     return texts
 
 
-async def _relay_approvals(store: Store, session_id: str, options: AgentOptions) -> None:
+async def _relay_approvals(store: StoreProtocol, session_id: str, options: AgentOptions) -> None:
     """Answer pending approvals with the caller's can_use_tool callback.
 
     The sandbox's gate only ever sees the approval document; this is the piece
@@ -75,7 +75,9 @@ async def _relay_approvals(store: Store, session_id: str, options: AgentOptions)
         )
 
 
-async def attach_session(store: Store, options: AgentOptions) -> tuple[str, dict[str, Any], int]:
+async def attach_session(
+    store: StoreProtocol, options: AgentOptions
+) -> tuple[str, dict[str, Any], int]:
     """Resolve (session_id, session, cursor) — reusing options.resume or creating anew."""
     if options.resume:
         session_id = options.resume
@@ -92,7 +94,7 @@ async def attach_session(store: Store, options: AgentOptions) -> tuple[str, dict
 
 
 async def send_prompt(
-    store: Store,
+    store: StoreProtocol,
     session_id: str,
     options: AgentOptions,
     prompt: str | AsyncIterable[dict[str, Any]],
@@ -111,7 +113,7 @@ async def send_prompt(
 
 
 async def stream_response(
-    store: Store, session_id: str, options: AgentOptions, after: int
+    store: StoreProtocol, session_id: str, options: AgentOptions, after: int
 ) -> AsyncIterator[tuple[int, Message]]:
     """Yield (seq, message) from the event feed until a ResultMessage, relaying
     pending approvals to options.can_use_tool while waiting."""
@@ -138,7 +140,7 @@ async def run_remote(
     prompt: str | AsyncIterable[dict[str, Any]],
     options: AgentOptions,
     *,
-    store: Store | None = None,
+    store: StoreProtocol | None = None,
 ) -> AsyncIterator[Message]:
     store = store or Store(options.resolved_project())
     session_id, _, cursor = await attach_session(store, options)

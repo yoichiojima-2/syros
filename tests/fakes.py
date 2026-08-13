@@ -7,6 +7,8 @@ from typing import Any
 
 
 class FakeStore:
+    """Implements syros.store.StoreProtocol (asserted in tests/test_store.py)."""
+
     def __init__(self) -> None:
         self.sessions: dict[str, dict[str, Any]] = {}
         self.events: dict[str, list[dict[str, Any]]] = {}
@@ -26,6 +28,8 @@ class FakeStore:
             "lease_expires": 0.0,
             "claude_session_id": None,
             "created_by": created_by,
+            "created_at": time.time(),
+            "updated_at": time.time(),
         }
 
     async def get_session(self, session_id):
@@ -33,7 +37,7 @@ class FakeStore:
         return dict(session) if session else None
 
     async def update_session(self, session_id, **fields):
-        self.sessions[session_id].update(fields)
+        self.sessions[session_id].update(fields, updated_at=time.time())
 
     async def list_sessions(self, limit=20):
         rows = [{"id": k, **v} for k, v in self.sessions.items()]

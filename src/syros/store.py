@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 
 def new_session_id() -> str:
@@ -29,6 +29,58 @@ def lease_active(session: dict[str, Any] | None, now: float | None = None) -> bo
     if not session:
         return False
     return float(session.get("lease_expires") or 0) > (now if now is not None else time.time())
+
+
+@runtime_checkable
+class StoreProtocol(Protocol):
+    """The store contract shared by Store and the in-memory test fake.
+
+    Everything that consumes a store (gate, console, remote, analytics) is
+    typed against this, so the fake can't silently drift from the real thing.
+    """
+
+    async def create_session(
+        self, session_id: str, options: dict[str, Any], created_by: str | None = None
+    ) -> None: ...
+    async def get_session(self, session_id: str) -> dict[str, Any] | None: ...
+    async def update_session(self, session_id: str, **fields: Any) -> None: ...
+    async def list_sessions(self, limit: int | None = 20) -> list[dict[str, Any]]: ...
+    async def claim_session(
+        self, session_id: str, lease_id: str, ttl_seconds: float
+    ) -> dict[str, Any] | None: ...
+    async def release_session(
+        self, session_id: str, *, status: str, stop_reason: str | None, **fields: Any
+    ) -> None: ...
+    async def append_event(self, session_id: str, seq: int, message: dict[str, Any]) -> None: ...
+    async def list_events(
+        self, session_id: str, after: int, limit: int = 200
+    ) -> list[dict[str, Any]]: ...
+    async def push_inbox(self, session_id: str, kind: str, text: str | None = None) -> None: ...
+    async def pop_messages(self, session_id: str) -> list[str]: ...
+    async def take_interrupt(self, session_id: str) -> bool: ...
+    async def request_approval(
+        self,
+        session_id: str,
+        call_hash: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        tool_use_id: str | None = None,
+    ) -> None: ...
+    async def get_approval(self, session_id: str, call_hash: str) -> dict[str, Any] | None: ...
+    async def decide_approval(
+        self,
+        session_id: str,
+        call_hash: str,
+        *,
+        allow: bool,
+        decided_by: str,
+        deny_message: str | None = None,
+    ) -> None: ...
+    async def list_pending_approvals(self, session_id: str) -> list[dict[str, Any]]: ...
+    async def list_approvals(self, session_id: str) -> list[dict[str, Any]]: ...
+    async def list_all_pending_approvals(self) -> list[dict[str, Any]]: ...
+    async def record_tool_call(self, session_id: str, row: dict[str, Any]) -> None: ...
+    async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]: ...
 
 
 class Store:

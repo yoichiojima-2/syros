@@ -21,6 +21,8 @@ import datetime
 import json
 from typing import Any
 
+from .store import StoreProtocol
+
 SESSIONS_SCHEMA = [
     ("session_id", "STRING", "REQUIRED"),
     ("status", "STRING", "NULLABLE"),
@@ -148,7 +150,9 @@ def approval_row(session_id: str, approval: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _all_events(store: Any, session_id: str, page_size: int) -> list[dict[str, Any]]:
+async def _all_events(
+    store: StoreProtocol, session_id: str, page_size: int
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     cursor = 0
     while True:
@@ -160,7 +164,7 @@ async def _all_events(store: Any, session_id: str, page_size: int) -> list[dict[
             return rows
 
 
-async def collect(store: Any, page_size: int = 500) -> dict[str, list[dict[str, Any]]]:
+async def collect(store: StoreProtocol, page_size: int = 500) -> dict[str, list[dict[str, Any]]]:
     """Read the full session tree from the store into flat row lists."""
     sessions = await store.list_sessions(limit=None)
     tables: dict[str, list[dict[str, Any]]] = {

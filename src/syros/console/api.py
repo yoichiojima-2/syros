@@ -15,7 +15,7 @@ from typing import Any
 from .. import remote
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions
-from ..store import Store, lease_active
+from ..store import StoreProtocol, lease_active
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
 # browser reloading on a long session — can't wedge a single HTTP request.
@@ -77,7 +77,7 @@ def _decided_by() -> str:
 class ConsoleAPI:
     def __init__(
         self,
-        store: Store,
+        store: StoreProtocol,
         options: AgentOptions,
         *,
         approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
