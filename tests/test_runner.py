@@ -2,7 +2,7 @@ import pytest
 
 import syros.runner
 from syros.runner import run
-from syros.types import AssistantMessage, ResultMessage, TextBlock
+from syros.types import AssistantMessage, ResultMessage, SystemMessage, TextBlock
 
 from .fakes import FakeStore
 
@@ -24,6 +24,9 @@ class FakeClient:
         self.prompts.append(prompt)
 
     async def receive_response(self):
+        yield SystemMessage(subtype="init", data={})
+        yield SystemMessage(subtype="thinking_tokens", data={})
+        yield SystemMessage(subtype="thinking_tokens", data={})
         yield AssistantMessage(content=[TextBlock(text="did it")], model="m")
         yield ResultMessage(
             subtype="success",
@@ -103,15 +106,17 @@ async def test_runner_full_turn(env, store, fake_harness):
     assert "HOME" in client.options.env
     assert client.options.hooks and "PreToolUse" in client.options.hooks
 
+    # thinking_tokens progress events are dropped; everything else is mirrored
     kinds = [e["message"]["kind"] for e in store.events[SID]]
-    assert kinds == ["user", "assistant", "result"]
+    assert kinds == ["user", "system", "assistant", "result"]
     assert store.events[SID][0]["message"]["content"] == "do the thing"
-    assert [e["seq"] for e in store.events[SID]] == [1, 2, 3]
+    assert store.events[SID][1]["message"]["subtype"] == "init"
+    assert [e["seq"] for e in store.events[SID]] == [1, 2, 3, 4]
 
     session = await store.get_session(SID)
     assert session["status"] == "idle"
     assert session["stop_reason"] == "success"
-    assert session["seq_head"] == 3
+    assert session["seq_head"] == 4
     assert session["cost_usd"] == 0.25
     assert session["claude_session_id"] == "claude-uuid-1"
     assert session["lease_expires"] == 0.0

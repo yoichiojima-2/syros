@@ -16,6 +16,8 @@ import { cn } from "@/lib/utils";
 // right, the agent answers as plain prose on the page, and the machinery (tool
 // calls, results, thinking) stays folded away in muted disclosures.
 
+const NOISY_SYSTEM_SUBTYPES = new Set(["thinking_tokens"]);
+
 function blockList(content: TranscriptMessage["content"]): ContentBlock[] {
   return Array.isArray(content) ? content : [];
 }
@@ -169,6 +171,9 @@ function MessageView({
     );
   }
   if (message.kind === "system") {
+    // Streaming progress noise (one event per thinking chunk on newer CLIs);
+    // feeds recorded before the runner learned to drop these still carry them.
+    if (message.subtype && NOISY_SYSTEM_SUBTYPES.has(message.subtype)) return null;
     return (
       <div className="font-mono text-[11px] text-faint">system: {message.subtype || ""}</div>
     );
