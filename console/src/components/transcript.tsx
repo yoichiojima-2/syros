@@ -98,7 +98,18 @@ function MessageView({
       <>
         {typeof message.content === "string" && <UserText text={message.content} />}
         {blockList(message.content).map((block, i) => {
-          if (block.type === "text") return <UserText key={i} text={block.text || ""} />;
+          // A text block inside a block-list user message is SDK-injected
+          // context (skill instructions, command output) — the runner mirrors
+          // typed prompts as plain strings — so it folds away like a tool
+          // result instead of rendering as a prompt bubble.
+          if (block.type === "text")
+            return (
+              <CollapsibleRow
+                key={i}
+                summary={`↳ ${compact(block.text || "", 160)}`}
+                detail={block.text || ""}
+              />
+            );
           if (block.type === "tool_result")
             return (
               <CollapsibleRow
@@ -128,15 +139,22 @@ function MessageView({
     return (
       <>
         {grouped.map((block, i) => {
-          if ("thinkingRun" in block)
+          if ("thinkingRun" in block) {
+            // Preview the first words so the row says what the agent is
+            // reasoning about instead of a bare all-caps label.
+            const preview = block.thinkingRun.join(" ").replace(/\s+/g, " ").trim();
             return (
               <details key={i} className="text-[13px] text-muted-foreground">
-                <summary className="text-[11px] tracking-wide uppercase">thinking</summary>
+                <summary className="overflow-hidden text-ellipsis whitespace-nowrap">
+                  <span className="text-[11px] tracking-wide uppercase">thinking</span>
+                  {preview && <span className="italic text-faint"> · {preview}</span>}
+                </summary>
                 <div className="mt-1.5 max-h-64 overflow-y-auto border-l-2 border-border pl-3 whitespace-pre-wrap italic">
                   {block.thinkingRun.join("\n\n")}
                 </div>
               </details>
             );
+          }
           if (block.type === "text")
             return (
               <div
@@ -203,11 +221,17 @@ function MessageView({
 export function Transcript({
   events,
   placeholder,
+  pending = [],
+  working = false,
   artifactPaths,
   onOpenArtifact,
 }: {
   events: TranscriptEvent[];
   placeholder: string | null;
+  /** Prompts sent from this browser but not yet mirrored back by the runner. */
+  pending?: string[];
+  /** True while the agent owes a response — renders a typing indicator. */
+  working?: boolean;
   artifactPaths?: ReadonlySet<string>;
   onOpenArtifact?: (path: string) => void;
 }) {
@@ -220,7 +244,7 @@ export function Transcript({
   useLayoutEffect(() => {
     const box = boxRef.current;
     if (box && pinnedRef.current) box.scrollTop = box.scrollHeight;
-  }, [events]);
+  }, [events, pending.length, working]);
 
   return (
     <div
@@ -233,7 +257,7 @@ export function Transcript({
       className="min-h-0 flex-1 overflow-y-auto px-5 py-6"
     >
       <div className="mx-auto max-w-3xl space-y-5">
-        {placeholder !== null && events.length === 0 && (
+        {placeholder !== null && events.length === 0 && pending.length === 0 && (
           <p className="pt-16 text-center text-[13px] text-muted-foreground">{placeholder}</p>
         )}
         {events.map((event) => (
@@ -244,6 +268,24 @@ export function Transcript({
             onOpenArtifact={onOpenArtifact}
           />
         ))}
+        {/* Prompts render the instant they're sent; the runner mirrors them
+            into the feed when it picks them up, and the dimmed copy drops. */}
+        {pending.map((text, i) => (
+          <div key={`pending-${i}`} className="opacity-60">
+            <UserText text={text} />
+          </div>
+        ))}
+        {working && (
+          <div className="flex items-center gap-1.5 py-1" aria-label="agent is working">
+            {[0, 200, 400].map((delay) => (
+              <span
+                key={delay}
+                className="size-1.5 animate-pulse rounded-full bg-muted-foreground"
+                style={{ animationDelay: `${delay}ms` }}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
