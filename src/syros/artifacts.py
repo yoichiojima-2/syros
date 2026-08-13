@@ -10,22 +10,15 @@ purpose — callers wrap in asyncio.to_thread (same contract as workspace.py).
 from __future__ import annotations
 
 import mimetypes
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .errors import OptionsError
-
-_SPACE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+from .names import validate_file, validate_name
 
 
 def space_prefix(space: str) -> str:
-    if not _SPACE_NAME.fullmatch(space):
-        raise OptionsError(
-            "artifact space must be a short name matching [a-z0-9][a-z0-9_-]* (max 64 chars)"
-        )
-    return f"artifacts/{space}/"
+    return f"artifacts/{validate_name('artifact space', space)}/"
 
 
 def mount_prompt(spaces: dict[str, str]) -> str | None:
@@ -92,8 +85,7 @@ def read_artifact(
 ) -> tuple[bytes, str]:
     """Download one artifact: (data, content type). Raises FileNotFoundError for
     a missing blob and ValueError when it exceeds max_bytes (download instead)."""
-    if not name or name.startswith("/") or ".." in name.split("/"):
-        raise OptionsError(f"invalid artifact name {name!r}")
+    validate_file("artifact", name)
     prefix = space_prefix(space)
     blob = _bucket(project, bucket_name).blob(prefix + name)
     if not blob.exists():

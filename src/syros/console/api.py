@@ -7,6 +7,9 @@ offset once and render skew-proof countdowns.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import getpass
 import time
 from datetime import datetime
@@ -16,11 +19,16 @@ from .. import remote
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions
 from ..store import StoreProtocol, lease_active
-from .objects import ObjectStoreProtocol
+from .objects import MAX_PREVIEW_BYTES, ObjectStoreProtocol
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
 # browser reloading on a long session — can't wedge a single HTTP request.
 MAX_EVENT_PAGES = 50
+
+# Bounds one bulk delete. Matches the session list page size, so "select all,
+# delete" always fits in a single request — and keeps the cascade inside the
+# server's per-call timeout.
+MAX_BULK_DELETE = 50
 
 
 class NotFound(Exception):
@@ -200,11 +208,46 @@ class ConsoleAPI:
         return {"ok": True}
 
     async def delete(self, session_id: str) -> dict[str, Any]:
+        await self._delete_one(session_id)
+        return {"ok": True}
+
+    async def _delete_one(self, session_id: str) -> None:
         session = await self._session(session_id)
         if derived_state(session) == "running":
             raise Conflict(f"session {session_id} is running — kill it first")
         await self._store.delete_session(session_id)
-        return {"ok": True}
+
+    async def delete_many(self, session_ids: Any) -> dict[str, Any]:
+        """Delete a selection of sessions, best-effort.
+
+        Per-session failures (running, already gone) are reported rather than
+        raised: half of a bulk delete landing and the response saying only
+        "409" would leave the caller unable to tell what survived. Anything
+        unexpected still propagates and fails the whole request.
+        """
+        if not isinstance(session_ids, list) or not all(isinstance(s, str) for s in session_ids):
+            raise ValueError("ids must be a list of session ids")
+        ids = list(dict.fromkeys(session_ids))  # de-duped, order preserved
+        if not ids:
+            raise ValueError("no sessions given")
+        if len(ids) > MAX_BULK_DELETE:
+            raise ValueError(f"too many sessions: {len(ids)} > {MAX_BULK_DELETE}")
+
+        async def attempt(session_id: str) -> str | None:
+            try:
+                await self._delete_one(session_id)
+            except (NotFound, Conflict) as exc:
+                return str(exc)
+            return None
+
+        errors = await asyncio.gather(*(attempt(sid) for sid in ids))
+        return {
+            "ok": all(e is None for e in errors),
+            "deleted": [sid for sid, error in zip(ids, errors) if error is None],
+            "failed": [
+                {"id": sid, "error": error} for sid, error in zip(ids, errors) if error is not None
+            ],
+        }
 
     # --- shared workspaces ---
 
@@ -247,6 +290,56 @@ class ConsoleAPI:
             raise NotFound(f"workspace {name} not found")
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
+
+    async def _require_free(self, name: str) -> None:
+        """Refuse to write a workspace a live run holds.
+
+        The runner checkpoints its whole ws/ directory when it goes idle, so an
+        edit saved mid-run would be silently overwritten by the job's own copy.
+        Better to say no than to lose the edit.
+        """
+        lease = next((w for w in await self._store.list_workspaces() if w["name"] == name), None)
+        if lease_active(lease):
+            raise Conflict(
+                f"workspace {name} is busy — session {lease.get('lease_session_id')} holds"
+                " the lease. Wait for the run to finish."
+            )
+
+    async def workspace_file(self, name: str, file: str) -> tuple[bytes, str]:
+        """Raw bytes + content type, same contract as artifact_file."""
+        try:
+            return await self._bucket_objects().read_workspace_file(name, file)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        except ValueError as exc:
+            raise TooLarge(str(exc)) from exc
+
+    async def write_workspace_file(
+        self, name: str, file: str, content: str, encoding: str = "utf-8"
+    ) -> dict[str, Any]:
+        """Create or overwrite one file. Text rides as utf-8, uploads as base64."""
+        if encoding == "base64":
+            try:
+                data = base64.b64decode(content, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"invalid base64 content: {exc}") from exc
+        elif encoding == "utf-8":
+            data = content.encode()
+        else:
+            raise ValueError(f"unknown encoding {encoding!r}: use 'utf-8' or 'base64'")
+        if len(data) > MAX_PREVIEW_BYTES:
+            raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
+        await self._require_free(name)
+        await self._bucket_objects().write_workspace_file(name, file, data)
+        return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
+
+    async def delete_workspace_file(self, name: str, file: str) -> dict[str, Any]:
+        await self._require_free(name)
+        try:
+            await self._bucket_objects().delete_workspace_file(name, file)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        return {"now": time.time(), "ok": True, "name": name, "file": file}
 
     # --- shared artifact spaces ---
 

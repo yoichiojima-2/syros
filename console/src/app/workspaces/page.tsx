@@ -94,7 +94,15 @@ function WorkspaceRow({
         <TableCell className="w-8">
           <Chevron className="size-4 text-muted-foreground" />
         </TableCell>
-        <TableCell className="font-mono text-[13px] font-medium">{workspace.name}</TableCell>
+        <TableCell className="font-mono text-[13px] font-medium">
+          <Link
+            href={`/workspace?name=${encodeURIComponent(workspace.name)}`}
+            onClick={(e) => e.stopPropagation()}
+            className="hover:underline"
+          >
+            {workspace.name}
+          </Link>
+        </TableCell>
         <TableCell>
           {workspace.busy ? (
             <span className="flex items-center gap-1.5">

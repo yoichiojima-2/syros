@@ -70,6 +70,14 @@ export interface SessionsResponse {
   sessions: SessionSummary[];
 }
 
+// POST /api/sessions/delete — best-effort, so it reports each session's fate
+// instead of failing the whole request on the first one it can't remove.
+export interface BulkDeleteResponse {
+  ok: boolean;
+  deleted: string[];
+  failed: { id: string; error: string }[];
+}
+
 export interface PollResponse {
   now: number;
   session: SessionSummary;
@@ -113,6 +121,15 @@ export interface WorkspaceFilesResponse {
   now: number;
   name: string;
   files: StoredFile[];
+}
+
+/** Reply shape of the workspace file mutations (write, delete). */
+export interface OkResponse {
+  now: number;
+  ok: boolean;
+  name: string;
+  file: string;
+  size?: number;
 }
 
 export interface SpaceSummary {

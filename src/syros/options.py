@@ -9,12 +9,12 @@ constructor rather than silently doing nothing in the sandbox.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_args
 
 from . import env
 from .errors import OptionsError
+from .names import validate_name
 from .types import CanUseTool
 
 PermissionMode = Literal["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"]
@@ -35,8 +35,6 @@ _SERIALIZED_FIELDS = (
 )
 
 ArtifactMode = Literal["rw", "ro"]
-
-_WORKSPACE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
 
 @dataclass
@@ -113,17 +111,10 @@ class AgentOptions:
     def validate(self) -> None:
         if self.system_prompt is not None and not isinstance(self.system_prompt, str):
             raise OptionsError("system_prompt must be a plain string in syros")
-        if self.workspace is not None and not _WORKSPACE_NAME.fullmatch(self.workspace):
-            raise OptionsError(
-                "workspace must be a short name matching [a-z0-9][a-z0-9_-]*"
-                " (max 64 chars), not a path"
-            )
+        if self.workspace is not None:
+            validate_name("workspace", self.workspace)
         for space, mode in self.resolved_artifacts().items():
-            if not isinstance(space, str) or not _WORKSPACE_NAME.fullmatch(space):
-                raise OptionsError(
-                    "artifact space must be a short name matching [a-z0-9][a-z0-9_-]*"
-                    " (max 64 chars), not a path"
-                )
+            validate_name("artifact space", space)
             if mode not in get_args(ArtifactMode):
                 raise OptionsError(f"artifact space {space!r}: mode must be 'rw' or 'ro'")
         for name, config in self.mcp_servers.items():
