@@ -21,6 +21,7 @@ from syros.console.api import (
 from syros.errors import OptionsError
 from syros.names import validate_file
 from syros.options import AgentOptions
+from syros.skills import skill_prefix
 from syros.workspace import workspace_prefix
 
 from .fakes import FakeStore
@@ -29,9 +30,10 @@ from .fakes import FakeStore
 class FakeObjects:
     """Implements syros.console.objects.ObjectStoreProtocol over a name->bytes dict."""
 
-    def __init__(self, workspaces=None, spaces=None):
+    def __init__(self, workspaces=None, spaces=None, skills=None):
         self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
         self.spaces: dict[str, dict[str, bytes]] = spaces or {}
+        self.skills: dict[str, dict[str, bytes]] = skills or {}
 
     @staticmethod
     def _stats(files):
@@ -93,6 +95,51 @@ class FakeObjects:
         if len(files[name]) > 100:
             raise ValueError("too large")
         return files[name], mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+    @staticmethod
+    def _check_skill(name, file):
+        skill_prefix(name)
+        validate_file("skill file", file)
+
+    async def skill_stats(self):
+        return {name: self._stats(files) for name, files in self.skills.items()}
+
+    async def skill_files(self, name):
+        files = self.skills.get(name, {})
+        return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
+
+    async def read_skill_file(self, name, file):
+        import mimetypes
+
+        self._check_skill(name, file)
+        files = self.skills.get(name, {})
+        if file not in files:
+            raise FileNotFoundError(file)
+        if len(files[file]) > 100:
+            raise ValueError("too large")
+        return files[file], mimetypes.guess_type(file)[0] or "application/octet-stream"
+
+    async def write_skill_file(self, name, file, data):
+        self._check_skill(name, file)
+        self.skills.setdefault(name, {})[file] = data
+
+    async def delete_skill_file(self, name, file):
+        self._check_skill(name, file)
+        files = self.skills.get(name, {})
+        if file not in files:
+            raise FileNotFoundError(file)
+        del files[file]
+
+    async def delete_skill(self, name):
+        skill_prefix(name)
+        files = self.skills.pop(name, None)
+        if not files:
+            raise FileNotFoundError(name)
+        return len(files)
+
+    async def sync_official_skills(self):
+        self.skills.setdefault("pdf", {})["SKILL.md"] = b"# pdf"
+        return {"skills": ["pdf"], "files": 1, "skipped": []}
 
 
 @pytest.fixture(autouse=True)
@@ -504,6 +551,83 @@ async def test_artifact_file_too_large():
         await api(FakeStore(), objects=objects).artifact_file("reports", "big.html")
 
 
+# --- skills ---
+
+
+async def test_skills_stats_and_files():
+    objects = FakeObjects(skills={"pdf": {"SKILL.md": b"# pdf", "ref/x.md": b"xx"}})
+    console = api(FakeStore(), objects=objects)
+
+    result = await console.skills()
+    assert result["skills"] == [{"name": "pdf", "file_count": 2, "total_size": 7, "updated": None}]
+
+    listing = await console.skill_files("pdf")
+    assert [f["name"] for f in listing["files"]] == ["SKILL.md", "ref/x.md"]
+
+    with pytest.raises(NotFound):
+        await console.skill_files("nope")
+
+
+async def test_skill_file_read_write_delete():
+    objects = FakeObjects(skills={"pdf": {"SKILL.md": b"# pdf"}})
+    console = api(FakeStore(), objects=objects)
+
+    data, content_type = await console.skill_file("pdf", "SKILL.md")
+    assert data == b"# pdf"
+    assert content_type == "text/markdown"
+
+    result = await console.write_skill_file("pdf", "SKILL.md", "# edited")
+    assert result["ok"] is True and result["size"] == 8
+    assert objects.skills["pdf"]["SKILL.md"] == b"# edited"
+
+    await console.write_skill_file(
+        "pdf", "logo.bin", base64.b64encode(b"\xff\x00").decode(), "base64"
+    )
+    assert objects.skills["pdf"]["logo.bin"] == b"\xff\x00"
+    with pytest.raises(ValueError, match="base64"):
+        await console.write_skill_file("pdf", "x.bin", "not base64!", "base64")
+    with pytest.raises(ValueError, match="encoding"):
+        await console.write_skill_file("pdf", "x.bin", "hi", "rot13")
+
+    await console.delete_skill_file("pdf", "logo.bin")
+    assert "logo.bin" not in objects.skills["pdf"]
+    with pytest.raises(NotFound):
+        await console.delete_skill_file("pdf", "logo.bin")
+
+
+async def test_skill_file_too_large():
+    objects = FakeObjects(skills={"pdf": {"big.md": b"x" * 200}})
+    with pytest.raises(TooLarge):
+        await api(FakeStore(), objects=objects).skill_file("pdf", "big.md")
+
+
+async def test_skill_rejects_bad_names():
+    console = api(FakeStore(), objects=FakeObjects(skills={"pdf": {"SKILL.md": b"p"}}))
+
+    for skill in ("../etc", "Upper", "a/b", ""):
+        with pytest.raises(OptionsError):
+            await console.skill_file(skill, "SKILL.md")
+
+    for file in ("", "/abs", "../escape", "sub/../../escape"):
+        with pytest.raises(OptionsError):
+            await console.write_skill_file("pdf", file, "x")
+
+
+async def test_delete_skill_and_sync():
+    objects = FakeObjects(skills={"pdf": {"SKILL.md": b"p", "ref/x.md": b"x"}})
+    console = api(FakeStore(), objects=objects)
+
+    result = await console.delete_skill("pdf")
+    assert result["ok"] is True and result["deleted"] == 2
+    assert "pdf" not in objects.skills
+    with pytest.raises(NotFound):
+        await console.delete_skill("pdf")
+
+    result = await console.sync_official_skills()
+    assert result["ok"] is True and result["skills"] == ["pdf"]
+    assert objects.skills["pdf"]["SKILL.md"] == b"# pdf"
+
+
 # --- http smoke ---
 
 
@@ -568,6 +692,7 @@ async def test_http_artifact_and_workspace_routes():
     objects = FakeObjects(
         workspaces={"team": {"notes.md": b"nn"}},
         spaces={"reports": {"sub/r.html": b"<h1>hi</h1>", "big.bin": b"x" * 200}},
+        skills={"pdf": {"SKILL.md": b"# pdf"}},
     )
     server = create_server(api(store, objects=objects), asyncio.get_running_loop(), "127.0.0.1", 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -637,6 +762,37 @@ async def test_http_artifact_and_workspace_routes():
 
         status, _, _ = await asyncio.to_thread(fetch, "/api/artifacts/reports/file?name=big.bin")
         assert status == 413
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/skills")
+        assert status == 200
+        assert [s["name"] for s in json.loads(body)["skills"]] == ["pdf"]
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/skills/pdf/files")
+        assert status == 200
+        assert [f["name"] for f in json.loads(body)["files"]] == ["SKILL.md"]
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/skills/pdf/file?name=SKILL.md")
+        assert status == 200 and body == b"# pdf"
+
+        status, body = await asyncio.to_thread(
+            post, "/api/skills/pdf/file", {"name": "SKILL.md", "content": "# edited"}
+        )
+        assert status == 200 and json.loads(body)["ok"] is True
+        assert objects.skills["pdf"]["SKILL.md"] == b"# edited"
+
+        status, body = await asyncio.to_thread(
+            post, "/api/skills/pdf/file/delete", {"name": "SKILL.md"}
+        )
+        assert status == 200
+        assert "SKILL.md" not in objects.skills["pdf"]
+
+        # sync must not be shadowed by the /api/skills/{name}/... wildcards
+        status, body = await asyncio.to_thread(post, "/api/skills/sync", {})
+        assert status == 200 and json.loads(body)["skills"] == ["pdf"]
+
+        status, body = await asyncio.to_thread(post, "/api/skills/pdf/delete", {})
+        assert status == 200 and json.loads(body)["deleted"] == 1
+        assert "pdf" not in objects.skills
     finally:
         server.shutdown()
 
