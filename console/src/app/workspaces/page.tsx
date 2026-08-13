@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronDown, ChevronRight, FolderPlus, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -15,20 +17,54 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StateBadge } from "@/components/state-badge";
-import { useNow, useWorkspaces } from "@/lib/hooks";
-import { api } from "@/lib/api";
+import { useAction, useNow, useWorkspaces } from "@/lib/hooks";
+import { api, post } from "@/lib/api";
 import { bytes, relTime, shortId } from "@/lib/format";
-import type { WorkspaceFilesResponse, StoredFile, WorkspaceSummary } from "@/lib/types";
+import type { OkResponse, WorkspaceFilesResponse, StoredFile, WorkspaceSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export default function WorkspacesPage() {
+  const router = useRouter();
   const workspaces = useWorkspaces();
   const now = useNow();
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [flash, run] = useAction();
+
+  const create = () => {
+    const name = prompt("New workspace name (lowercase, [a-z0-9_-])");
+    if (!name) return;
+    run(async () => {
+      await post<OkResponse>("/api/workspaces", { name });
+      router.push(`/workspace?name=${encodeURIComponent(name)}`);
+    });
+  };
+
+  const remove = (workspace: WorkspaceSummary) => {
+    if (
+      !confirm(
+        `Delete workspace ${workspace.name}? Its ${workspace.file_count} file${
+          workspace.file_count === 1 ? "" : "s"
+        } are removed from the bucket permanently.`,
+      )
+    )
+      return;
+    run(async () => {
+      await post<OkResponse>(`/api/workspaces/${encodeURIComponent(workspace.name)}/delete`, {});
+      return `deleted ${workspace.name}`;
+    });
+  };
 
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
-      <h1 className="font-serif text-2xl tracking-tight">Workspaces</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="font-serif text-2xl tracking-tight">Workspaces</h1>
+        <div className="flex items-center gap-3">
+          {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
+          <Button variant="outline" size="sm" onClick={create}>
+            <FolderPlus /> New workspace
+          </Button>
+        </div>
+      </div>
       <Card>
         <CardContent className="px-2 py-2">
           {workspaces === null ? (
@@ -53,6 +89,7 @@ export default function WorkspacesPage() {
                   <TableHead className="text-right">Files</TableHead>
                   <TableHead className="text-right">Size</TableHead>
                   <TableHead className="text-right">Updated</TableHead>
+                  <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -65,6 +102,7 @@ export default function WorkspacesPage() {
                     onToggle={() =>
                       setExpanded(expanded === workspace.name ? null : workspace.name)
                     }
+                    onDelete={() => remove(workspace)}
                   />
                 ))}
               </TableBody>
@@ -81,11 +119,13 @@ function WorkspaceRow({
   now,
   expanded,
   onToggle,
+  onDelete,
 }: {
   workspace: WorkspaceSummary;
   now: number;
   expanded: boolean;
   onToggle: () => void;
+  onDelete: () => void;
 }) {
   const Chevron = expanded ? ChevronDown : ChevronRight;
   return (
@@ -152,6 +192,22 @@ function WorkspaceRow({
         <TableCell className="text-right text-xs text-muted-foreground">
           {relTime(workspace.updated, now)}
         </TableCell>
+        <TableCell className="w-8 text-right">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={workspace.busy}
+            title={
+              workspace.busy ? "a run holds this workspace" : `Delete ${workspace.name}`
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Trash2 />
+          </Button>
+        </TableCell>
       </TableRow>
       {expanded && <FilesRow name={workspace.name} now={now} />}
     </>
@@ -177,7 +233,7 @@ function FilesRow({ name, now }: { name: string; now: number }) {
   return (
     <TableRow className="hover:bg-transparent">
       <TableCell />
-      <TableCell colSpan={6} className="py-2">
+      <TableCell colSpan={7} className="py-2">
         {files === null ? (
           <Skeleton className="h-5 w-48" />
         ) : files.length === 0 ? (

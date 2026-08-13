@@ -96,6 +96,8 @@ Or with one — the console is a pure Firestore client (no server-side state):
 syros console                        # web console at localhost:8484
 ```
 
+![Console overview: active sessions, spend, pending approvals, cost by session](docs/img/console-overview.png)
+
 Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
 (re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
 selection at a time (running and starting sessions have to be killed first). The state
@@ -106,6 +108,8 @@ workspaces are editable: open one to edit a file in place, upload, or delete —
 refused while a run holds the lease, since its checkpoint would overwrite them. It also
 deploys to Cloud Run (`syros-console`, IAM-only — no public access), so the same console is
 reachable without a local checkout or GCP client libraries; see [Deploy](#deploy).
+
+![Session transcript with a pending Write approval and its countdown](docs/img/console-session.png)
 
 The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind); `make console`
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
@@ -171,6 +175,8 @@ bars over the run history (click a bar for that run's transcript), success rate,
 duration, spend, and a create/pause/run-now/delete UI. Cron is the standard 5-field
 syntax (`@daily` etc. work), evaluated as wall-clock time in the deployment's IANA
 timezone, so a 9am deployment stays at 9am across DST.
+
+![Deployment detail: outcome/duration bars over the run history, success rate, spend](docs/img/console-deployment.png)
 
 What advances the clock is `syros tick`, which fires every due deployment and exits;
 Terraform wires Cloud Scheduler → a `syros-scheduler` Cloud Run Job to run it every

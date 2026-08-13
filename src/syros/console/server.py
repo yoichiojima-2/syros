@@ -96,6 +96,16 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     ),
     ("GET", ("api", "workspaces"), lambda api, body, query: api.workspaces()),
     (
+        "POST",
+        ("api", "workspaces"),
+        lambda api, body, query: api.create_workspace(str(body.get("name") or "")),
+    ),
+    (
+        "POST",
+        ("api", "workspaces", None, "delete"),
+        lambda api, body, query, name: api.delete_workspace(name),
+    ),
+    (
         "GET",
         ("api", "workspaces", None, "files"),
         lambda api, body, query, name: api.workspace_files(name),
@@ -122,14 +132,125 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         ("api", "workspaces", None, "file", "delete"),
         lambda api, body, query, name: api.delete_workspace_file(name, str(body.get("name") or "")),
     ),
+    (
+        "POST",
+        ("api", "workspaces", None, "file", "rename"),
+        lambda api, body, query, name: api.rename_workspace_file(
+            name, str(body.get("from") or ""), str(body.get("to") or "")
+        ),
+    ),
+    (
+        "POST",
+        ("api", "workspaces", None, "file", "tags"),
+        lambda api, body, query, name: api.set_workspace_file_tags(
+            name, str(body.get("name") or ""), body.get("tags") or []
+        ),
+    ),
+    (
+        "POST",
+        ("api", "workspaces", None, "files", "delete"),
+        lambda api, body, query, name: api.delete_workspace_files(name, body.get("names") or []),
+    ),
+    (
+        "POST",
+        ("api", "workspaces", None, "folder", "delete"),
+        lambda api, body, query, name: api.delete_workspace_folder(
+            name, str(body.get("folder") or "")
+        ),
+    ),
+    ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
+    ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
+    (
+        "GET",
+        ("api", "skills", None, "files"),
+        lambda api, body, query, name: api.skill_files(name),
+    ),
+    # Skill file names may contain "/", so — as with workspaces — the file
+    # rides the query string on GET and the JSON body on POST, never a segment.
+    (
+        "GET",
+        ("api", "skills", None, "file"),
+        lambda api, body, query, name: api.skill_file(name, (query.get("name") or [""])[0]),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "file"),
+        lambda api, body, query, name: api.write_skill_file(
+            name,
+            str(body.get("name") or ""),
+            str(body.get("content") or ""),
+            str(body.get("encoding") or "utf-8"),
+        ),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "file", "delete"),
+        lambda api, body, query, name: api.delete_skill_file(name, str(body.get("name") or "")),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "delete"),
+        lambda api, body, query, name: api.delete_skill(name),
+    ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
+    (
+        "POST",
+        ("api", "artifacts"),
+        lambda api, body, query: api.create_space(str(body.get("name") or "")),
+    ),
     ("GET", ("api", "artifacts", None), lambda api, body, query, space: api.artifacts(space)),
+    (
+        "POST",
+        ("api", "artifacts", None, "delete"),
+        lambda api, body, query, space: api.delete_space(space),
+    ),
     # The artifact name rides the query string: names may contain "/", which
     # the segment-based route match can't capture.
     (
         "GET",
         ("api", "artifacts", None, "file"),
         lambda api, body, query, space: api.artifact_file(space, (query.get("name") or [""])[0]),
+    ),
+    (
+        "POST",
+        ("api", "artifacts", None, "file"),
+        lambda api, body, query, space: api.write_artifact(
+            space,
+            str(body.get("name") or ""),
+            str(body.get("content") or ""),
+            str(body.get("encoding") or "utf-8"),
+        ),
+    ),
+    (
+        "POST",
+        ("api", "artifacts", None, "file", "delete"),
+        lambda api, body, query, space: api.delete_artifact(space, str(body.get("name") or "")),
+    ),
+    (
+        "POST",
+        ("api", "artifacts", None, "file", "rename"),
+        lambda api, body, query, space: api.rename_artifact(
+            space, str(body.get("from") or ""), str(body.get("to") or "")
+        ),
+    ),
+    (
+        "POST",
+        ("api", "artifacts", None, "file", "tags"),
+        lambda api, body, query, space: api.set_artifact_tags(
+            space, str(body.get("name") or ""), body.get("tags") or []
+        ),
+    ),
+    (
+        "POST",
+        ("api", "artifacts", None, "files", "delete"),
+        lambda api, body, query, space: api.delete_artifacts(space, body.get("names") or []),
+    ),
+    (
+        "POST",
+        ("api", "artifacts", None, "folder", "delete"),
+        lambda api, body, query, space: api.delete_artifact_folder(
+            space, str(body.get("folder") or "")
+        ),
     ),
 ]
 

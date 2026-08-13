@@ -1,36 +1,30 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Download, FileText, Trash2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { ArrowLeft, Download, FilePlus2, FileText, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { CopyButton, download } from "@/components/artifact-viewer";
-import { FileManager, type FileOps } from "@/components/file-manager";
-import { useAction, useNow, useWorkspaceFiles, useWorkspaces } from "@/lib/hooks";
+import { useAction, useNow, useSkillFiles } from "@/lib/hooks";
 import { post } from "@/lib/api";
-import { shortId } from "@/lib/format";
-import type { BulkFilesResponse, OkResponse, StoredFile } from "@/lib/types";
+import { bytes, relTime } from "@/lib/format";
+import type { OkResponse, StoredFile } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
-// One shared workspace (workspaces/{name}/ in the bucket), editable. Master–
-// detail like the artifacts page, but the right pane is a text editor rather
-// than a preview: this is the only surface where a human can change what a
-// session will see on its next restore, and the only one that can delete a
-// file at all — checkpoint() never removes blobs, so a file dropped inside a
-// run comes back until someone deletes it here.
-//
-// Every write is refused while a run holds the lease (409 from the API). The
-// disabled controls below are courtesy; the server is the actual guard.
+// One skill (skills/{name}/ in the bucket), editable. Same master–detail
+// editor as the workspace page, without the lease gating: skills are copied
+// into each sandbox HOME at run start, so a console edit never races a live
+// run's checkpoint — it simply applies from the next run onward.
 
-function fileUrl(workspace: string, file: string): string {
-  return `/api/workspaces/${encodeURIComponent(workspace)}/file?name=${encodeURIComponent(file)}`;
+function fileUrl(skill: string, file: string): string {
+  return `/api/skills/${encodeURIComponent(skill)}/file?name=${encodeURIComponent(file)}`;
 }
 
 /** Decoded-as-text bytes that clearly weren't text. Cheap and good enough to
- *  keep the editor from mangling a binary a session dropped in the workspace. */
+ *  keep the editor from mangling a binary resource bundled with a skill. */
 function looksBinary(text: string): boolean {
   if (text.includes("\u0000")) return true;
   // response.text() decodes as UTF-8, so non-text bytes arrive as U+FFFD
@@ -38,58 +32,75 @@ function looksBinary(text: string): boolean {
   return replaced > 4 && replaced > text.length / 100;
 }
 
-export default function WorkspacePage() {
+export default function SkillPage() {
   // useSearchParams requires a Suspense boundary under static export
   return (
     <Suspense>
-      <WorkspaceInner />
+      <SkillInner />
     </Suspense>
   );
 }
 
-function WorkspaceInner() {
+function SkillInner() {
   const router = useRouter();
   const params = useSearchParams();
   const name = params.get("name");
   const file = params.get("file");
-  const workspaces = useWorkspaces();
-  const { files, refresh } = useWorkspaceFiles(name);
+  const { files, refresh } = useSkillFiles(name);
   const now = useNow();
   const [flash, run] = useAction();
-
-  const summary = workspaces?.find((w) => w.name === name) ?? null;
-  const busy = summary?.busy ?? false;
-  const lockedBy = busy
-    ? `a run holds this workspace (${shortId(summary?.lease_session_id || "unknown")})`
-    : undefined;
+  const uploadRef = useRef<HTMLInputElement>(null);
 
   const select = (nextFile: string | null) => {
     if (!name) return;
     const query = new URLSearchParams({ name });
     if (nextFile) query.set("file", nextFile);
-    router.replace(`/workspace?${query}`);
+    router.replace(`/skill?${query}`);
   };
 
-  const base = name ? `/api/workspaces/${encodeURIComponent(name)}` : "";
-  const ops = useMemo<FileOps>(
-    () => ({
-      write: (file, content, encoding = "utf-8") =>
-        post<OkResponse>(`${base}/file`, { name: file, content, encoding }),
-      removeMany: (names) => post<BulkFilesResponse>(`${base}/files/delete`, { names }),
-      rename: (from, to) => post<OkResponse>(`${base}/file/rename`, { from, to }),
-      setTags: (file, tags) => post<OkResponse>(`${base}/file/tags`, { name: file, tags }),
-      deleteFolder: (folder) => post<OkResponse>(`${base}/folder/delete`, { folder }),
-    }),
-    [base],
-  );
+  const upload = (picked: File) => {
+    if (!name) return;
+    run(async () => {
+      const content = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        // readAsDataURL gives "data:<type>;base64,<payload>" — we want the payload
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.onerror = () => reject(new Error(`could not read ${picked.name}`));
+        reader.readAsDataURL(picked);
+      });
+      await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
+        name: picked.name,
+        content,
+        encoding: "base64",
+      });
+      refresh();
+      select(picked.name);
+      return `uploaded ${picked.name}`;
+    });
+  };
+
+  const create = () => {
+    if (!name) return;
+    const created = prompt("New file (path relative to the skill root, e.g. SKILL.md)");
+    if (!created) return;
+    run(async () => {
+      await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
+        name: created,
+        content: "",
+      });
+      refresh();
+      select(created);
+      return `created ${created}`;
+    });
+  };
 
   if (!name) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-        <p className="text-[13px]">No workspace selected.</p>
+        <p className="text-[13px]">No skill selected.</p>
         <Button variant="outline" size="sm" asChild>
-          <Link href="/workspaces">
-            <ArrowLeft /> All workspaces
+          <Link href="/skills">
+            <ArrowLeft /> All skills
           </Link>
         </Button>
       </div>
@@ -101,77 +112,85 @@ function WorkspaceInner() {
       <aside className="flex shrink-0 flex-col gap-3 overflow-y-auto border-b border-border p-4 lg:w-72 lg:border-r lg:border-b-0">
         <div>
           <Link
-            href="/workspaces"
+            href="/skills"
             className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground hover:text-foreground"
           >
-            <ArrowLeft className="size-3" /> Workspaces
+            <ArrowLeft className="size-3" /> Skills
           </Link>
           <h1 className="px-1 pt-1 font-mono text-lg font-semibold tracking-tight break-all">
             {name}
           </h1>
-          <div className="flex items-center gap-1.5 px-1 pt-1.5">
-            {busy ? (
-              <>
-                <Badge>
-                  <span className="size-[7px] rounded-full bg-ok animate-pulse-dot" />
-                  busy
-                </Badge>
-                {summary?.lease_session_id && (
-                  <Link
-                    href={`/session?sid=${summary.lease_session_id}`}
-                    className="font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                  >
-                    {shortId(summary.lease_session_id)}
-                  </Link>
-                )}
-              </>
-            ) : (
-              <Badge>
-                <span className="size-[7px] rounded-full bg-faint" />
-                free
-              </Badge>
-            )}
-          </div>
-          {busy && (
-            <p className="px-1 pt-2 text-[11px] text-muted-foreground">
-              Editing is off while a run holds the lease — its checkpoint would overwrite your
-              changes when it finishes.
-            </p>
-          )}
+          <p className="px-1 pt-2 text-[11px] text-muted-foreground">
+            Mounted into every session at run start — edits apply from the next run.
+          </p>
         </div>
 
-        {files === null ? (
-          <div className="space-y-2">
-            <Skeleton className="h-7" />
-            <Skeleton className="h-7" />
-          </div>
-        ) : (
-          <FileManager
-            files={files}
-            selected={file}
-            now={now}
-            disabled={busy}
-            disabledReason={lockedBy}
-            onSelect={select}
-            onRenamed={(from, to) => {
-              if (from === file) select(to);
+        <div className="flex gap-1.5 px-1">
+          <Button variant="outline" size="sm" onClick={create} className="flex-1">
+            <FilePlus2 /> New
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => uploadRef.current?.click()}
+            className="flex-1"
+          >
+            <Upload /> Upload
+          </Button>
+          <input
+            ref={uploadRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => {
+              const picked = e.target.files?.[0];
+              // reset so re-picking the same file fires change again
+              e.target.value = "";
+              if (picked) upload(picked);
             }}
-            onMutated={refresh}
-            run={run}
-            ops={ops}
           />
-        )}
+        </div>
+
+        <div className="min-h-0">
+          {files === null ? (
+            <div className="space-y-2">
+              <Skeleton className="h-7" />
+              <Skeleton className="h-7" />
+            </div>
+          ) : files.length === 0 ? (
+            <p className="px-1 text-[12px] text-muted-foreground">empty</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {files.map((f) => (
+                <li key={f.name}>
+                  <button
+                    onClick={() => select(f.name)}
+                    title={f.name}
+                    className={cn(
+                      "flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left font-mono text-[12px] transition-colors",
+                      f.name === file
+                        ? "bg-primary-soft font-medium"
+                        : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
+                    )}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                    <span className="shrink-0 text-[10px] text-faint">
+                      {relTime(f.updated, now) || bytes(f.size)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         {flash && <p className="px-1 text-[11px] text-muted-foreground">{flash}</p>}
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {file ? (
           <FileEditor
-            workspace={name}
+            skill={name}
             file={file}
             files={files}
-            busy={busy}
-            lockedBy={lockedBy}
             onChanged={refresh}
             onDeleted={() => select(null)}
           />
@@ -187,19 +206,15 @@ function WorkspaceInner() {
 }
 
 function FileEditor({
-  workspace,
+  skill,
   file,
   files,
-  busy,
-  lockedBy,
   onChanged,
   onDeleted,
 }: {
-  workspace: string;
+  skill: string;
   file: string;
   files: StoredFile[] | null;
-  busy: boolean;
-  lockedBy: string | undefined;
   onChanged: () => void;
   onDeleted: () => void;
 }) {
@@ -219,7 +234,7 @@ function FileEditor({
     setError(null);
     setBinary(false);
     let cancelled = false;
-    fetch(fileUrl(workspace, file))
+    fetch(fileUrl(skill, file))
       .then(async (response) => {
         if (response.status === 413) throw new Error("too large to edit — download instead");
         if (!response.ok) {
@@ -245,13 +260,13 @@ function FileEditor({
     };
     // refetch when the blob changes upstream, not on every poll
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspace, file, updated]);
+  }, [skill, file, updated]);
 
   const dirty = saved !== null && draft !== saved;
 
   const save = () =>
     run(async () => {
-      await post<OkResponse>(`/api/workspaces/${encodeURIComponent(workspace)}/file`, {
+      await post<OkResponse>(`/api/skills/${encodeURIComponent(skill)}/file`, {
         name: file,
         content: draft,
       });
@@ -263,7 +278,7 @@ function FileEditor({
   const remove = () => {
     if (!confirm(`Delete ${file}? It is removed from the bucket permanently.`)) return;
     run(async () => {
-      await post<OkResponse>(`/api/workspaces/${encodeURIComponent(workspace)}/file/delete`, {
+      await post<OkResponse>(`/api/skills/${encodeURIComponent(skill)}/file/delete`, {
         name: file,
       });
       onChanged();
@@ -290,12 +305,12 @@ function FileEditor({
           title="Download"
           onClick={() => {
             if (saved !== null) download(file.split("/").pop() || file, draft);
-            else window.open(fileUrl(workspace, file), "_blank");
+            else window.open(fileUrl(skill, file), "_blank");
           }}
         >
           <Download />
         </Button>
-        <Button variant="ghost" size="sm" title={lockedBy ?? "Delete"} disabled={busy} onClick={remove}>
+        <Button variant="ghost" size="sm" title="Delete" onClick={remove}>
           <Trash2 />
         </Button>
         {saved !== null && (
@@ -303,7 +318,7 @@ function FileEditor({
             <Button variant="outline" size="sm" disabled={!dirty} onClick={() => setDraft(saved)}>
               Revert
             </Button>
-            <Button size="sm" disabled={busy || !dirty} title={lockedBy} onClick={save}>
+            <Button size="sm" disabled={!dirty} onClick={save}>
               Save
             </Button>
           </>
@@ -323,7 +338,6 @@ function FileEditor({
         <Textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          disabled={busy}
           spellCheck={false}
           className="min-h-0 flex-1 resize-none overflow-auto px-4 py-3 font-mono text-xs leading-relaxed"
         />

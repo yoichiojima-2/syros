@@ -111,6 +111,12 @@ async def run(session_id: str) -> None:
     home_prefix = workspace.session_prefix(session_id, "home")
     await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
     await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
+    # Mount every skill into HOME after the home restore, so the live skills/
+    # prefix wins over anything a stale checkpoint might carry. The SDK finds
+    # them via setting_sources=["user"] below.
+    await asyncio.to_thread(
+        workspace.restore, config.project, config.bucket, "skills/", home / ".claude" / "skills"
+    )
     # Mount artifact spaces after the ws restore so the space's content wins.
     spaces = options.resolved_artifacts()
     for space in spaces:
@@ -132,6 +138,10 @@ async def run(session_id: str) -> None:
         cwd=str(ws),
         resume=session.get("claude_session_id"),
         env={**model_env(options), "HOME": str(home)},
+        # "user" settings live in the sandboxed HOME above, so this only ever
+        # loads syros-managed state — and it is what makes the mounted
+        # ~/.claude/skills visible to the harness.
+        setting_sources=["user"],
     )
     sdk_options.hooks = gate.hooks()
 
@@ -189,7 +199,11 @@ async def run(session_id: str) -> None:
         ws,
         ("artifacts/",) if spaces else (),
     )
-    await asyncio.to_thread(workspace.checkpoint, config.project, config.bucket, home_prefix, home)
+    # Skills are mounted from the shared skills/ prefix, not session state:
+    # checkpointing them here would resurrect skills deleted from the console.
+    await asyncio.to_thread(
+        workspace.checkpoint, config.project, config.bucket, home_prefix, home, (".claude/skills/",)
+    )
     published = 0
     for space, mode in spaces.items():
         if mode == "rw":

@@ -194,6 +194,7 @@ export interface StoredFile {
   name: string;
   size: number;
   updated: number | null;
+  tags?: string[];
 }
 
 export interface WorkspaceFilesResponse {
@@ -202,13 +203,50 @@ export interface WorkspaceFilesResponse {
   files: StoredFile[];
 }
 
-/** Reply shape of the workspace file mutations (write, delete). */
+/** Reply shape of the file mutations (write, delete, rename, tags, folder). */
 export interface OkResponse {
   now: number;
   ok: boolean;
-  name: string;
-  file: string;
+  name?: string;
+  file?: string;
   size?: number;
+  count?: number;
+  tags?: string[];
+}
+
+/** Reply shape of bulk file deletes — best-effort, per-file failures. */
+export interface BulkFilesResponse {
+  now: number;
+  ok: boolean;
+  deleted: string[];
+  failed: { name: string; error: string }[];
+}
+
+export interface SkillSummary {
+  name: string;
+  file_count: number;
+  total_size: number;
+  updated: number | null;
+}
+
+export interface SkillsResponse {
+  now: number;
+  skills: SkillSummary[];
+}
+
+export interface SkillFilesResponse {
+  now: number;
+  name: string;
+  files: StoredFile[];
+}
+
+/** Reply shape of POST /api/skills/sync. */
+export interface SyncSkillsResponse {
+  now: number;
+  ok: boolean;
+  skills: string[];
+  files: number;
+  skipped: { skill: string; file: string; size: number }[];
 }
 
 export interface SpaceSummary {

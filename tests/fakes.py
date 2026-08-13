@@ -187,6 +187,9 @@ class FakeStore:
     async def list_workspaces(self):
         return [{"name": k, **v} for k, v in self.workspaces.items()]
 
+    async def delete_workspace(self, name):
+        self.workspaces.pop(name, None)
+
     async def create_deployment(self, name, doc):
         if name in self.deployments:
             raise ValueError(f"deployment {name} exists")
