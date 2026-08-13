@@ -31,7 +31,10 @@ _SERIALIZED_FIELDS = (
     "max_turns",
     "max_budget_usd",
     "workspace",
+    "artifacts",
 )
+
+ArtifactMode = Literal["rw", "ro"]
 
 _WORKSPACE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
@@ -57,6 +60,14 @@ class AgentOptions:
     # transcripts and resume are unaffected. Fixed at session creation; on
     # resume the stored options win, like every serialized field.
     workspace: str | None = None
+    # Shared artifact spaces mounted into the working directory: each space
+    # appears at ./artifacts/{space}/ and the agent uses its ordinary file
+    # tools on it. A str means one read-write space; a dict maps space names
+    # to "rw" (restored before the run, checkpointed back on idle) or "ro"
+    # (restored only — local writes never persist). Spaces have no lease:
+    # checkpoints are per-file last-writer-wins, so use "rw" to publish
+    # outputs, not for concurrent editing of one file.
+    artifacts: str | dict[str, ArtifactMode] | None = None
     project: str | None = None  # default: $SYROS_PROJECT or $GOOGLE_CLOUD_PROJECT
     region: str | None = None  # Cloud Run region; default: $SYROS_REGION or asia-northeast1
     vertex_region: str | None = None  # default: $CLOUD_ML_REGION or global
@@ -92,6 +103,13 @@ class AgentOptions:
     def resolved_job(self) -> str:
         return self.job or os.environ.get("SYROS_JOB") or "syros-runner"
 
+    def resolved_artifacts(self) -> dict[str, ArtifactMode]:
+        if self.artifacts is None:
+            return {}
+        if isinstance(self.artifacts, str):
+            return {self.artifacts: "rw"}
+        return dict(self.artifacts)
+
     def validate(self) -> None:
         if self.system_prompt is not None and not isinstance(self.system_prompt, str):
             raise OptionsError("system_prompt must be a plain string in syros")
@@ -100,6 +118,14 @@ class AgentOptions:
                 "workspace must be a short name matching [a-z0-9][a-z0-9_-]*"
                 " (max 64 chars), not a path"
             )
+        for space, mode in self.resolved_artifacts().items():
+            if not isinstance(space, str) or not _WORKSPACE_NAME.fullmatch(space):
+                raise OptionsError(
+                    "artifact space must be a short name matching [a-z0-9][a-z0-9_-]*"
+                    " (max 64 chars), not a path"
+                )
+            if mode not in get_args(ArtifactMode):
+                raise OptionsError(f"artifact space {space!r}: mode must be 'rw' or 'ro'")
         for name, config in self.mcp_servers.items():
             if not isinstance(config, dict):
                 raise OptionsError(

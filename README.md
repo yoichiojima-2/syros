@@ -79,6 +79,17 @@ syros artifacts team publish sess_... report.md
                                              # checkpointed workspace (server-side)
 ```
 
+Agents join the same spaces via `AgentOptions(artifacts=...)`: each space is mounted at
+`./artifacts/{space}/` in the working directory, so the agent reads, edits, and writes it
+with its ordinary file tools — every write is still an audited, gateable tool call. Pass a
+name for one read-write space, or a dict of modes; `"ro"` restores without checkpointing
+back, for sessions that consume shared inputs but must not publish:
+
+```python
+AgentOptions(artifacts="team")                      # read-write
+AgentOptions(artifacts={"team": "rw", "ref": "ro"})
+```
+
 Or with one — the console is a pure Firestore client (no server-side state):
 
 ```
@@ -197,6 +208,7 @@ doing nothing.
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
 | `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`); transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore |
+| `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
 | `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
 ## Out of scope

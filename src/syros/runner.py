@@ -20,7 +20,7 @@ from .gate import Gate
 from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store
 from .types import ResultMessage, UserMessage, message_to_doc
-from . import workspace
+from . import artifacts, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -106,6 +106,14 @@ async def run(session_id: str) -> None:
     home_prefix = workspace.session_prefix(session_id, "home")
     await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
     await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
+    # Mount artifact spaces after the ws restore so the space's content wins.
+    spaces = options.resolved_artifacts()
+    for space in spaces:
+        mount = ws / "artifacts" / space
+        mount.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(
+            workspace.restore, config.project, config.bucket, artifacts.space_prefix(space), mount
+        )
 
     gate = Gate(store, session_id, approval_timeout=env.approval_timeout())
     sdk_options = build_sdk_options(
@@ -156,8 +164,24 @@ async def run(session_id: str) -> None:
         finally:
             watcher.cancel()
 
-    await asyncio.to_thread(workspace.checkpoint, config.project, config.bucket, ws_prefix, ws)
+    await asyncio.to_thread(
+        workspace.checkpoint,
+        config.project,
+        config.bucket,
+        ws_prefix,
+        ws,
+        ("artifacts/",) if spaces else (),
+    )
     await asyncio.to_thread(workspace.checkpoint, config.project, config.bucket, home_prefix, home)
+    for space, mode in spaces.items():
+        if mode == "rw":
+            await asyncio.to_thread(
+                workspace.checkpoint,
+                config.project,
+                config.bucket,
+                artifacts.space_prefix(space),
+                ws / "artifacts" / space,
+            )
     if options.workspace:
         await store.release_workspace(options.workspace, session_id)
     await store.release_session(

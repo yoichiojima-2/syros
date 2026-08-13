@@ -115,3 +115,15 @@ def test_publish_copies_from_session_state(bucket):
     assert bucket.objects["artifacts/team/report.md"] == b"done"
     with pytest.raises(FileNotFoundError):
         artifacts.publish("p", "b", "team", "sessions/sess_x/state/ws/", ["missing.md"])
+
+
+def test_checkpoint_excludes_mounted_spaces(bucket, tmp_path):
+    from syros import workspace
+
+    ws = tmp_path / "ws"
+    (ws / "artifacts" / "team").mkdir(parents=True)
+    (ws / "notes.md").write_text("mine")
+    (ws / "artifacts" / "team" / "report.md").write_text("shared")
+
+    assert workspace.checkpoint("p", "b", "sessions/s/state/ws/", ws, ("artifacts/",)) == 1
+    assert set(bucket.objects) == {"sessions/s/state/ws/notes.md"}
