@@ -16,6 +16,7 @@ from .. import remote
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions
 from ..store import StoreProtocol, lease_active
+from .objects import ObjectStoreProtocol
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
 # browser reloading on a long session — can't wedge a single HTTP request.
@@ -27,6 +28,10 @@ class NotFound(Exception):
 
 
 class Conflict(Exception):
+    pass
+
+
+class TooLarge(Exception):
     pass
 
 
@@ -85,10 +90,23 @@ class ConsoleAPI:
         options: AgentOptions,
         *,
         approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
+        objects: ObjectStoreProtocol | None = None,
     ) -> None:
         self._store = store
         self._options = options
         self._approval_timeout = approval_timeout
+        self._objects = objects
+
+    def _bucket_objects(self) -> ObjectStoreProtocol:
+        # Built lazily so the console starts (and tests run) without touching
+        # GCS until a workspace/artifact endpoint is actually hit.
+        if self._objects is None:
+            from .objects import GcsObjects
+
+            self._objects = GcsObjects(
+                self._options.resolved_project(), self._options.resolved_bucket()
+            )
+        return self._objects
 
     async def _session(self, session_id: str) -> dict[str, Any]:
         session = await self._store.get_session(session_id)
@@ -187,3 +205,66 @@ class ConsoleAPI:
             raise Conflict(f"session {session_id} is running — kill it first")
         await self._store.delete_session(session_id)
         return {"ok": True}
+
+    # --- shared workspaces ---
+
+    async def workspaces(self) -> dict[str, Any]:
+        """Every shared workspace: GCS contents + Firestore lease + the
+        sessions configured to use it."""
+        stats = await self._bucket_objects().workspace_stats()
+        leases = {w["name"]: w for w in await self._store.list_workspaces()}
+        by_workspace: dict[str, list[dict[str, Any]]] = {}
+        for session in await self._store.list_sessions(limit=50):
+            name = ((session.get("options") or {}).get("workspace")) or None
+            if name:
+                by_workspace.setdefault(name, []).append(
+                    {
+                        "id": session.get("id"),
+                        "state": derived_state(session),
+                        "updated_at": session.get("updated_at"),
+                    }
+                )
+        rows = []
+        for name in sorted(set(stats) | set(leases) | set(by_workspace)):
+            lease = leases.get(name) or {}
+            stat = stats.get(name) or {"file_count": 0, "total_size": 0, "updated": None}
+            rows.append(
+                {
+                    "name": name,
+                    "busy": lease_active(lease),
+                    "lease_session_id": lease.get("lease_session_id")
+                    if lease_active(lease)
+                    else None,
+                    "sessions": by_workspace.get(name, []),
+                    **stat,
+                }
+            )
+        return {"now": time.time(), "workspaces": to_jsonable(rows)}
+
+    async def workspace_files(self, name: str) -> dict[str, Any]:
+        files = await self._bucket_objects().workspace_files(name)
+        if not files and name not in {w["name"] for w in await self._store.list_workspaces()}:
+            raise NotFound(f"workspace {name} not found")
+        files.sort(key=lambda f: f["name"])
+        return {"now": time.time(), "name": name, "files": to_jsonable(files)}
+
+    # --- shared artifact spaces ---
+
+    async def artifact_spaces(self) -> dict[str, Any]:
+        stats = await self._bucket_objects().space_stats()
+        spaces = [{"name": name, **stat} for name, stat in sorted(stats.items())]
+        return {"now": time.time(), "spaces": to_jsonable(spaces)}
+
+    async def artifacts(self, space: str) -> dict[str, Any]:
+        files = await self._bucket_objects().list_artifacts(space)
+        files.sort(key=lambda f: f["name"])
+        return {"now": time.time(), "space": space, "artifacts": to_jsonable(files)}
+
+    async def artifact_file(self, space: str, name: str) -> tuple[bytes, str]:
+        """Raw bytes + content type — the one non-JSON response in the API."""
+        try:
+            return await self._bucket_objects().read_artifact(space, name)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        except ValueError as exc:
+            raise TooLarge(str(exc)) from exc

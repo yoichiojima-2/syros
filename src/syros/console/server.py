@@ -19,7 +19,8 @@ from importlib import resources
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .api import Conflict, ConsoleAPI, NotFound
+from ..errors import OptionsError
+from .api import Conflict, ConsoleAPI, NotFound, TooLarge
 
 CALL_TIMEOUT_SECONDS = 30.0
 
@@ -51,6 +52,21 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         lambda api, body, query, sid, call_hash: api.decide(
             sid, call_hash, allow=bool(body.get("allow")), message=body.get("message")
         ),
+    ),
+    ("GET", ("api", "workspaces"), lambda api, body, query: api.workspaces()),
+    (
+        "GET",
+        ("api", "workspaces", None, "files"),
+        lambda api, body, query, name: api.workspace_files(name),
+    ),
+    ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
+    ("GET", ("api", "artifacts", None), lambda api, body, query, space: api.artifacts(space)),
+    # The artifact name rides the query string: names may contain "/", which
+    # the segment-based route match can't capture.
+    (
+        "GET",
+        ("api", "artifacts", None, "file"),
+        lambda api, body, query, space: api.artifact_file(space, (query.get("name") or [""])[0]),
     ),
 ]
 
@@ -113,12 +129,29 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
 
         def _api(self, coro) -> None:
             try:
-                self._json(self._call(coro))
+                result = self._call(coro)
+                if isinstance(result, tuple):
+                    # (bytes, content_type) — a raw artifact download. nosniff
+                    # keeps browsers from second-guessing the declared type;
+                    # rendering happens in the frontend's sandboxed iframes,
+                    # never by navigating to this endpoint.
+                    data, content_type = result
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self._json(result)
             except NotFound as exc:
                 self._json({"error": str(exc)}, 404)
             except Conflict as exc:
                 self._json({"error": str(exc)}, 409)
-            except (ValueError, TypeError) as exc:
+            except TooLarge as exc:
+                self._json({"error": str(exc)}, 413)
+            except (ValueError, TypeError, OptionsError) as exc:
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:
                 self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)

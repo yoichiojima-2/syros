@@ -1,6 +1,7 @@
 """Minimal ops CLI — the UI syros deliberately doesn't have.
 
 syros sessions                          list recent sessions
+syros workspaces                        list shared workspaces and their leases
 syros tail <session_id>                 follow a session's message feed
 syros approvals <session_id>            list pending approvals
 syros approvals <session_id> allow <call_hash>
@@ -51,6 +52,16 @@ async def _sessions(args) -> None:
             f"  {'' if published is None else f'{published} published':<14}"
             f"  {(session.get('options') or {}).get('workspace') or ''}"
         )
+
+
+async def _workspaces(args) -> None:
+    from .store import lease_active
+
+    store = _store(args)
+    for doc in sorted(await store.list_workspaces(), key=lambda d: d["name"]):
+        busy = lease_active(doc)
+        holder = doc.get("lease_session_id") if busy else ""
+        print(f"{doc['name']:<24}  {'busy' if busy else 'free':<6}  {holder or ''}")
 
 
 async def _tail(args) -> None:
@@ -155,6 +166,8 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("sessions").set_defaults(func=_sessions)
+
+    sub.add_parser("workspaces").set_defaults(func=_workspaces)
 
     tail = sub.add_parser("tail")
     tail.add_argument("session_id")
