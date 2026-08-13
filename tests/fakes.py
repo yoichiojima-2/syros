@@ -30,6 +30,7 @@ class FakeStore:
             "seq_head": 0,
             "lease_id": None,
             "lease_expires": 0.0,
+            "triggered_at": 0.0,
             "claude_session_id": None,
             "created_by": created_by,
             "schedule": schedule,
@@ -60,6 +61,12 @@ class FakeStore:
         self.inbox.pop(session_id, None)
         self.approvals.pop(session_id, None)
         self.tool_calls.pop(session_id, None)
+
+    async def mark_starting(self, session_id):
+        session = self.sessions.get(session_id)
+        if not session or session.get("disabled") or session["status"] in ("running", "terminated"):
+            return
+        session.update(status="starting", triggered_at=time.time(), updated_at=time.time())
 
     async def claim_session(self, session_id, lease_id, ttl_seconds):
         session = self.sessions.get(session_id)

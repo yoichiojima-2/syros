@@ -7,6 +7,7 @@ import type { RunOutcome } from "@/lib/types";
 // carries the meaning alone — the badge pairs it with the word.
 export const OUTCOME_COLOR: Record<RunOutcome, string> = {
   running: "bg-ok animate-pulse-dot",
+  starting: "bg-info animate-pulse-dot",
   queued: "bg-info",
   stalled: "bg-warn-dot",
   succeeded: "bg-ok",

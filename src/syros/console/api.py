@@ -18,7 +18,7 @@ from typing import Any
 from .. import remote, schedules
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
-from ..store import StoreProtocol, lease_active
+from ..store import StoreProtocol, lease_active, start_pending
 from .objects import MAX_PREVIEW_BYTES, ObjectStoreProtocol
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
@@ -54,7 +54,8 @@ def to_jsonable(value: Any) -> Any:
 
 
 def derived_state(session: dict[str, Any]) -> str:
-    """Liveness ≠ status: a "running" session whose lease expired is a dead job.
+    """Liveness ≠ status: a "running" session whose lease expired is a dead job,
+    and a "starting" session whose grace window lapsed is a job that never came up.
 
     The value set mirrors SessionState in console/src/lib/types.ts — keep in sync.
     """
@@ -62,12 +63,14 @@ def derived_state(session: dict[str, Any]) -> str:
         return "terminated"
     if session.get("status") == "running":
         return "running" if lease_active(session) else "stalled"
+    if session.get("status") == "starting":
+        return "starting" if start_pending(session) else "stalled"
     return session.get("status") or "unknown"
 
 
 # States in which a session is still going, so its outcome isn't decided and
 # its duration is still growing. Mirrors ACTIVE_STATES in console/src/lib/types.ts.
-ACTIVE_STATES = ("running", "queued", "stalled")
+ACTIVE_STATES = ("running", "starting", "queued", "stalled")
 
 
 def run_outcome(session: dict[str, Any]) -> str:
@@ -257,8 +260,12 @@ class ConsoleAPI:
 
     async def _delete_one(self, session_id: str) -> None:
         session = await self._session(session_id)
-        if derived_state(session) == "running":
-            raise Conflict(f"session {session_id} is running — kill it first")
+        # "starting" is guarded like "running": an execution is inbound and
+        # would claim a session the caller thinks is gone. Once the grace
+        # window lapses the state reads "stalled" and the row is deletable.
+        state = derived_state(session)
+        if state in ("running", "starting"):
+            raise Conflict(f"session {session_id} is {state} — kill it first")
         await self._store.delete_session(session_id)
 
     async def delete_many(self, session_ids: Any) -> dict[str, Any]:

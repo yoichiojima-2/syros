@@ -3,10 +3,18 @@
 // and the message/block shapes mirror syros.types' Firestore serialization.
 
 // Mirrors derived_state() in src/syros/console/api.py — keep the two in sync.
-export type SessionState = "running" | "stalled" | "queued" | "idle" | "terminated" | "unknown";
+export type SessionState =
+  | "running"
+  | "starting"
+  | "stalled"
+  | "queued"
+  | "idle"
+  | "terminated"
+  | "unknown";
 
 export const ACTIVE_STATES: ReadonlySet<SessionState> = new Set([
   "running",
+  "starting",
   "queued",
   "stalled",
 ]);
@@ -30,7 +38,14 @@ export interface SessionSummary {
 // Mirrors run_outcome() in src/syros/console/api.py — keep the two in sync.
 // Liveness (SessionState) answers "is it going"; the outcome answers "how did
 // it go", and the three live states carry through so one badge covers both.
-export type RunOutcome = "running" | "queued" | "stalled" | "succeeded" | "failed" | "cancelled";
+export type RunOutcome =
+  | "running"
+  | "starting"
+  | "queued"
+  | "stalled"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
 
 /** A session seen as one run of a schedule. duration_s is null while it runs. */
 export interface RunSummary extends SessionSummary {

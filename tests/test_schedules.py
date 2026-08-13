@@ -118,17 +118,23 @@ async def test_tick_skips_while_previous_run_active():
     assert store.schedules["nightly"]["next_run_at"] > now + 800
 
 
-async def test_queued_run_blocks_only_within_grace():
+async def test_starting_run_blocks_only_within_grace():
+    from syros.store import START_GRACE_SECONDS
+
     store = FakeStore()
     now = time.time()
     await make(store, now=now)
     first = await schedules.tick(OPTS, store=store, now=now + 400)
-    sid = first["fired"][0]["session_id"]  # stays "queued", lease never taken
+    sid = first["fired"][0]["session_id"]
+    # launch marked it "starting"; the lease is never taken (job never came up)
+    assert store.sessions[sid]["status"] == "starting"
+    # still inside the start grace at the next due slot -> skip
+    store.sessions[sid]["triggered_at"] = now + 800 - 10
     within = await schedules.tick(OPTS, store=store, now=now + 800)
     assert within["skipped"] and not within["fired"]
-    beyond = await schedules.tick(
-        OPTS, store=store, now=now + 400 + schedules.QUEUE_GRACE_SECONDS + 60
-    )
+    # grace lapsed: the job never came up, so the schedule fires again
+    store.sessions[sid]["triggered_at"] = now + 1200 - START_GRACE_SECONDS - 1
+    beyond = await schedules.tick(OPTS, store=store, now=now + 1200)
     assert beyond["fired"] and not beyond["skipped"]
     assert beyond["fired"][0]["session_id"] != sid
 

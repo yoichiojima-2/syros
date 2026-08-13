@@ -35,15 +35,9 @@ from . import cron, remote
 from .errors import SyrosError
 from .names import validate_name
 from .options import AgentOptions
-from .store import Store, StoreProtocol, lease_active, new_session_id
+from .store import Store, StoreProtocol, lease_active, new_session_id, start_pending
 
 DEFAULT_TIMEZONE = "UTC"
-
-# How long a run may sit queued before the schedule stops counting it as live.
-# Without a ceiling, a trigger that never reached Cloud Run would wedge the
-# schedule for good: every later slot would skip, deferring to a run that is
-# never going to start.
-QUEUE_GRACE_SECONDS = 900.0
 
 
 class ScheduleError(SyrosError):
@@ -255,19 +249,16 @@ async def launch(
 async def _run_active(store: StoreProtocol, session_id: str | None, now: float) -> bool:
     """Is the schedule's previous run still going?
 
-    A live lease is the definitive yes. A session still queued is a maybe — its
-    job may be starting — so it counts, but only for QUEUE_GRACE_SECONDS.
+    A live lease is the definitive yes; a triggered execution still inside the
+    start grace window counts too. Both windows expire on their own, so a job
+    that dies (or never comes up) stops blocking the schedule by itself.
     """
     if not session_id:
         return False
     session = await store.get_session(session_id)
     if not session or session.get("disabled") or session.get("status") == "terminated":
         return False
-    if lease_active(session, now):
-        return True
-    if session.get("status") != "queued":
-        return False
-    return (now - _epoch(session.get("created_at"))) < QUEUE_GRACE_SECONDS
+    return lease_active(session, now) or start_pending(session, now)
 
 
 async def tick(
