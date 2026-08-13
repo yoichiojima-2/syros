@@ -9,8 +9,8 @@ export default function SessionsPage() {
   const now = useNow();
 
   return (
-    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
-      <h1 className="text-lg font-semibold">Sessions</h1>
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+      <h1 className="font-serif text-2xl tracking-tight">Sessions</h1>
       <Card>
         <CardContent className="px-2 py-2">
           <SessionTable sessions={sessions} now={now} />

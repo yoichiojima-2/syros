@@ -35,8 +35,8 @@ export function ApprovalCard({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border bg-card px-3.5 pt-3 pb-3.5",
-        urgent ? "border-destructive/70" : "border-warn/70",
+        "relative overflow-hidden rounded-2xl border bg-card px-4 pt-3.5 pb-4",
+        urgent ? "border-destructive/60" : "border-warn/50",
       )}
     >
       <div
@@ -55,7 +55,7 @@ export function ApprovalCard({
         >
           {approval.tool_name}
         </b>
-        <span className="font-mono text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
+        <span className="text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
           approval
         </span>
         {sessionId && (
@@ -75,7 +75,7 @@ export function ApprovalCard({
           {left > 0 ? `${minutes}:${seconds} left` : "expired"}
         </span>
       </div>
-      <pre className="my-2 max-h-40 overflow-y-auto font-mono text-xs whitespace-pre-wrap text-muted-foreground [overflow-wrap:break-word]">
+      <pre className="my-2.5 max-h-40 overflow-y-auto rounded-xl bg-surface px-3 py-2.5 font-mono text-xs whitespace-pre-wrap text-muted-foreground [overflow-wrap:break-word]">
         {JSON.stringify(approval.input, null, 2)}
       </pre>
       <div className="flex gap-2">

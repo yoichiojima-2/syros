@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -16,17 +16,19 @@ export function StatCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        <div className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
           {label}
-        </CardTitle>
+        </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pt-2">
         {value === null ? (
-          <Skeleton className="h-8 w-24" />
+          <Skeleton className="h-9 w-24" />
         ) : (
-          <div className={cn("text-[26px] font-semibold", accent && "text-warn")}>{value}</div>
+          <div className={cn("font-serif text-[30px] leading-none", accent && "text-primary")}>
+            {value}
+          </div>
         )}
-        {sub && <div className="pt-0.5 text-xs text-muted-foreground">{sub}</div>}
+        {sub && <div className="pt-2 text-xs text-muted-foreground">{sub}</div>}
       </CardContent>
     </Card>
   );

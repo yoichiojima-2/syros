@@ -2,68 +2,76 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Light theme (default) — dark redefines the same tokens under `.dark`,
-   toggled by next-themes. Chart + status colors follow the same pairing. */
+/* Warm, paper-toned palette in the Claude vein: ivory page, a slightly deeper
+   ivory for chrome (sidebar, headers), white cards, and a single clay accent
+   carrying every primary action. Light is the default; dark redefines the same
+   tokens under `.dark`, toggled by next-themes. */
 :root {
-  --background: #f9f9f7;
-  --foreground: #0b0b0b;
-  --card: #fcfcfb;
-  --card-foreground: #0b0b0b;
-  --primary: #1c1c1a;
-  --primary-foreground: #fcfcfb;
-  --secondary: #f0efec;
-  --secondary-foreground: #0b0b0b;
-  --muted: #f0efec;
-  --muted-foreground: #52514e;
-  --faint: #898781;
-  --accent: #f0efec;
-  --accent-foreground: #0b0b0b;
-  --destructive: #d03b3b;
+  --background: #faf9f5;
+  --foreground: #141413;
+  --surface: #f0eee6; /* chrome: sidebar, sticky headers, user bubbles */
+  --card: #ffffff;
+  --card-foreground: #141413;
+  --primary: #c96442; /* clay — primary actions, active nav, charts */
+  --primary-foreground: #ffffff;
+  --primary-soft: #f4e4dc; /* clay at tint strength, for fills behind text */
+  --secondary: #eeece4;
+  --secondary-foreground: #141413;
+  --muted: #eeece4;
+  --muted-foreground: #6f6e69;
+  --faint: #a09d94;
+  --accent: #eeece4;
+  --accent-foreground: #141413;
+  --destructive: #b1362b;
   --destructive-foreground: #ffffff;
-  --border: #e1e0d9;
-  --input: #d6d5cd;
-  --ring: #898781;
-  --chart-1: #2a78d6;
-  --ok: #0ca30c;
-  --warn: #b97a00;
-  --warn-dot: #fab219;
-  --info: #2a78d6;
-  --radius: 0.625rem;
+  --border: #e5e2d8;
+  --input: #d8d5c8;
+  --ring: #c96442;
+  --chart-1: #c96442;
+  --ok: #2c8765;
+  --warn: #a4690d;
+  --warn-dot: #d99a2b;
+  --info: #3f6fb5;
+  --radius: 0.75rem;
 }
 
 .dark {
-  --background: #0d0d0d;
-  --foreground: #f2f2f0;
-  --card: #1a1a19;
-  --card-foreground: #f2f2f0;
-  --primary: #e8e8e4;
-  --primary-foreground: #141413;
-  --secondary: #242422;
-  --secondary-foreground: #f2f2f0;
-  --muted: #242422;
-  --muted-foreground: #c3c2b7;
-  --faint: #898781;
-  --accent: #242422;
-  --accent-foreground: #f2f2f0;
-  --destructive: #e66767;
-  --destructive-foreground: #141413;
-  --border: #2c2c2a;
-  --input: #383835;
-  --ring: #898781;
-  --chart-1: #3987e5;
-  --ok: #0ca30c;
-  --warn: #fab219;
-  --warn-dot: #fab219;
-  --info: #3987e5;
+  --background: #262624;
+  --foreground: #f5f4ee;
+  --surface: #1f1e1d;
+  --card: #30302e;
+  --card-foreground: #f5f4ee;
+  --primary: #d97757;
+  --primary-foreground: #1f1410;
+  --primary-soft: #43302a;
+  --secondary: #3a3a37;
+  --secondary-foreground: #f5f4ee;
+  --muted: #3a3a37;
+  --muted-foreground: #b7b5ad;
+  --faint: #83817a;
+  --accent: #3a3a37;
+  --accent-foreground: #f5f4ee;
+  --destructive: #e5675a;
+  --destructive-foreground: #24100d;
+  --border: #3e3e3a;
+  --input: #4a4a45;
+  --ring: #d97757;
+  --chart-1: #d97757;
+  --ok: #4eab86;
+  --warn: #e3a951;
+  --warn-dot: #e3a951;
+  --info: #7ba3de;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -85,7 +93,11 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Styrene/Copernicus are licensed, so the stacks degrade to the closest
+     system faces rather than shipping or fetching webfonts — the console is
+     served from localhost and Cloud Run with no egress. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-serif: ui-serif, "Iowan Old Style", Georgia, "Times New Roman", serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
 
@@ -109,6 +121,16 @@
 body {
   background: var(--background);
   color: var(--foreground);
+}
+
+::selection {
+  background: var(--primary-soft);
+}
+
+/* Thin, warm scrollbars — the default chrome reads cold against the paper. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--input) transparent;
 }
 
 /* disclosure triangles for transcript <details> */

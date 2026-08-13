@@ -19,14 +19,14 @@ export default function ApprovalsPage() {
     });
 
   return (
-    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
-      <h1 className="text-lg font-semibold">Approvals</h1>
-      {flash && <p className="font-mono text-[11px] text-muted-foreground">{flash}</p>}
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+      <h1 className="font-serif text-2xl tracking-tight">Approvals</h1>
+      {flash && <p className="text-[11px] text-muted-foreground">{flash}</p>}
       {approvals === null ? (
         <Skeleton className="h-32 w-full max-w-3xl" />
       ) : approvals.length === 0 ? (
         <Card className="max-w-3xl">
-          <CardContent className="py-14 text-center text-[13px] text-muted-foreground">
+          <CardContent className="py-16 text-center text-[13px] text-muted-foreground">
             No pending approvals — every tool call is either decided or hasn&apos;t asked yet.
           </CardContent>
         </Card>

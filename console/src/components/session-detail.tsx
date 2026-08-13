@@ -47,8 +47,8 @@ export function SessionDetail({ sid }: { sid: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2.5 border-b border-border bg-card px-5 py-2.5">
-        <span className="font-mono text-[13px] font-semibold">{sid}</span>
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-border bg-surface px-5 py-3">
+        <span className="font-mono text-[13px]">{sid}</span>
         {session && (
           <>
             <StateBadge state={session.state} />
@@ -85,7 +85,7 @@ export function SessionDetail({ sid }: { sid: string }) {
         </div>
       )}
 
-      {flash && <p className="pt-1.5 text-center font-mono text-[11px] text-muted-foreground">{flash}</p>}
+      {flash && <p className="pt-1.5 text-center text-[11px] text-muted-foreground">{flash}</p>}
 
       <Composer disabled={!session || dead} onSend={sendPrompt} />
     </div>
