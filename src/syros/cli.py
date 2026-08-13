@@ -22,6 +22,8 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
+syros skills files <name>               list one skill's files
+syros skills cat <name> <file>          print one skill file's content
 syros skills sync                       seed skills/ from the official anthropics/skills repo
 syros connectors                        list platform connectors and credential status
 syros connectors auth <name>            OAuth into a connector; stores the credential
@@ -354,6 +356,36 @@ async def _skills(args) -> None:
         for skipped in summary["skipped"]:
             print(f"    skipped {skipped['skill']}/{skipped['file']} ({skipped['size']} bytes)")
         return
+    if args.action == "files":
+        if not args.args:
+            raise SystemExit("usage: syros skills files <name>")
+        files = await GcsObjects(project, bucket).skill_files(args.args[0])
+        if not files:
+            raise SystemExit(f"no such skill: {args.args[0]}")
+        for item in files:
+            updated = item["updated"].strftime("%Y-%m-%d %H:%M") if item["updated"] else ""
+            print(f"{item['name']}  {item['size']}  {updated}")
+        return
+    if args.action == "cat":
+        if len(args.args) < 2:
+            raise SystemExit("usage: syros skills cat <name> <file>")
+        import sys
+
+        try:
+            data, _content_type = await asyncio.to_thread(
+                skills.read_file,
+                project,
+                bucket,
+                args.args[0],
+                args.args[1],
+                max_bytes=MAX_PREVIEW_BYTES,
+            )
+        except FileNotFoundError as exc:
+            raise SystemExit(f"not found: {exc}") from exc
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        sys.stdout.buffer.write(data)
+        return
     stats = await GcsObjects(project, bucket).skill_stats()
     for name in sorted(stats):
         stat = stats[name]
@@ -645,7 +677,10 @@ def main() -> None:
     artifacts.set_defaults(func=_artifacts)
 
     skills = sub.add_parser("skills")
-    skills.add_argument("action", nargs="?", default="list", choices=["list", "sync"])
+    skills.add_argument(
+        "action", nargs="?", default="list", choices=["list", "files", "cat", "sync"]
+    )
+    skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
     skills.set_defaults(func=_skills)
 
