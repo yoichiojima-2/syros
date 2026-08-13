@@ -6,6 +6,7 @@ import datetime
 
 from syros.analytics import (
     SCHEMAS,
+    agent_row,
     approval_row,
     collect,
     event_row,
@@ -27,7 +28,15 @@ async def _populated_store() -> FakeStore:
     )
     await store.request_approval("sess_a", "h1", "Bash", {"command": "ls"})
     await store.decide_approval("sess_a", "h1", allow=True, decided_by="alice")
-    await store.create_session("sess_b", {"model": "claude-haiku-4-5"})
+    await store.create_session("sess_b", {"model": "claude-haiku-4-5"}, agent="reviewer")
+    await store.create_agent(
+        "reviewer",
+        {
+            "options": {"model": "claude-haiku-4-5", "workspace": "shared"},
+            "description": "nightly review persona",
+            "created_by": "alice",
+        },
+    )
     return store
 
 
@@ -39,6 +48,28 @@ async def test_collect_flattens_every_collection():
     assert tables["tool_calls"][0]["tool_name"] == "Bash"
     assert tables["approvals"][0]["status"] == "allow"
     assert all(r["session_id"] == "sess_a" for r in tables["events"])
+    assert [r["name"] for r in tables["agents"]] == ["reviewer"]
+
+
+async def test_agent_rows_flatten_the_stored_persona():
+    tables = await collect(await _populated_store())
+    agent = tables["agents"][0]
+    assert agent["description"] == "nightly review persona"
+    assert agent["model"] == "claude-haiku-4-5"
+    assert agent["workspace"] == "shared"
+    assert agent["options"] == {"model": "claude-haiku-4-5", "workspace": "shared"}
+    # the sessions table carries the join key back to the persona a run used
+    by_id = {r["session_id"]: r for r in tables["sessions"]}
+    assert by_id["sess_b"]["agent"] == "reviewer"
+    assert by_id["sess_a"]["agent"] is None
+    assert ("agent", "STRING", "NULLABLE") in SCHEMAS["sessions"]
+
+
+async def test_agent_timestamps_normalize_to_iso8601():
+    when = datetime.datetime(2026, 8, 12, 3, 0, tzinfo=datetime.timezone.utc)
+    row = agent_row({"name": "a", "created_at": when, "updated_at": when.timestamp()})
+    assert row["created_at"] == when.isoformat()
+    assert row["updated_at"] == when.isoformat()
 
 
 async def test_collect_pages_through_long_event_feeds():
