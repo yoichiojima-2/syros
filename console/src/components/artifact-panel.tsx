@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ArtifactFrame, CopyButton, download } from "@/components/artifact-viewer";
+import {
+  ArtifactFrame,
+  CopyButton,
+  download,
+  FullscreenButton,
+  useFullscreen,
+} from "@/components/artifact-viewer";
 import { artifactLabel, type Artifact } from "@/lib/artifacts";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +32,7 @@ export function ArtifactPanel({
   // pins a specific version, stepping forward to the head resumes following.
   const [cursor, setCursor] = useState<{ path: string; index: number } | null>(null);
   const [showSource, setShowSource] = useState(false);
+  const [fullscreen, setFullscreen] = useFullscreen();
 
   const artifact = artifacts.find((a) => a.path === selectedPath) || artifacts[0];
   if (!artifact) return null;
@@ -41,7 +48,14 @@ export function ArtifactPanel({
   const source = !previewable || showSource;
 
   return (
-    <aside className="flex w-full flex-col bg-card lg:w-[min(46%,660px)] lg:border-l lg:border-border">
+    <aside
+      className={cn(
+        "flex flex-col bg-card",
+        fullscreen
+          ? "fixed inset-0 z-50"
+          : "w-full lg:w-[min(46%,660px)] lg:border-l lg:border-border",
+      )}
+    >
       <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
         {artifacts.length > 1 ? (
           <select
@@ -110,6 +124,7 @@ export function ArtifactPanel({
         >
           <Download />
         </Button>
+        <FullscreenButton fullscreen={fullscreen} onToggle={setFullscreen} />
         <Button variant="ghost" size="sm" title="Close" onClick={onClose}>
           <X />
         </Button>
