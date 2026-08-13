@@ -117,9 +117,7 @@ class FakeObjects:
 
     async def delete_workspace_prefix(self, name, subpath, max_files):
         workspace_prefix(name)
-        return self._delete_prefix(
-            self.workspaces.get(name, {}), "ws", name, subpath, max_files
-        )
+        return self._delete_prefix(self.workspaces.get(name, {}), "ws", name, subpath, max_files)
 
     async def space_stats(self):
         return {name: self._stats(files) for name, files in self.spaces.items()}
@@ -170,9 +168,7 @@ class FakeObjects:
         self.tags[("space", space, name)] = tags
 
     async def delete_artifact_prefix(self, space, subpath, max_files):
-        count = self._delete_prefix(
-            self.spaces.get(space, {}), "space", space, subpath, max_files
-        )
+        count = self._delete_prefix(self.spaces.get(space, {}), "space", space, subpath, max_files)
         if count and not self.spaces.get(space):
             self.spaces.pop(space, None)
         return count
@@ -674,7 +670,9 @@ async def test_workspace_bulk_delete():
 
 async def test_workspace_folder_delete(monkeypatch):
     objects = FakeObjects(
-        workspaces={"team": {"docs/.keep": b"", "docs/a.md": b"a", "docs/sub/b.md": b"b", "c.md": b"c"}}
+        workspaces={
+            "team": {"docs/.keep": b"", "docs/a.md": b"a", "docs/sub/b.md": b"b", "c.md": b"c"}
+        }
     )
     console = api(FakeStore(), objects=objects)
 

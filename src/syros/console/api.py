@@ -562,9 +562,7 @@ class ConsoleAPI:
     async def delete_workspace(self, name: str) -> dict[str, Any]:
         """Remove every blob under the workspace plus its Firestore lease doc."""
         await self._require_free(name)
-        count = await self._bucket_objects().delete_workspace_prefix(
-            name, None, MAX_PREFIX_DELETE
-        )
+        count = await self._bucket_objects().delete_workspace_prefix(name, None, MAX_PREFIX_DELETE)
         await self._store.delete_workspace(name)
         return {"now": time.time(), "ok": True, "name": name, "count": count}
 
