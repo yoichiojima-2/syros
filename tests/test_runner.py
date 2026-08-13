@@ -101,13 +101,14 @@ async def test_runner_full_turn(env, store, fake_harness):
     assert client.options.hooks and "PreToolUse" in client.options.hooks
 
     kinds = [e["message"]["kind"] for e in store.events[SID]]
-    assert kinds == ["assistant", "result"]
-    assert [e["seq"] for e in store.events[SID]] == [1, 2]
+    assert kinds == ["user", "assistant", "result"]
+    assert store.events[SID][0]["message"]["content"] == "do the thing"
+    assert [e["seq"] for e in store.events[SID]] == [1, 2, 3]
 
     session = await store.get_session(SID)
     assert session["status"] == "idle"
     assert session["stop_reason"] == "success"
-    assert session["seq_head"] == 2
+    assert session["seq_head"] == 3
     assert session["cost_usd"] == 0.25
     assert session["claude_session_id"] == "claude-uuid-1"
     assert session["lease_expires"] == 0.0

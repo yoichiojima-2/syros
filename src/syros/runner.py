@@ -19,7 +19,7 @@ from . import env
 from .gate import Gate
 from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store
-from .types import ResultMessage, message_to_doc
+from .types import ResultMessage, UserMessage, message_to_doc
 from . import workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
@@ -129,6 +129,14 @@ async def run(session_id: str) -> None:
                 messages = await _wait_for_messages(store, session_id, config.stay_alive)
                 if not messages:
                     break
+                # Mirror the consumed prompts to the event feed: the SDK stream
+                # echoes tool results as user messages but never the prompt
+                # itself, and the chat view needs it.
+                for text in messages:
+                    seq += 1
+                    await store.append_event(
+                        session_id, seq, message_to_doc(UserMessage(content=text))
+                    )
                 await client.query("\n\n".join(messages))
                 async for message in client.receive_response():
                     doc = message_to_doc(message)
