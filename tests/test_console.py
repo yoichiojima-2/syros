@@ -34,6 +34,9 @@ class FakeObjects:
         self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
         self.spaces: dict[str, dict[str, bytes]] = spaces or {}
         self.skills: dict[str, dict[str, bytes]] = skills or {}
+        # tags live beside the bytes, keyed (kind, owner, file) — mirrors GCS
+        # custom metadata surviving independently of content rewrites
+        self.tags: dict[tuple[str, str, str], list[str]] = {}
 
     @staticmethod
     def _stats(files):
@@ -48,7 +51,10 @@ class FakeObjects:
 
     async def workspace_files(self, name):
         files = self.workspaces.get(name, {})
-        return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
+        return [
+            {"name": n, "size": len(b), "updated": None, "tags": self.tags.get(("ws", name, n), [])}
+            for n, b in files.items()
+        ]
 
     @staticmethod
     def _check(name, file):
@@ -78,13 +84,57 @@ class FakeObjects:
         if file not in files:
             raise FileNotFoundError(file)
         del files[file]
+        self.tags.pop(("ws", name, file), None)
+
+    def _rename(self, kind, files, owner, src, dst):
+        if src not in files:
+            raise FileNotFoundError(src)
+        if src != dst and dst in files:
+            raise FileExistsError(dst)
+        files[dst] = files.pop(src)
+        if (kind, owner, src) in self.tags:
+            self.tags[(kind, owner, dst)] = self.tags.pop((kind, owner, src))
+
+    def _delete_prefix(self, files, kind, owner, subpath, max_files):
+        matching = [n for n in files if subpath is None or n.startswith(subpath)]
+        if len(matching) > max_files:
+            raise ValueError(f"{len(matching)} files (limit {max_files})")
+        for n in matching:
+            del files[n]
+            self.tags.pop((kind, owner, n), None)
+        return len(matching)
+
+    async def rename_workspace_file(self, name, src, dst):
+        self._check(name, src)
+        validate_file("workspace file", dst)
+        self._rename("ws", self.workspaces.get(name, {}), name, src, dst)
+
+    async def set_workspace_tags(self, name, file, tags):
+        self._check(name, file)
+        if file not in self.workspaces.get(name, {}):
+            raise FileNotFoundError(file)
+        self.tags[("ws", name, file)] = tags
+
+    async def delete_workspace_prefix(self, name, subpath, max_files):
+        workspace_prefix(name)
+        return self._delete_prefix(
+            self.workspaces.get(name, {}), "ws", name, subpath, max_files
+        )
 
     async def space_stats(self):
         return {name: self._stats(files) for name, files in self.spaces.items()}
 
     async def list_artifacts(self, space):
         files = self.spaces.get(space, {})
-        return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
+        return [
+            {
+                "name": n,
+                "size": len(b),
+                "updated": None,
+                "tags": self.tags.get(("space", space, n), []),
+            }
+            for n, b in files.items()
+        ]
 
     async def read_artifact(self, space, name):
         import mimetypes
@@ -95,6 +145,37 @@ class FakeObjects:
         if len(files[name]) > 100:
             raise ValueError("too large")
         return files[name], mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+    async def write_artifact_file(self, space, name, data):
+        validate_file("artifact", name)
+        self.spaces.setdefault(space, {})[name] = data
+
+    async def delete_artifact_file(self, space, name):
+        validate_file("artifact", name)
+        files = self.spaces.get(space, {})
+        if name not in files:
+            raise FileNotFoundError(name)
+        del files[name]
+        self.tags.pop(("space", space, name), None)
+
+    async def rename_artifact_file(self, space, src, dst):
+        validate_file("artifact", src)
+        validate_file("artifact", dst)
+        self._rename("space", self.spaces.get(space, {}), space, src, dst)
+
+    async def set_artifact_tags(self, space, name, tags):
+        validate_file("artifact", name)
+        if name not in self.spaces.get(space, {}):
+            raise FileNotFoundError(name)
+        self.tags[("space", space, name)] = tags
+
+    async def delete_artifact_prefix(self, space, subpath, max_files):
+        count = self._delete_prefix(
+            self.spaces.get(space, {}), "space", space, subpath, max_files
+        )
+        if count and not self.spaces.get(space):
+            self.spaces.pop(space, None)
+        return count
 
     @staticmethod
     def _check_skill(name, file):
@@ -520,6 +601,127 @@ async def test_workspace_file_rejects_bad_names():
             await console.write_workspace_file("team", file, "x")
 
 
+async def test_workspace_rename():
+    store = FakeStore()
+    objects = FakeObjects(workspaces={"team": {"a.md": b"aa", "b.md": b"bb"}})
+    console = api(store, objects=objects)
+    objects.tags[("ws", "team", "a.md")] = ["keep-me"]
+
+    result = await console.rename_workspace_file("team", "a.md", "sub/a.md")
+    assert result["ok"] is True and result["file"] == "sub/a.md"
+    assert objects.workspaces["team"]["sub/a.md"] == b"aa"
+    assert "a.md" not in objects.workspaces["team"]
+    assert objects.tags[("ws", "team", "sub/a.md")] == ["keep-me"]
+
+    with pytest.raises(NotFound):
+        await console.rename_workspace_file("team", "gone.md", "x.md")
+    with pytest.raises(Conflict, match="destination"):
+        await console.rename_workspace_file("team", "sub/a.md", "b.md")
+
+    await store.claim_workspace("team", "sess_1", ttl_seconds=60)
+    with pytest.raises(Conflict, match="busy"):
+        await console.rename_workspace_file("team", "b.md", "c.md")
+
+
+async def test_workspace_tags():
+    store = FakeStore()
+    objects = FakeObjects(workspaces={"team": {"a.md": b"aa"}})
+    console = api(store, objects=objects)
+
+    result = await console.set_workspace_file_tags("team", "a.md", ["draft", "q3"])
+    assert result["tags"] == ["draft", "q3"]
+    files = (await console.workspace_files("team"))["files"]
+    assert files[0]["tags"] == ["draft", "q3"]
+
+    # empty list clears; duplicates collapse
+    await console.set_workspace_file_tags("team", "a.md", ["x", "x"])
+    assert objects.tags[("ws", "team", "a.md")] == ["x"]
+    await console.set_workspace_file_tags("team", "a.md", [])
+    assert objects.tags[("ws", "team", "a.md")] == []
+
+    with pytest.raises(OptionsError):
+        await console.set_workspace_file_tags("team", "a.md", ["Bad Tag"])
+    with pytest.raises(OptionsError):
+        await console.set_workspace_file_tags("team", "a.md", [f"t{i}" for i in range(17)])
+    with pytest.raises(NotFound):
+        await console.set_workspace_file_tags("team", "gone.md", ["x"])
+
+    await store.claim_workspace("team", "sess_1", ttl_seconds=60)
+    with pytest.raises(Conflict, match="busy"):
+        await console.set_workspace_file_tags("team", "a.md", ["x"])
+
+
+async def test_workspace_bulk_delete():
+    store = FakeStore()
+    objects = FakeObjects(workspaces={"team": {"a.md": b"a", "b.md": b"b"}})
+    console = api(store, objects=objects)
+
+    result = await console.delete_workspace_files("team", ["a.md", "a.md", "gone.md"])
+    assert result["deleted"] == ["a.md"]
+    assert result["ok"] is False
+    assert [f["name"] for f in result["failed"]] == ["gone.md"]
+    assert objects.workspaces["team"] == {"b.md": b"b"}
+
+    with pytest.raises(ValueError, match="list of strings"):
+        await console.delete_workspace_files("team", "a.md")
+    with pytest.raises(ValueError, match="too many"):
+        await console.delete_workspace_files("team", [f"f{i}" for i in range(51)])
+
+    await store.claim_workspace("team", "sess_1", ttl_seconds=60)
+    with pytest.raises(Conflict, match="busy"):
+        await console.delete_workspace_files("team", ["b.md"])
+
+
+async def test_workspace_folder_delete(monkeypatch):
+    objects = FakeObjects(
+        workspaces={"team": {"docs/.keep": b"", "docs/a.md": b"a", "docs/sub/b.md": b"b", "c.md": b"c"}}
+    )
+    console = api(FakeStore(), objects=objects)
+
+    result = await console.delete_workspace_folder("team", "docs/")
+    assert result["count"] == 3
+    assert objects.workspaces["team"] == {"c.md": b"c"}
+
+    with pytest.raises(NotFound):
+        await console.delete_workspace_folder("team", "docs")
+    with pytest.raises(ValueError):
+        await console.delete_workspace_folder("team", "/")
+
+    monkeypatch.setattr("syros.console.api.MAX_PREFIX_DELETE", 1)
+    objects.workspaces["team"] = {"big/a": b"a", "big/b": b"b"}
+    with pytest.raises(ValueError, match="limit"):
+        await console.delete_workspace_folder("team", "big")
+
+
+async def test_create_and_delete_workspace():
+    store = FakeStore()
+    objects = FakeObjects(workspaces={"team": {"a.md": b"a"}})
+    console = api(store, objects=objects)
+
+    result = await console.create_workspace("fresh")
+    assert result["ok"] is True
+    assert objects.workspaces["fresh"] == {".keep": b""}
+
+    with pytest.raises(Conflict, match="exists"):
+        await console.create_workspace("team")
+    # a lease doc alone also reserves the name
+    await store.claim_workspace("leased-only", "sess_1", ttl_seconds=-1)
+    with pytest.raises(Conflict, match="exists"):
+        await console.create_workspace("leased-only")
+    with pytest.raises(OptionsError):
+        await console.create_workspace("Bad Name")
+
+    await store.claim_workspace("team", "sess_1", ttl_seconds=60)
+    with pytest.raises(Conflict, match="busy"):
+        await console.delete_workspace("team")
+    await store.release_workspace("team", "sess_1")
+
+    result = await console.delete_workspace("team")
+    assert result["count"] == 1
+    assert objects.workspaces["team"] == {}
+    assert "team" not in {w["name"] for w in await store.list_workspaces()}
+
+
 # --- artifact spaces ---
 
 
@@ -549,6 +751,53 @@ async def test_artifact_file_too_large():
     objects = FakeObjects(spaces={"reports": {"big.html": b"x" * 200}})
     with pytest.raises(TooLarge):
         await api(FakeStore(), objects=objects).artifact_file("reports", "big.html")
+
+
+async def test_artifact_write_delete_rename_tags():
+    store = FakeStore()
+    objects = FakeObjects(spaces={"reports": {"r.html": b"<h1>hi</h1>"}})
+    console = api(store, objects=objects)
+
+    # no lease concept: writes go through even while sessions run
+    await store.claim_workspace("reports", "sess_1", ttl_seconds=60)
+    result = await console.write_artifact("reports", "new.csv", "1,2")
+    assert result["ok"] is True
+    assert objects.spaces["reports"]["new.csv"] == b"1,2"
+
+    await console.set_artifact_tags("reports", "new.csv", ["data"])
+    listing = (await console.artifacts("reports"))["artifacts"]
+    assert {f["name"]: f["tags"] for f in listing} == {"new.csv": ["data"], "r.html": []}
+
+    await console.rename_artifact("reports", "new.csv", "data/new.csv")
+    assert objects.tags[("space", "reports", "data/new.csv")] == ["data"]
+    with pytest.raises(Conflict, match="destination"):
+        await console.rename_artifact("reports", "data/new.csv", "r.html")
+
+    result = await console.delete_artifacts("reports", ["data/new.csv", "gone.md"])
+    assert result["deleted"] == ["data/new.csv"] and result["ok"] is False
+
+    await console.write_artifact("reports", "docs/a.md", "a")
+    assert (await console.delete_artifact_folder("reports", "docs"))["count"] == 1
+    with pytest.raises(NotFound):
+        await console.delete_artifact("reports", "docs/a.md")
+
+
+async def test_create_and_delete_space():
+    objects = FakeObjects(spaces={"reports": {"r.html": b"x"}})
+    console = api(FakeStore(), objects=objects)
+
+    await console.create_space("fresh")
+    assert objects.spaces["fresh"] == {".keep": b""}
+    with pytest.raises(Conflict, match="exists"):
+        await console.create_space("reports")
+    with pytest.raises(OptionsError):
+        await console.create_space("Bad Name")
+
+    result = await console.delete_space("reports")
+    assert result["count"] == 1
+    assert "reports" not in objects.spaces
+    with pytest.raises(NotFound):
+        await console.delete_space("reports")
 
 
 # --- skills ---
@@ -765,6 +1014,42 @@ async def test_http_artifact_and_workspace_routes():
 
         status, _, _ = await asyncio.to_thread(fetch, "/api/artifacts/reports/file?name=big.bin")
         assert status == 413
+
+        # new management routes: rename, tags, bulk, folder, create/delete
+        objects.workspaces["team"]["notes.md"] = b"nn"
+        status, body = await asyncio.to_thread(
+            post, "/api/workspaces/team/file/rename", {"from": "notes.md", "to": "sub/notes.md"}
+        )
+        assert status == 200 and "sub/notes.md" in objects.workspaces["team"]
+
+        status, body = await asyncio.to_thread(
+            post, "/api/workspaces/team/file/tags", {"name": "sub/notes.md", "tags": ["draft"]}
+        )
+        assert status == 200 and json.loads(body)["tags"] == ["draft"]
+
+        status, body = await asyncio.to_thread(
+            post, "/api/workspaces/team/folder/delete", {"folder": "sub"}
+        )
+        assert status == 200 and json.loads(body)["count"] == 1
+
+        status, body = await asyncio.to_thread(post, "/api/workspaces", {"name": "fresh"})
+        assert status == 200 and objects.workspaces["fresh"] == {".keep": b""}
+        status, body = await asyncio.to_thread(post, "/api/workspaces/fresh/delete", {})
+        assert status == 200 and objects.workspaces["fresh"] == {}
+
+        status, body = await asyncio.to_thread(
+            post, "/api/artifacts/reports/file", {"name": "new.txt", "content": "hi"}
+        )
+        assert status == 200 and objects.spaces["reports"]["new.txt"] == b"hi"
+        status, body = await asyncio.to_thread(
+            post, "/api/artifacts/reports/files/delete", {"names": ["new.txt"]}
+        )
+        assert status == 200 and json.loads(body)["deleted"] == ["new.txt"]
+
+        status, body = await asyncio.to_thread(post, "/api/artifacts", {"name": "fresh"})
+        assert status == 200 and objects.spaces["fresh"] == {".keep": b""}
+        status, body = await asyncio.to_thread(post, "/api/artifacts/fresh/delete", {})
+        assert status == 200 and "fresh" not in objects.spaces
 
         status, body, _ = await asyncio.to_thread(fetch, "/api/skills")
         assert status == 200

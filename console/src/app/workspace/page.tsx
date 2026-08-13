@@ -1,19 +1,19 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Download, FilePlus2, FileText, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, Download, FileText, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { CopyButton, download } from "@/components/artifact-viewer";
+import { FileManager, type FileOps } from "@/components/file-manager";
 import { useAction, useNow, useWorkspaceFiles, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
-import { bytes, relTime, shortId } from "@/lib/format";
-import type { OkResponse, StoredFile } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { shortId } from "@/lib/format";
+import type { BulkFilesResponse, OkResponse, StoredFile } from "@/lib/types";
 
 // One shared workspace (workspaces/{name}/ in the bucket), editable. Master–
 // detail like the artifacts page, but the right pane is a text editor rather
@@ -56,7 +56,6 @@ function WorkspaceInner() {
   const { files, refresh } = useWorkspaceFiles(name);
   const now = useNow();
   const [flash, run] = useAction();
-  const uploadRef = useRef<HTMLInputElement>(null);
 
   const summary = workspaces?.find((w) => w.name === name) ?? null;
   const busy = summary?.busy ?? false;
@@ -71,41 +70,18 @@ function WorkspaceInner() {
     router.replace(`/workspace?${query}`);
   };
 
-  const upload = (picked: File) => {
-    if (!name) return;
-    run(async () => {
-      const content = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        // readAsDataURL gives "data:<type>;base64,<payload>" — we want the payload
-        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
-        reader.onerror = () => reject(new Error(`could not read ${picked.name}`));
-        reader.readAsDataURL(picked);
-      });
-      await post<OkResponse>(`/api/workspaces/${encodeURIComponent(name)}/file`, {
-        name: picked.name,
-        content,
-        encoding: "base64",
-      });
-      refresh();
-      select(picked.name);
-      return `uploaded ${picked.name}`;
-    });
-  };
-
-  const create = () => {
-    if (!name) return;
-    const created = prompt("New file (path relative to the workspace root)");
-    if (!created) return;
-    run(async () => {
-      await post<OkResponse>(`/api/workspaces/${encodeURIComponent(name)}/file`, {
-        name: created,
-        content: "",
-      });
-      refresh();
-      select(created);
-      return `created ${created}`;
-    });
-  };
+  const base = name ? `/api/workspaces/${encodeURIComponent(name)}` : "";
+  const ops = useMemo<FileOps>(
+    () => ({
+      write: (file, content, encoding = "utf-8") =>
+        post<OkResponse>(`${base}/file`, { name: file, content, encoding }),
+      removeMany: (names) => post<BulkFilesResponse>(`${base}/files/delete`, { names }),
+      rename: (from, to) => post<OkResponse>(`${base}/file/rename`, { from, to }),
+      setTags: (file, tags) => post<OkResponse>(`${base}/file/tags`, { name: file, tags }),
+      deleteFolder: (folder) => post<OkResponse>(`${base}/folder/delete`, { folder }),
+    }),
+    [base],
+  );
 
   if (!name) {
     return (
@@ -164,72 +140,27 @@ function WorkspaceInner() {
           )}
         </div>
 
-        <div className="flex gap-1.5 px-1">
-          <Button
-            variant="outline"
-            size="sm"
+        {files === null ? (
+          <div className="space-y-2">
+            <Skeleton className="h-7" />
+            <Skeleton className="h-7" />
+          </div>
+        ) : (
+          <FileManager
+            files={files}
+            selected={file}
+            now={now}
             disabled={busy}
-            title={lockedBy}
-            onClick={create}
-            className="flex-1"
-          >
-            <FilePlus2 /> New
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            title={lockedBy}
-            onClick={() => uploadRef.current?.click()}
-            className="flex-1"
-          >
-            <Upload /> Upload
-          </Button>
-          <input
-            ref={uploadRef}
-            type="file"
-            className="hidden"
-            onChange={(e) => {
-              const picked = e.target.files?.[0];
-              // reset so re-picking the same file fires change again
-              e.target.value = "";
-              if (picked) upload(picked);
+            disabledReason={lockedBy}
+            onSelect={select}
+            onRenamed={(from, to) => {
+              if (from === file) select(to);
             }}
+            onMutated={refresh}
+            run={run}
+            ops={ops}
           />
-        </div>
-
-        <div className="min-h-0">
-          {files === null ? (
-            <div className="space-y-2">
-              <Skeleton className="h-7" />
-              <Skeleton className="h-7" />
-            </div>
-          ) : files.length === 0 ? (
-            <p className="px-1 text-[12px] text-muted-foreground">empty</p>
-          ) : (
-            <ul className="space-y-0.5">
-              {files.map((f) => (
-                <li key={f.name}>
-                  <button
-                    onClick={() => select(f.name)}
-                    title={f.name}
-                    className={cn(
-                      "flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left font-mono text-[12px] transition-colors",
-                      f.name === file
-                        ? "bg-primary-soft font-medium"
-                        : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
-                    )}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                    <span className="shrink-0 text-[10px] text-faint">
-                      {relTime(f.updated, now) || bytes(f.size)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        )}
         {flash && <p className="px-1 text-[11px] text-muted-foreground">{flash}</p>}
       </aside>
 

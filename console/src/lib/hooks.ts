@@ -232,10 +232,15 @@ export function useArtifactSpaces(intervalMs = 8000): SpaceSummary[] | null {
   return spaces;
 }
 
-export function useSpaceArtifacts(space: string | null, intervalMs = 8000): StoredFile[] | null {
+export function useSpaceArtifacts(
+  space: string | null,
+  intervalMs = 8000,
+): { files: StoredFile[] | null; refresh: () => void } {
   const [files, setFiles] = useState<StoredFile[] | null>(null);
+  const [nonce, setNonce] = useState(0);
+  // reset only when the space changes — a refresh must not flash a skeleton
+  useEffect(() => setFiles(null), [space]);
   useEffect(() => {
-    setFiles(null);
     if (!space) return;
     let cancelled = false;
     const poll = () => {
@@ -252,8 +257,8 @@ export function useSpaceArtifacts(space: string | null, intervalMs = 8000): Stor
       cancelled = true;
       clearInterval(timer);
     };
-  }, [space, intervalMs]);
-  return files;
+  }, [space, intervalMs, nonce]);
+  return { files, refresh: () => setNonce((n) => n + 1) };
 }
 
 export function useApprovals(intervalMs = 3000): {

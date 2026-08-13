@@ -12,7 +12,11 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 
-from .names import validate_file, validate_name
+from .names import validate_file, validate_name, validate_tags
+
+# GCS custom-metadata key holding a file's tags, comma-joined. Tag names are
+# comma-free by validation, so the join is unambiguous.
+TAGS_KEY = "syros-tags"
 
 
 def _bucket(project: str, bucket_name: str):
@@ -49,13 +53,19 @@ def checkpoint(
     """Upload root to the prefix, skipping relative paths under any exclude prefix
     (mounted artifact spaces checkpoint to their own prefix, not into session state)."""
     bucket = _bucket(project, bucket_name)
+    # upload_from_filename replaces the whole object, custom metadata included;
+    # carry existing metadata (e.g. console-set tags) forward so a run that
+    # rewrites a file does not silently strip it.
+    existing = {b.name: b.metadata for b in bucket.list_blobs(prefix=prefix) if b.metadata}
     count = 0
     for path in root.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
         if any(str(path.relative_to(root)).startswith(skip) for skip in exclude):
             continue
-        bucket.blob(prefix + str(path.relative_to(root))).upload_from_filename(path)
+        blob = bucket.blob(prefix + str(path.relative_to(root)))
+        blob.metadata = existing.get(blob.name)
+        blob.upload_from_filename(path)
         count += 1
     return count
 
@@ -96,3 +106,62 @@ def delete_file(project: str, bucket_name: str, name: str, file: str) -> None:
     if not blob.exists():
         raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
     blob.delete()
+
+
+# --- prefix-generic helpers, shared with artifacts.py ---
+
+
+def rename_in_prefix(
+    project: str, bucket_name: str, prefix: str, kind: str, src: str, dst: str
+) -> None:
+    """Server-side copy then delete. copy_blob preserves custom metadata, so
+    tags travel with the rename. Raises FileNotFoundError for a missing source
+    and FileExistsError when the destination is already taken."""
+    validate_file(kind, src)
+    validate_file(kind, dst)
+    bucket = _bucket(project, bucket_name)
+    source = bucket.blob(prefix + src)
+    if not source.exists():
+        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{src}")
+    if src != dst and bucket.blob(prefix + dst).exists():
+        raise FileExistsError(f"gs://{bucket_name}/{prefix}{dst}")
+    if src == dst:
+        return
+    bucket.copy_blob(source, bucket, prefix + dst)
+    source.delete()
+
+
+def set_tags_in_prefix(
+    project: str, bucket_name: str, prefix: str, kind: str, file: str, tags: list[str]
+) -> None:
+    """Store tags as custom metadata on the blob. An empty list removes the key."""
+    validate_file(kind, file)
+    tags = validate_tags(tags)
+    blob = _bucket(project, bucket_name).blob(prefix + file)
+    if not blob.exists():
+        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
+    blob.reload()
+    blob.metadata = {**(blob.metadata or {}), TAGS_KEY: ",".join(tags) if tags else None}
+    blob.patch()
+
+
+def delete_prefix(project: str, bucket_name: str, prefix: str, *, max_files: int) -> int:
+    """Delete every blob under the prefix. Refuses (ValueError) above max_files
+    so a console call cannot silently start an unbounded cascade."""
+    bucket = _bucket(project, bucket_name)
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    if len(blobs) > max_files:
+        raise ValueError(
+            f"{prefix} holds {len(blobs)} files (limit {max_files}); delete via gsutil/CLI instead"
+        )
+    for blob in blobs:
+        blob.delete()
+    return len(blobs)
+
+
+def rename_file(project: str, bucket_name: str, name: str, src: str, dst: str) -> None:
+    rename_in_prefix(project, bucket_name, workspace_prefix(name), "workspace file", src, dst)
+
+
+def set_tags(project: str, bucket_name: str, name: str, file: str, tags: list[str]) -> None:
+    set_tags_in_prefix(project, bucket_name, workspace_prefix(name), "workspace file", file, tags)
