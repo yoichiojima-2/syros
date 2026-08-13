@@ -22,6 +22,7 @@ resource "google_project_service" "apis" {
     "iam.googleapis.com",
     "secretmanager.googleapis.com",
     "bigquery.googleapis.com",
+    "cloudscheduler.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -47,6 +48,22 @@ resource "google_firestore_backup_schedule" "weekly" {
 
   weekly_recurrence {
     day = "SUNDAY"
+  }
+}
+
+# a schedule's run history filters sessions by schedule and orders by
+# created_at; equality + order-by on different fields needs a composite index
+resource "google_firestore_index" "sessions_by_schedule" {
+  database   = google_firestore_database.default.name
+  collection = "sessions"
+
+  fields {
+    field_path = "schedule"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "created_at"
+    order      = "DESCENDING"
   }
 }
 
@@ -251,6 +268,98 @@ resource "google_cloud_run_v2_service_iam_member" "console_invokers" {
   location = var.region
   role     = "roles/run.invoker"
   member   = each.value
+}
+
+# --- the scheduler: Cloud Scheduler fires `syros tick` on a fixed cadence ---
+# The tick reads schedules/ from Firestore, fires whatever is due (create
+# session, queue prompt, trigger the runner job) and exits. It is idempotent —
+# a slot is consumed by a Firestore transaction — so overlap and retry are safe.
+
+resource "google_service_account" "scheduler" {
+  account_id   = "syros-scheduler"
+  display_name = "syros schedule tick"
+}
+
+resource "google_project_iam_member" "scheduler_firestore" {
+  project = var.project
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.scheduler.email}"
+}
+
+# The tick triggers the runner job for each firing, exactly as a client would.
+resource "google_cloud_run_v2_job_iam_member" "scheduler_runs_job" {
+  name     = google_cloud_run_v2_job.runner.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.scheduler.email}"
+}
+
+resource "google_cloud_run_v2_job" "scheduler" {
+  name                = var.scheduler_job_name
+  location            = var.region
+  deletion_protection = false
+
+  template {
+    template {
+      service_account = google_service_account.scheduler.email
+      timeout         = "300s"
+      max_retries     = 0
+
+      containers {
+        image   = var.image
+        command = ["syros"]
+        args    = ["tick"]
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "512Mi"
+          }
+        }
+        env {
+          name  = "SYROS_PROJECT"
+          value = var.project
+        }
+        env {
+          name  = "SYROS_REGION"
+          value = var.region
+        }
+        env {
+          name  = "SYROS_JOB"
+          value = var.job_name
+        }
+      }
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# Cloud Scheduler can't run a Cloud Run Job directly; it POSTs the job's :run
+# endpoint with an OAuth token. The scheduler SA invokes its own tick job, so
+# one identity covers the whole chain: scheduler -> tick -> runner.
+resource "google_cloud_run_v2_job_iam_member" "scheduler_runs_tick" {
+  name     = google_cloud_run_v2_job.scheduler.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.scheduler.email}"
+}
+
+resource "google_cloud_scheduler_job" "tick" {
+  name        = "syros-tick"
+  region      = var.region
+  schedule    = var.tick_schedule
+  description = "Fire due syros schedules (the tick cadence bounds schedule granularity)"
+
+  http_target {
+    http_method = "POST"
+    uri         = "https://run.googleapis.com/v2/projects/${var.project}/locations/${var.region}/jobs/${google_cloud_run_v2_job.scheduler.name}:run"
+
+    oauth_token {
+      service_account_email = google_service_account.scheduler.email
+    }
+  }
+
+  depends_on = [google_project_service.apis]
 }
 
 resource "google_cloud_run_v2_service" "console" {

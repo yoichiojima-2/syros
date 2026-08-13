@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  CalendarClock,
   ChartColumn,
   FolderGit2,
   LayoutDashboard,
@@ -19,6 +20,7 @@ const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard", label: "Dashboard", icon: ChartColumn },
   { href: "/sessions", label: "Sessions", icon: ListTree },
+  { href: "/schedules", label: "Schedules", icon: CalendarClock },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/workspaces", label: "Workspaces", icon: FolderGit2 },
   { href: "/artifacts", label: "Artifacts", icon: Package },
@@ -40,7 +42,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <nav className="flex gap-1 md:flex-col md:gap-0.5">
           {NAV.map(({ href, label, icon: Icon }) => {
-            const active = pathname === href || (href === "/sessions" && pathname === "/session");
+            // detail pages are singular (/session, /schedule, /workspace) and
+            // keep their list's nav entry lit
+            const active = pathname === href || href === `${pathname}s`;
             return (
               <Link
                 key={href}

@@ -134,6 +134,19 @@ class AgentOptions:
         return {name: getattr(self, name) for name in _SERIALIZED_FIELDS}
 
 
+def options_from_doc(doc: dict[str, Any]) -> AgentOptions:
+    """Rebuild AgentOptions from a serialized dict (the inverse of serialize()).
+
+    Unknown keys are an error rather than a silent drop: this is the path
+    untrusted input takes when the console defines a schedule, and an option
+    that quietly did nothing would be worse than a rejected form.
+    """
+    unknown = sorted(set(doc) - set(_SERIALIZED_FIELDS))
+    if unknown:
+        raise OptionsError(f"unknown option(s): {', '.join(unknown)}")
+    return AgentOptions(**doc)
+
+
 def build_sdk_options(
     options: AgentOptions,
     *,

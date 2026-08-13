@@ -15,9 +15,9 @@ import time
 from datetime import datetime
 from typing import Any
 
-from .. import remote
+from .. import remote, schedules
 from ..env import DEFAULT_APPROVAL_TIMEOUT
-from ..options import AgentOptions
+from ..options import AgentOptions, options_from_doc
 from ..store import StoreProtocol, lease_active
 from .objects import MAX_PREVIEW_BYTES, ObjectStoreProtocol
 
@@ -65,6 +65,31 @@ def derived_state(session: dict[str, Any]) -> str:
     return session.get("status") or "unknown"
 
 
+# States in which a session is still going, so its outcome isn't decided and
+# its duration is still growing. Mirrors ACTIVE_STATES in console/src/lib/types.ts.
+ACTIVE_STATES = ("running", "queued", "stalled")
+
+
+def run_outcome(session: dict[str, Any]) -> str:
+    """What a run *did*, as opposed to whether it is live (derived_state).
+
+    A finished session's verdict is its stop_reason: the harness reports
+    `success`/`end_turn` for a clean finish and an `error_*` subtype otherwise,
+    and syros adds `workspace_busy` for a run that lost a workspace lease.
+
+    Mirrors RunOutcome in console/src/lib/types.ts — keep the two in sync.
+    """
+    state = derived_state(session)
+    if state == "terminated":
+        return "cancelled"
+    if state in ACTIVE_STATES:
+        return state
+    stop_reason = session.get("stop_reason") or ""
+    if stop_reason.startswith("error") or stop_reason == "workspace_busy":
+        return "failed"
+    return "succeeded"
+
+
 def _summary(session: dict[str, Any]) -> dict[str, Any]:
     options = session.get("options") or {}
     return to_jsonable(
@@ -80,8 +105,27 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
             "workspace": options.get("workspace"),
+            # Run provenance, for sessions a schedule created
+            "schedule": session.get("schedule"),
+            "trigger": session.get("trigger") or "api",
         }
     )
+
+
+def _run(session: dict[str, Any]) -> dict[str, Any]:
+    """A session seen as a run: the summary plus outcome and wall-clock time.
+
+    duration_s is None while the run is still going — the browser ticks that
+    one off created_at so it counts up between polls.
+    """
+    summary = _summary(session)
+    started, ended = summary["created_at"], summary["updated_at"]
+    active = summary["state"] in ACTIVE_STATES
+    return {
+        **summary,
+        "outcome": run_outcome(session),
+        "duration_s": None if active or not (started and ended) else max(0.0, ended - started),
+    }
 
 
 def _decided_by() -> str:
@@ -248,6 +292,101 @@ class ConsoleAPI:
                 {"id": sid, "error": error} for sid, error in zip(ids, errors) if error is not None
             ],
         }
+
+    # --- schedules ---
+
+    async def _schedule_row(self, schedule: dict[str, Any]) -> dict[str, Any]:
+        """A schedule plus the run it last started, for the schedules list."""
+        session_id = schedule.get("last_session_id")
+        session = await self._store.get_session(session_id) if session_id else None
+        if session is not None:
+            session["id"] = session_id
+        return to_jsonable(
+            {
+                "name": schedule.get("name"),
+                "cron": schedule.get("cron"),
+                "timezone": schedule.get("timezone") or schedules.DEFAULT_TIMEZONE,
+                "prompt": schedule.get("prompt") or "",
+                "options": schedule.get("options") or {},
+                "enabled": bool(schedule.get("enabled")),
+                "next_run_at": float(schedule.get("next_run_at") or 0.0) or None,
+                "last_run_at": schedule.get("last_run_at"),
+                "last_skipped_at": schedule.get("last_skipped_at"),
+                "last_error": schedule.get("last_error"),
+                "runs": int(schedule.get("runs") or 0),
+                "skips": int(schedule.get("skips") or 0),
+                "created_by": schedule.get("created_by"),
+                "created_at": schedule.get("created_at"),
+                "last_run": _run(session) if session else None,
+            }
+        )
+
+    async def schedules(self) -> dict[str, Any]:
+        rows = await schedules.list_all(store=self._store)
+        return {
+            "now": time.time(),
+            "schedules": await asyncio.gather(*(self._schedule_row(s) for s in rows)),
+        }
+
+    async def _require_schedule(self, name: str) -> dict[str, Any]:
+        schedule = await self._store.get_schedule(name)
+        if schedule is None:
+            raise NotFound(f"schedule {name} not found")
+        return schedule
+
+    async def schedule(self, name: str, limit: int = 50) -> dict[str, Any]:
+        """One schedule and its run history — the run-status view's payload."""
+        schedule = await self._require_schedule(name)
+        runs = await schedules.runs(name, limit=limit, store=self._store)
+        return {
+            "now": time.time(),
+            "schedule": await self._schedule_row(schedule),
+            "runs": [_run(r) for r in runs],
+        }
+
+    async def create_schedule(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Define a schedule from the console's form.
+
+        Run options arrive as the same serialized dict a session stores, so the
+        console never has to track which options the sandbox honours — options
+        it doesn't know about are the SDK's problem, and unknown ones are
+        rejected by options_from_doc rather than silently dropped.
+        """
+        name = str(body.get("name") or "").strip()
+        if await self._store.get_schedule(name) is not None:
+            raise Conflict(f"schedule {name} already exists")
+        run_options = options_from_doc(dict(body.get("options") or {}))
+        run_options.project = run_options.project or self._options.project
+        schedule = await schedules.create(
+            name,
+            str(body.get("cron") or ""),
+            str(body.get("prompt") or ""),
+            run_options,
+            options=self._options,
+            timezone=str(body.get("timezone") or schedules.DEFAULT_TIMEZONE),
+            enabled=bool(body.get("enabled", True)),
+            created_by=_decided_by(),
+            store=self._store,
+        )
+        return {"now": time.time(), "schedule": await self._schedule_row(schedule)}
+
+    async def set_schedule_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        await self._require_schedule(name)
+        await schedules.set_enabled(name, enabled, store=self._store)
+        return {"now": time.time(), "ok": True, "enabled": enabled}
+
+    async def run_schedule(self, name: str) -> dict[str, Any]:
+        """Fire a schedule off-cycle. Its own clock is untouched."""
+        await self._require_schedule(name)
+        session_id = await schedules.run_now(
+            name, options=self._options, store=self._store, created_by=_decided_by()
+        )
+        return {"now": time.time(), "ok": True, "session_id": session_id}
+
+    async def delete_schedule(self, name: str) -> dict[str, Any]:
+        await self._require_schedule(name)
+        await schedules.delete(name, store=self._store)
+        return {"now": time.time(), "ok": True}
 
     # --- shared workspaces ---
 

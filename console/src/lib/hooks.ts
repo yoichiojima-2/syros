@@ -7,6 +7,10 @@ import type {
   ApprovalsResponse,
   ApprovalWithSession,
   PollResponse,
+  RunSummary,
+  ScheduleResponse,
+  ScheduleSummary,
+  SchedulesResponse,
   SessionsResponse,
   SessionSummary,
   SpaceArtifactsResponse,
@@ -39,7 +43,9 @@ export function useOnline(): boolean {
   return online;
 }
 
-function usePolling(poll: () => void, intervalMs: number) {
+// `nonce` is the opt-in refresh handle: bumping it re-runs the effect, so an
+// action can pull fresh data without waiting out the interval.
+function usePolling(poll: () => void, intervalMs: number, nonce = 0) {
   useEffect(() => {
     const tick = () => {
       if (!document.hidden) poll();
@@ -48,7 +54,7 @@ function usePolling(poll: () => void, intervalMs: number) {
     const timer = setInterval(tick, intervalMs);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intervalMs]);
+  }, [intervalMs, nonce]);
 }
 
 export function useSessions(intervalMs = 4000): SessionSummary[] | null {
@@ -59,6 +65,70 @@ export function useSessions(intervalMs = 4000): SessionSummary[] | null {
       .catch(() => {});
   }, intervalMs);
   return sessions;
+}
+
+export function useSchedules(intervalMs = 5000): {
+  schedules: ScheduleSummary[] | null;
+  refresh: () => void;
+} {
+  const [schedules, setSchedules] = useState<ScheduleSummary[] | null>(null);
+  const [nonce, setNonce] = useState(0);
+  usePolling(
+    () => {
+      api<SchedulesResponse>("/api/schedules")
+        .then((data) => setSchedules(data.schedules))
+        .catch(() => {});
+    },
+    intervalMs,
+    nonce,
+  );
+  return { schedules, refresh: () => setNonce((n) => n + 1) };
+}
+
+/** One schedule and its run history — the run-status view's feed. */
+export function useSchedule(
+  name: string | null,
+  intervalMs = 4000,
+): {
+  schedule: ScheduleSummary | null;
+  runs: RunSummary[] | null;
+  missing: boolean;
+  refresh: () => void;
+} {
+  const [data, setData] = useState<ScheduleResponse | null>(null);
+  const [missing, setMissing] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    setData(null);
+    setMissing(false);
+    if (!name) return;
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return;
+      api<ScheduleResponse>(`/api/schedules/${encodeURIComponent(name)}`)
+        .then((next) => {
+          if (cancelled) return;
+          setData(next);
+          setMissing(false);
+        })
+        // A deleted schedule 404s; say so rather than spinning on a skeleton.
+        .catch((err: Error) => {
+          if (!cancelled && /not found/i.test(err.message)) setMissing(true);
+        });
+    };
+    poll();
+    const timer = setInterval(poll, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [name, intervalMs, nonce]);
+  return {
+    schedule: data?.schedule ?? null,
+    runs: data?.runs ?? null,
+    missing,
+    refresh: () => setNonce((n) => n + 1),
+  };
 }
 
 export function useWorkspaces(intervalMs = 4000): WorkspaceSummary[] | null {

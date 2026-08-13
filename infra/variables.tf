@@ -61,6 +61,18 @@ variable "dataset_id" {
   default     = "syros"
 }
 
+variable "scheduler_job_name" {
+  description = "Cloud Run Job that runs `syros tick`"
+  type        = string
+  default     = "syros-scheduler"
+}
+
+variable "tick_schedule" {
+  description = "How often Cloud Scheduler runs `syros tick`. This is the effective granularity of every syros schedule: a schedule fires at the first tick at or after its cron time."
+  type        = string
+  default     = "* * * * *"
+}
+
 variable "console_name" {
   type    = string
   default = "syros-console"
