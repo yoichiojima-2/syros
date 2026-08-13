@@ -154,11 +154,13 @@ def build_sdk_options(
     cwd: str | None = None,
     resume: str | None = None,
     env: dict[str, str] | None = None,
+    setting_sources: list[str] | None = None,
 ) -> Any:
     """Build a ClaudeAgentOptions from the serializable option subset."""
     from claude_agent_sdk import ClaudeAgentOptions
 
     return ClaudeAgentOptions(
+        setting_sources=setting_sources,
         system_prompt=options.system_prompt,
         model=options.model,
         tools=options.tools,

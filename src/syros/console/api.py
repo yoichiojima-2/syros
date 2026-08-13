@@ -139,6 +139,18 @@ def _run(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _decode_content(content: str, encoding: str) -> bytes:
+    """Decode a file body from the console. Text rides as utf-8, uploads as base64."""
+    if encoding == "base64":
+        try:
+            return base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"invalid base64 content: {exc}") from exc
+    if encoding == "utf-8":
+        return content.encode()
+    raise ValueError(f"unknown encoding {encoding!r}: use 'utf-8' or 'base64'")
+
+
 def _decided_by() -> str:
     try:
         return getpass.getuser()
@@ -468,26 +480,13 @@ class ConsoleAPI:
         except ValueError as exc:
             raise TooLarge(str(exc)) from exc
 
-    def _decode_content(self, file: str, content: str, encoding: str) -> bytes:
-        """Decode a write body. Text rides as utf-8, uploads as base64."""
-        if encoding == "base64":
-            try:
-                data = base64.b64decode(content, validate=True)
-            except (binascii.Error, ValueError) as exc:
-                raise ValueError(f"invalid base64 content: {exc}") from exc
-        elif encoding == "utf-8":
-            data = content.encode()
-        else:
-            raise ValueError(f"unknown encoding {encoding!r}: use 'utf-8' or 'base64'")
-        if len(data) > MAX_PREVIEW_BYTES:
-            raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
-        return data
-
     async def write_workspace_file(
         self, name: str, file: str, content: str, encoding: str = "utf-8"
     ) -> dict[str, Any]:
-        """Create or overwrite one file."""
-        data = self._decode_content(file, content, encoding)
+        """Create or overwrite one file. Text rides as utf-8, uploads as base64."""
+        data = _decode_content(content, encoding)
+        if len(data) > MAX_PREVIEW_BYTES:
+            raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
         await self._require_free(name)
         await self._bucket_objects().write_workspace_file(name, file, data)
         return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
@@ -569,6 +568,61 @@ class ConsoleAPI:
         await self._store.delete_workspace(name)
         return {"now": time.time(), "ok": True, "name": name, "count": count}
 
+    # --- skills ---
+    #
+    # Skills have no lease: the runner mounts read-only-ish copies into each
+    # sandbox HOME at start, so a console edit never races a live run's
+    # checkpoint the way a workspace edit would.
+
+    async def skills(self) -> dict[str, Any]:
+        stats = await self._bucket_objects().skill_stats()
+        rows = [{"name": name, **stat} for name, stat in sorted(stats.items())]
+        return {"now": time.time(), "skills": to_jsonable(rows)}
+
+    async def skill_files(self, name: str) -> dict[str, Any]:
+        files = await self._bucket_objects().skill_files(name)
+        if not files:
+            raise NotFound(f"skill {name} not found")
+        files.sort(key=lambda f: f["name"])
+        return {"now": time.time(), "name": name, "files": to_jsonable(files)}
+
+    async def skill_file(self, name: str, file: str) -> tuple[bytes, str]:
+        """Raw bytes + content type, same contract as artifact_file."""
+        try:
+            return await self._bucket_objects().read_skill_file(name, file)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        except ValueError as exc:
+            raise TooLarge(str(exc)) from exc
+
+    async def write_skill_file(
+        self, name: str, file: str, content: str, encoding: str = "utf-8"
+    ) -> dict[str, Any]:
+        data = _decode_content(content, encoding)
+        if len(data) > MAX_PREVIEW_BYTES:
+            raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
+        await self._bucket_objects().write_skill_file(name, file, data)
+        return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
+
+    async def delete_skill_file(self, name: str, file: str) -> dict[str, Any]:
+        try:
+            await self._bucket_objects().delete_skill_file(name, file)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        return {"now": time.time(), "ok": True, "name": name, "file": file}
+
+    async def delete_skill(self, name: str) -> dict[str, Any]:
+        try:
+            deleted = await self._bucket_objects().delete_skill(name)
+        except FileNotFoundError as exc:
+            raise NotFound(str(exc)) from exc
+        return {"now": time.time(), "ok": True, "name": name, "deleted": deleted}
+
+    async def sync_official_skills(self) -> dict[str, Any]:
+        """Seed skills/ from the official anthropics/skills repo (editable copies)."""
+        summary = await self._bucket_objects().sync_official_skills()
+        return {"now": time.time(), "ok": True, **to_jsonable(summary)}
+
     # --- shared artifact spaces ---
     #
     # Spaces have no lease: a running session that mounts a space rw checkpoints
@@ -597,7 +651,9 @@ class ConsoleAPI:
     async def write_artifact(
         self, space: str, name: str, content: str, encoding: str = "utf-8"
     ) -> dict[str, Any]:
-        data = self._decode_content(name, content, encoding)
+        data = _decode_content(content, encoding)
+        if len(data) > MAX_PREVIEW_BYTES:
+            raise TooLarge(f"{name} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
         await self._bucket_objects().write_artifact_file(space, name, data)
         return {"now": time.time(), "ok": True, "space": space, "file": name, "size": len(data)}
 

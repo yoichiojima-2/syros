@@ -93,6 +93,10 @@ def test_build_sdk_options_maps_fields():
     assert sdk.cwd == "/w"
     assert sdk.resume == "uuid"
     assert sdk.env == {"A": "1"}
+    assert sdk.setting_sources is None  # no filesystem settings unless the caller opts in
+
+    sdk = build_sdk_options(options, setting_sources=["user"])
+    assert sdk.setting_sources == ["user"]
 
 
 def test_model_env_with_project():

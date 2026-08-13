@@ -1,7 +1,8 @@
 """stdlib HTTP server for the console — no framework, localhost or Cloud Run.
 
-Serves the built frontend (console/, Next.js static export; `npm run build`
-emits static/ into this package) and the JSON API. The asyncio loop owns the
+Serves the built frontend (console/, Next.js static export; `make console`
+emits static/ into this package, and the Docker build does the same) and the
+JSON API. The asyncio loop owns the
 Store (firestore.AsyncClient is loop-bound); HTTP handler threads bridge into
 it with run_coroutine_threadsafe.
 """
@@ -144,6 +145,40 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             name, str(body.get("folder") or "")
         ),
     ),
+    ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
+    ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
+    (
+        "GET",
+        ("api", "skills", None, "files"),
+        lambda api, body, query, name: api.skill_files(name),
+    ),
+    # Skill file names may contain "/", so — as with workspaces — the file
+    # rides the query string on GET and the JSON body on POST, never a segment.
+    (
+        "GET",
+        ("api", "skills", None, "file"),
+        lambda api, body, query, name: api.skill_file(name, (query.get("name") or [""])[0]),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "file"),
+        lambda api, body, query, name: api.write_skill_file(
+            name,
+            str(body.get("name") or ""),
+            str(body.get("content") or ""),
+            str(body.get("encoding") or "utf-8"),
+        ),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "file", "delete"),
+        lambda api, body, query, name: api.delete_skill_file(name, str(body.get("name") or "")),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "delete"),
+        lambda api, body, query, name: api.delete_skill(name),
+    ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
     (
         "POST",
@@ -231,8 +266,11 @@ def _load_static() -> dict[str, bytes]:
                 files[f"{prefix}{child.name}"] = child.read_bytes()
 
     root = resources.files("syros.console").joinpath("static")
-    if root.is_dir():
-        walk(root)
+    if not root.is_dir():
+        # The bundle is generated, not committed — absent in a fresh checkout.
+        print("console frontend not built; run `make console` (API still available)")
+        return files
+    walk(root)
     return files
 
 

@@ -13,6 +13,9 @@ import type {
   SchedulesResponse,
   SessionsResponse,
   SessionSummary,
+  SkillFilesResponse,
+  SkillsResponse,
+  SkillSummary,
   SpaceArtifactsResponse,
   SpaceSummary,
   SpacesResponse,
@@ -161,6 +164,50 @@ export function useWorkspaceFiles(
           if (!cancelled) setFiles(data.files);
         })
         // an unknown workspace 404s; keep whatever we already had otherwise
+        .catch(() => {
+          if (!cancelled) setFiles((prev) => prev ?? []);
+        });
+    };
+    poll();
+    const timer = setInterval(poll, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [name, intervalMs, nonce]);
+  return { files, refresh: () => setNonce((n) => n + 1) };
+}
+
+export function useSkills(intervalMs = 8000): SkillSummary[] | null {
+  const [skills, setSkills] = useState<SkillSummary[] | null>(null);
+  usePolling(() => {
+    api<SkillsResponse>("/api/skills")
+      .then((data) => setSkills(data.skills))
+      .catch(() => {});
+  }, intervalMs);
+  return skills;
+}
+
+/** Files in one skill. Like useWorkspaceFiles this exposes a refresh, so a
+ *  save or delete shows up without waiting out the poll. */
+export function useSkillFiles(
+  name: string | null,
+  intervalMs = 8000,
+): { files: StoredFile[] | null; refresh: () => void } {
+  const [files, setFiles] = useState<StoredFile[] | null>(null);
+  const [nonce, setNonce] = useState(0);
+  // reset only when the skill changes — a refresh must not flash a skeleton
+  useEffect(() => setFiles(null), [name]);
+  useEffect(() => {
+    if (!name) return;
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return;
+      api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files`)
+        .then((data) => {
+          if (!cancelled) setFiles(data.files);
+        })
+        // an unknown skill 404s; keep whatever we already had otherwise
         .catch(() => {
           if (!cancelled) setFiles((prev) => prev ?? []);
         });
