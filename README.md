@@ -108,8 +108,8 @@ deploys to Cloud Run (`syros-console`, IAM-only — no public access), so the sa
 reachable without a local checkout or GCP client libraries; see [Deploy](#deploy).
 
 The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind); `make console`
-rebuilds the bundle into `src/syros/console/static/`, which is committed so pip installs
-and the Docker image need no Node toolchain.
+rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
+Docker image builds its own copy in a Node stage, so deploys need no local build.
 
 ## Schedules
 

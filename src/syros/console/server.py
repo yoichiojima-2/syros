@@ -1,7 +1,8 @@
 """stdlib HTTP server for the console — no framework, localhost or Cloud Run.
 
-Serves the built frontend (console/, Next.js static export; `npm run build`
-emits static/ into this package) and the JSON API. The asyncio loop owns the
+Serves the built frontend (console/, Next.js static export; `make console`
+emits static/ into this package, and the Docker build does the same) and the
+JSON API. The asyncio loop owns the
 Store (firestore.AsyncClient is loop-bound); HTTP handler threads bridge into
 it with run_coroutine_threadsafe.
 """
@@ -143,7 +144,12 @@ def _load_static() -> dict[str, bytes]:
             else:
                 files[f"{prefix}{child.name}"] = child.read_bytes()
 
-    walk(resources.files("syros.console").joinpath("static"))
+    root = resources.files("syros.console").joinpath("static")
+    if not root.is_dir():
+        # The bundle is generated, not committed — absent in a fresh checkout.
+        print("console frontend not built; run `make console` (API still available)")
+        return files
+    walk(root)
     return files
 
 
