@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Download, FileCode2, Package } from "lucide-react";
+import { Download, FileCode2, Package, PackagePlus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -12,10 +12,11 @@ import {
   FullscreenButton,
   useFullscreen,
 } from "@/components/artifact-viewer";
-import { useArtifactSpaces, useNow, useSpaceArtifacts } from "@/lib/hooks";
+import { FileManager, type FileOps } from "@/components/file-manager";
+import { useAction, useArtifactSpaces, useNow, useSpaceArtifacts } from "@/lib/hooks";
+import { post } from "@/lib/api";
 import { previewKind, type PreviewKind } from "@/lib/artifacts";
-import { bytes, relTime } from "@/lib/format";
-import type { StoredFile } from "@/lib/types";
+import type { BulkFilesResponse, OkResponse, StoredFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Shared artifact spaces (artifacts/{space}/ in the bucket) — the publish
@@ -49,8 +50,9 @@ function ArtifactsInner() {
   const space = params.get("space");
   const file = params.get("file");
   const spaces = useArtifactSpaces();
-  const files = useSpaceArtifacts(space);
+  const { files, refresh } = useSpaceArtifacts(space);
   const now = useNow();
+  const [flash, run] = useAction();
 
   const select = (nextSpace: string | null, nextFile: string | null) => {
     const query = new URLSearchParams();
@@ -59,11 +61,47 @@ function ArtifactsInner() {
     router.replace(`/artifacts${query.size ? `?${query}` : ""}`);
   };
 
+  const base = space ? `/api/artifacts/${encodeURIComponent(space)}` : "";
+  const ops = useMemo<FileOps>(
+    () => ({
+      write: (file, content, encoding = "utf-8") =>
+        post<OkResponse>(`${base}/file`, { name: file, content, encoding }),
+      removeMany: (names) => post<BulkFilesResponse>(`${base}/files/delete`, { names }),
+      rename: (from, to) => post<OkResponse>(`${base}/file/rename`, { from, to }),
+      setTags: (file, tags) => post<OkResponse>(`${base}/file/tags`, { name: file, tags }),
+      deleteFolder: (folder) => post<OkResponse>(`${base}/folder/delete`, { folder }),
+    }),
+    [base],
+  );
+
+  const createSpace = () => {
+    const name = prompt("New artifact space name (lowercase, [a-z0-9_-])");
+    if (!name) return;
+    run(async () => {
+      await post<OkResponse>("/api/artifacts", { name });
+      select(name, null);
+    });
+  };
+
+  const removeSpace = (name: string) => {
+    if (!confirm(`Delete space ${name} and every artifact in it? Removed permanently.`)) return;
+    run(async () => {
+      await post<OkResponse>(`/api/artifacts/${encodeURIComponent(name)}/delete`, {});
+      if (name === space) select(null, null);
+      return `deleted ${name}`;
+    });
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
       <aside className="flex shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-4 lg:w-72 lg:border-r lg:border-b-0">
         <div>
-          <h1 className="px-1 pb-2 font-serif text-xl tracking-tight">Artifacts</h1>
+          <div className="flex items-center justify-between pb-2">
+            <h1 className="px-1 font-serif text-xl tracking-tight">Artifacts</h1>
+            <Button variant="ghost" size="sm" title="New artifact space" onClick={createSpace}>
+              <PackagePlus />
+            </Button>
+          </div>
           {spaces === null ? (
             <div className="space-y-2">
               <Skeleton className="h-7" />
@@ -80,58 +118,64 @@ function ArtifactsInner() {
             <ul className="space-y-0.5">
               {spaces.map((s) => (
                 <li key={s.name}>
-                  <button
-                    onClick={() => select(s.name, null)}
+                  <div
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors",
+                      "group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors",
                       s.name === space
                         ? "bg-primary-soft font-medium"
                         : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
                     )}
                   >
-                    <Package className={cn("size-4", s.name === space && "text-primary")} />
-                    <span className="min-w-0 flex-1 truncate font-mono">{s.name}</span>
-                    <span className="font-mono text-[11px] text-faint">{s.file_count}</span>
-                  </button>
+                    <button
+                      onClick={() => select(s.name, null)}
+                      className="flex min-w-0 flex-1 items-center gap-2"
+                    >
+                      <Package className={cn("size-4", s.name === space && "text-primary")} />
+                      <span className="min-w-0 flex-1 truncate font-mono">{s.name}</span>
+                      <span className="font-mono text-[11px] text-faint">{s.file_count}</span>
+                    </button>
+                    <button
+                      title={`Delete ${s.name}`}
+                      onClick={() => removeSpace(s.name)}
+                      className="hidden shrink-0 text-faint hover:text-destructive group-hover:block"
+                    >
+                      <Trash2 className="size-3" />
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </div>
         {space && (
-          <div>
-            <h2 className="px-1 pb-1.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+          <div className="flex min-h-0 flex-col gap-2">
+            <h2 className="px-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
               {space}
             </h2>
             {files === null ? (
               <Skeleton className="h-7" />
-            ) : files.length === 0 ? (
-              <p className="px-1 text-[12px] text-muted-foreground">empty</p>
             ) : (
-              <ul className="space-y-0.5">
-                {files.map((f) => (
-                  <li key={f.name}>
-                    <button
-                      onClick={() => select(space, f.name)}
-                      title={f.name}
-                      className={cn(
-                        "flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left font-mono text-[12px] transition-colors",
-                        f.name === file
-                          ? "bg-primary-soft font-medium"
-                          : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
-                      )}
-                    >
-                      <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                      <span className="shrink-0 text-[10px] text-faint">
-                        {relTime(f.updated, now) || bytes(f.size)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <FileManager
+                files={files}
+                selected={file}
+                now={now}
+                disabled={false}
+                onSelect={(name) => select(space, name)}
+                onRenamed={(from, to) => {
+                  if (from === file) select(space, to);
+                }}
+                onMutated={refresh}
+                run={run}
+                ops={ops}
+              />
             )}
+            <p className="px-1 text-[10px] text-faint">
+              Spaces have no lease — a running session that mounts this space read-write
+              republishes over it when it checkpoints.
+            </p>
           </div>
         )}
+        {flash && <p className="px-1 text-[11px] text-muted-foreground">{flash}</p>}
       </aside>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {space && file ? (

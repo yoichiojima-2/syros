@@ -172,6 +172,7 @@ export interface StoredFile {
   name: string;
   size: number;
   updated: number | null;
+  tags?: string[];
 }
 
 export interface WorkspaceFilesResponse {
@@ -180,13 +181,23 @@ export interface WorkspaceFilesResponse {
   files: StoredFile[];
 }
 
-/** Reply shape of the workspace file mutations (write, delete). */
+/** Reply shape of the file mutations (write, delete, rename, tags, folder). */
 export interface OkResponse {
   now: number;
   ok: boolean;
-  name: string;
-  file: string;
+  name?: string;
+  file?: string;
   size?: number;
+  count?: number;
+  tags?: string[];
+}
+
+/** Reply shape of bulk file deletes — best-effort, per-file failures. */
+export interface BulkFilesResponse {
+  now: number;
+  ok: boolean;
+  deleted: string[];
+  failed: { name: string; error: string }[];
 }
 
 export interface SpaceSummary {

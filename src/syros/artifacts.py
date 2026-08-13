@@ -96,6 +96,36 @@ def read_artifact(
     return blob.download_as_bytes(), mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
+def write_artifact(project: str, bucket_name: str, space: str, name: str, data: bytes) -> None:
+    prefix = space_prefix(space)
+    blob = _bucket(project, bucket_name).blob(prefix + validate_file("artifact", name))
+    blob.upload_from_string(
+        data, content_type=mimetypes.guess_type(name)[0] or "application/octet-stream"
+    )
+
+
+def delete_artifact(project: str, bucket_name: str, space: str, name: str) -> None:
+    prefix = space_prefix(space)
+    blob = _bucket(project, bucket_name).blob(prefix + validate_file("artifact", name))
+    if not blob.exists():
+        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{name}")
+    blob.delete()
+
+
+def rename_artifact(project: str, bucket_name: str, space: str, src: str, dst: str) -> None:
+    from . import workspace
+
+    workspace.rename_in_prefix(project, bucket_name, space_prefix(space), "artifact", src, dst)
+
+
+def set_artifact_tags(
+    project: str, bucket_name: str, space: str, name: str, tags: list[str]
+) -> None:
+    from . import workspace
+
+    workspace.set_tags_in_prefix(project, bucket_name, space_prefix(space), "artifact", name, tags)
+
+
 def push(project: str, bucket_name: str, space: str, paths: list[Path]) -> int:
     """Upload local files (or directories, recursively) into the space."""
     prefix = space_prefix(space)

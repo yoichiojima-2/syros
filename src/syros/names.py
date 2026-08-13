@@ -14,6 +14,8 @@ import re
 from .errors import OptionsError
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+TAG = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+MAX_TAGS = 16
 
 
 def validate_name(kind: str, value: str) -> str:
@@ -37,3 +39,22 @@ def validate_file(kind: str, value: str) -> str:
     if ".." in value.split("/") or value.endswith("/"):
         raise OptionsError(f"invalid {kind} name {value!r}")
     return value
+
+
+def validate_tags(tags: object) -> list[str]:
+    """Check a tag list for a stored file: short lowercase names, at most MAX_TAGS.
+
+    Tags are comma-joined into one GCS metadata value, which the tag pattern
+    keeps unambiguous (no commas). De-dupes while preserving order.
+    """
+    if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+        raise OptionsError("tags must be a list of strings")
+    unique = list(dict.fromkeys(tags))
+    if len(unique) > MAX_TAGS:
+        raise OptionsError(f"too many tags: {len(unique)} > {MAX_TAGS}")
+    for tag in unique:
+        if not TAG.fullmatch(tag):
+            raise OptionsError(
+                f"invalid tag {tag!r}: must match [a-z0-9][a-z0-9_-]* (max 32 chars)"
+            )
+    return unique
