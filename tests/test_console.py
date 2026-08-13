@@ -8,7 +8,14 @@ from datetime import UTC, datetime
 import pytest
 
 import syros.remote
-from syros.console.api import Conflict, ConsoleAPI, NotFound, derived_state, to_jsonable
+from syros.console.api import (
+    MAX_BULK_DELETE,
+    Conflict,
+    ConsoleAPI,
+    NotFound,
+    derived_state,
+    to_jsonable,
+)
 from syros.options import AgentOptions
 
 from .fakes import FakeStore
@@ -240,6 +247,61 @@ async def test_delete_unknown_session():
         await api(FakeStore()).delete("sess_missing")
 
 
+# --- bulk delete ---
+
+
+async def test_delete_many_removes_every_session():
+    store = FakeStore()
+    for sid in ("sess_1", "sess_2", "sess_3"):
+        await store.create_session(sid, {})
+    await store.append_event("sess_2", 1, {"kind": "user", "content": "hi"})
+
+    result = await api(store).delete_many(["sess_1", "sess_2"])
+
+    assert result == {"ok": True, "deleted": ["sess_1", "sess_2"], "failed": []}
+    assert set(store.sessions) == {"sess_3"}
+    assert "sess_2" not in store.events
+
+
+async def test_delete_many_reports_per_session_failures():
+    store = FakeStore()
+    await store.create_session("sess_ok", {})
+    await store.create_session("sess_busy", {})
+    await store.update_session("sess_busy", status="running", lease_expires=time.time() + 60)
+
+    result = await api(store).delete_many(["sess_ok", "sess_busy", "sess_gone"])
+
+    # The deletable one still goes; the rest come back with a reason each.
+    assert result["ok"] is False
+    assert result["deleted"] == ["sess_ok"]
+    assert [f["id"] for f in result["failed"]] == ["sess_busy", "sess_gone"]
+    assert "running" in result["failed"][0]["error"]
+    assert "not found" in result["failed"][1]["error"]
+    assert set(store.sessions) == {"sess_busy"}
+
+
+async def test_delete_many_deduplicates_ids():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+
+    result = await api(store).delete_many(["sess_1", "sess_1"])
+
+    assert result == {"ok": True, "deleted": ["sess_1"], "failed": []}
+
+
+async def test_delete_many_rejects_bad_input():
+    store = FakeStore()
+    for bad in (None, "sess_1", ["sess_1", 2], []):
+        with pytest.raises(ValueError):
+            await api(store).delete_many(bad)
+
+
+async def test_delete_many_rejects_oversized_batch():
+    ids = [f"sess_{i}" for i in range(MAX_BULK_DELETE + 1)]
+    with pytest.raises(ValueError):
+        await api(FakeStore()).delete_many(ids)
+
+
 # --- workspaces ---
 
 
@@ -348,6 +410,18 @@ async def test_http_smoke():
 
         status, body = await asyncio.to_thread(fetch, "GET", "/api/approvals")
         assert status == 200 and json.loads(body)["approvals"] == []
+
+        # bulk delete: its route must not be shadowed by /api/sessions/{sid}/...
+        status, body = await asyncio.to_thread(
+            fetch, "POST", "/api/sessions/delete", {"ids": ["sess_1", "sess_x"]}
+        )
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["deleted"] == ["sess_1"]
+        assert [f["id"] for f in payload["failed"]] == ["sess_x"]
+
+        status, body = await asyncio.to_thread(fetch, "POST", "/api/sessions/delete", {"ids": []})
+        assert status == 400
     finally:
         server.shutdown()
 

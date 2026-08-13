@@ -97,7 +97,8 @@ syros console                        # web console at localhost:8484
 ```
 
 Sessions, live transcripts, approve/deny with countdown, prompts into idle sessions
-(re-triggers the runner job), interrupt, kill. It also deploys to Cloud Run
+(re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
+selection at a time (running sessions have to be killed first). It also deploys to Cloud Run
 (`syros-console`, IAM-only — no public access); connect with
 `gcloud run services proxy syros-console --region asia-northeast1`.
 
