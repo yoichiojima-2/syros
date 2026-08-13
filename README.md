@@ -1,10 +1,9 @@
 # syros
 
 A minimal, secure agent development environment on Google Cloud. Same API shape as
-[`claude_agent_sdk`](https://code.claude.com/docs/en/agent-sdk); one option flips between
-running the agent locally and running it in a sandboxed Cloud Run Job inside your own GCP
-project — models via Vertex AI only, every tool call audited before it executes, gateable
-by a human.
+[`claude_agent_sdk`](https://code.claude.com/docs/en/agent-sdk); every agent runs in a
+sandboxed Cloud Run Job inside your own GCP project — models via Vertex AI only, every
+tool call audited before it executes, gateable by a human.
 
 **The minimum secure agent platform is not a platform.** `claude_agent_sdk` is already the
 harness (loop, tools, permissions, sessions, resume). GCP managed services are already the
@@ -29,25 +28,23 @@ async for message in query(
         system_prompt="You are a careful data analyst.",
         allowed_tools=["Read", "Write", "Bash", "Glob", "Grep"],
         permission_mode="default",   # unlisted tools pause for approval
-        can_use_tool=approve,        # works remotely too, via the approval queue
-        sandbox="gcp",               # "local" runs claude_agent_sdk in-process
+        can_use_tool=approve,        # drives the approval queue from your machine
     ),
 ):
     print(message)
 ```
 
-- `sandbox="local"` — `claude_agent_sdk` in-process, routed through Vertex when a project
-  is configured (`SYROS_PROJECT` / `GOOGLE_CLOUD_PROJECT`). The dev loop; zero infra.
-- `sandbox="gcp"` — the identical options run the identical harness in the project's Cloud
-  Run Job; the same message types stream back through Firestore. Sessions are durable:
-  `AgentOptions(resume="sess_...")` reconnects, idle sessions scale to zero.
+The harness runs in the project's Cloud Run Job (project from `AgentOptions.project` or
+`$SYROS_PROJECT` / `$GOOGLE_CLOUD_PROJECT`); the message types stream back through
+Firestore. Sessions are durable: `AgentOptions(resume="sess_...")` reconnects, idle
+sessions scale to zero.
 
 Multi-turn, mirroring `ClaudeSDKClient`:
 
 ```python
 from syros import SyrosClient, AgentOptions
 
-async with SyrosClient(AgentOptions(sandbox="gcp")) as client:
+async with SyrosClient(AgentOptions()) as client:
     await client.query("read the data")
     async for message in client.receive_response():
         ...
@@ -152,15 +149,14 @@ gcloud builds submit --tag asia-northeast1-docker.pkg.dev/YOUR_PROJECT/syros/run
 
 # 3. Smoke test
 export SYROS_PROJECT=YOUR_PROJECT
-uv run python examples/hello.py          # local
-uv run python examples/hello.py gcp      # sandboxed
+uv run python examples/hello.py
 ```
 
 Callers need `datastore.user`, `run.jobs.run` (e.g. `roles/run.developer`), and read access
 on the session bucket. Optional egress lockdown: pass `-var vpc_connector=...` to route the
 job through your VPC.
 
-## How a remote run works
+## How a run works
 
 1. `query()` writes `sessions/{sid}` + the prompt to the inbox, then triggers the Cloud Run
    Job (skipped if an execution already holds the session lease).
@@ -174,17 +170,17 @@ job through your VPC.
 
 ## Divergences from claude_agent_sdk
 
-`AgentOptions` only defines options that behave identically in both sandboxes — passing a
-machine-local `ClaudeAgentOptions` field raises `TypeError` at the constructor instead of
-silently diverging.
+`AgentOptions` only defines options the sandbox can honour — passing a machine-local
+`ClaudeAgentOptions` field raises `TypeError` at the constructor instead of silently
+doing nothing.
 
 | claude_agent_sdk option | syros |
 |---|---|
-| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness in both sandboxes) |
-| `can_use_tool` | supported; remotely it rides the Firestore approval queue (audited, timeout-denied) |
+| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness) |
+| `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
 | `mcp_servers` | http/sse configs only; stdio and in-process servers can't run in the sandbox (`OptionsError`) |
-| `resume` | local: claude session uuid; gcp: syros session id (`sess_...`) |
-| `cwd` | `workspace=` in local mode; managed (GCS-backed) in gcp mode |
+| `resume` | syros session id (`sess_...`) |
+| `cwd` | managed (GCS-backed); no local paths |
 | `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
 ## Deliberately not built

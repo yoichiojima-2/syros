@@ -1,6 +1,6 @@
 """syros — minimal secure agent development environment on GCP.
 
-Same API shape as claude_agent_sdk; one option flips local <-> sandboxed-on-GCP.
+Same API shape as claude_agent_sdk; every run is sandboxed in your GCP project.
 """
 
 from .client import SyrosClient, query

@@ -54,7 +54,7 @@ async def _relay_approvals(store: StoreProtocol, session_id: str, options: Agent
     """Answer pending approvals with the caller's can_use_tool callback.
 
     The sandbox's gate only ever sees the approval document; this is the piece
-    that lets an SDK callback drive it, exactly as it would drive a local run.
+    that lets an SDK callback drive it, exactly as it drives claude_agent_sdk.
     """
     if options.can_use_tool is None:
         return

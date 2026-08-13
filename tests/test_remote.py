@@ -29,7 +29,7 @@ def no_job_trigger(monkeypatch):
 
 
 def options(**kwargs):
-    return AgentOptions(sandbox="gcp", project="proj-1", **kwargs)
+    return AgentOptions(project="proj-1", **kwargs)
 
 
 async def drive_runner(store, session_id, messages, *, start_seq=0):
