@@ -3,7 +3,8 @@
 Next.js 15 (static export) + React 19 + TypeScript + Tailwind 4, with
 shadcn-style components, next-themes (light/dark), and recharts.
 
-Pages: `/` (overview: stat tiles, cost chart, recent sessions), `/sessions`,
+Pages: `/` (overview: stat tiles, cost chart, recent sessions), `/dashboard`
+(analytics: spend and activity per day, state mix, cost by model), `/sessions`,
 `/session?sid=...` (transcript, composer, approvals, artifacts), `/approvals`
 (global pending queue). Endpoints live in `src/syros/console/api.py`.
 
