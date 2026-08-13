@@ -66,6 +66,7 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
+            "workspace": options.get("workspace"),
         }
     )
 

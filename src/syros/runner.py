@@ -69,14 +69,44 @@ async def run(session_id: str) -> None:
     if session is None:
         return  # another execution holds the lease, or the session is gone/terminated
 
+    options = AgentOptions(**session["options"], project=config.project)
+
+    if options.workspace and not await store.claim_workspace(
+        options.workspace, session_id, config.lease_ttl
+    ):
+        # Another session is live in this workspace: fail fast with an error
+        # result so the waiting client terminates. The prompt stays queued in
+        # the inbox and is consumed when the session is re-triggered.
+        seq = int(session.get("seq_head") or 0) + 1
+        doc = message_to_doc(
+            ResultMessage(
+                subtype="workspace_busy",
+                duration_ms=0,
+                duration_api_ms=0,
+                is_error=True,
+                num_turns=0,
+                session_id=session.get("claude_session_id") or "",
+                total_cost_usd=0.0,
+            )
+        )
+        await store.append_event(session_id, seq, doc)
+        await store.release_session(
+            session_id, status="idle", stop_reason="workspace_busy", seq_head=seq
+        )
+        return
+
     ws, home = config.work_dir / "ws", config.work_dir / "home"
     ws.mkdir(parents=True, exist_ok=True)
     home.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(
-        workspace.restore, config.project, config.bucket, session_id, config.work_dir
+    ws_prefix = (
+        workspace.workspace_prefix(options.workspace)
+        if options.workspace
+        else workspace.session_prefix(session_id, "ws")
     )
+    home_prefix = workspace.session_prefix(session_id, "home")
+    await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
+    await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
 
-    options = AgentOptions(**session["options"], project=config.project)
     gate = Gate(store, session_id, approval_timeout=env.approval_timeout())
     sdk_options = build_sdk_options(
         options,
@@ -118,9 +148,10 @@ async def run(session_id: str) -> None:
         finally:
             watcher.cancel()
 
-    await asyncio.to_thread(
-        workspace.checkpoint, config.project, config.bucket, session_id, config.work_dir
-    )
+    await asyncio.to_thread(workspace.checkpoint, config.project, config.bucket, ws_prefix, ws)
+    await asyncio.to_thread(workspace.checkpoint, config.project, config.bucket, home_prefix, home)
+    if options.workspace:
+        await store.release_workspace(options.workspace, session_id)
     await store.release_session(
         session_id,
         status="idle",

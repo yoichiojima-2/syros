@@ -6,6 +6,8 @@ Layout:
     sessions/{sid}/inbox/{auto}       {kind, text, ts, consumed}
     sessions/{sid}/approvals/{hash}   {tool_name, input, status, ...}
     sessions/{sid}/tool_calls/{auto}  audit rows, written before the tool executes
+    workspaces/{name}                 {lease_session_id, lease_expires, ...} — the
+                                      exclusive lease on a shared workspace
 """
 
 from __future__ import annotations
@@ -81,6 +83,8 @@ class StoreProtocol(Protocol):
     async def list_all_pending_approvals(self) -> list[dict[str, Any]]: ...
     async def record_tool_call(self, session_id: str, row: dict[str, Any]) -> None: ...
     async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]: ...
+    async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool: ...
+    async def release_workspace(self, name: str, session_id: str) -> None: ...
 
 
 class Store:
@@ -321,3 +325,57 @@ class Store:
     async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]:
         query = self._session(session_id).collection("tool_calls").order_by("ts")
         return [s.to_dict() async for s in query.stream()]
+
+    # --- workspaces (shared ws/ across sessions) ---
+
+    def _workspace(self, name: str):
+        return self._db.collection("workspaces").document(name)
+
+    async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool:
+        """Atomically take the workspace lease. One live execution per
+        workspace; the holder is the session, so the same session re-claims."""
+        transaction = self._db.transaction()
+        reference = self._workspace(name)
+        firestore = self._firestore
+
+        @firestore.async_transactional
+        async def _claim(transaction):
+            snapshot = await reference.get(transaction=transaction)
+            doc = snapshot.to_dict() if snapshot.exists else None
+            if lease_active(doc) and doc.get("lease_session_id") != session_id:
+                return False
+            fields = {
+                "lease_session_id": session_id,
+                "lease_expires": time.time() + ttl_seconds,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+            if snapshot.exists:
+                transaction.update(reference, fields)
+            else:
+                transaction.set(reference, {**fields, "created_at": firestore.SERVER_TIMESTAMP})
+            return True
+
+        return await _claim(transaction)
+
+    async def release_workspace(self, name: str, session_id: str) -> None:
+        """Drop the lease, but only if this session still holds it — an
+        expired-and-reclaimed workspace must not be released by the old runner."""
+        transaction = self._db.transaction()
+        reference = self._workspace(name)
+        firestore = self._firestore
+
+        @firestore.async_transactional
+        async def _release(transaction):
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists or snapshot.to_dict().get("lease_session_id") != session_id:
+                return
+            transaction.update(
+                reference,
+                {
+                    "lease_session_id": None,
+                    "lease_expires": 0.0,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+            )
+
+        await _release(transaction)

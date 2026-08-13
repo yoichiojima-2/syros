@@ -36,8 +36,19 @@ def test_machine_local_options_are_type_errors():
         AgentOptions(cwd="/tmp")  # not a syros option
     with pytest.raises(TypeError):
         AgentOptions(hooks={})
-    with pytest.raises(TypeError):
-        AgentOptions(workspace="/tmp")
+
+
+def test_workspace_valid_names():
+    for name in ("data-pipeline", "a", "a" * 64, "snake_case-1"):
+        AgentOptions(project="p", workspace=name).validate()
+
+
+def test_workspace_path_like_is_rejected():
+    # Path-shaped values stay eager errors, before any GCP call — the spirit
+    # of the old TypeError on workspace, now with a helpful message.
+    for name in ("/tmp", "a/b", "../x", "", "Upper", ".", "a" * 65):
+        with pytest.raises(OptionsError, match="workspace"):
+            AgentOptions(project="p", workspace=name).validate()
 
 
 def test_serialize_round_trip_subset():
@@ -47,10 +58,12 @@ def test_serialize_round_trip_subset():
         allowed_tools=["Read"],
         max_turns=5,
         max_budget_usd=1.5,
+        workspace="shared-ws",
         can_use_tool=lambda *a: None,  # callables never serialize
     )
     doc = options.serialize()
     assert doc["system_prompt"] == "be careful"
+    assert doc["workspace"] == "shared-ws"
     assert doc["max_budget_usd"] == 1.5
     assert "can_use_tool" not in doc
     assert "sandbox" not in doc

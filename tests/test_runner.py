@@ -69,6 +69,23 @@ def fake_harness(monkeypatch):
     return clients
 
 
+@pytest.fixture
+def gcs_sync(monkeypatch):
+    """Record every restore/checkpoint as (prefix, root dir name)."""
+    calls = {"restore": [], "checkpoint": []}
+    monkeypatch.setattr(
+        syros.runner.workspace,
+        "restore",
+        lambda project, bucket, prefix, root: calls["restore"].append((prefix, root.name)) or 0,
+    )
+    monkeypatch.setattr(
+        syros.runner.workspace,
+        "checkpoint",
+        lambda project, bucket, prefix, root: calls["checkpoint"].append((prefix, root.name)) or 0,
+    )
+    return calls
+
+
 async def test_runner_full_turn(env, store, fake_harness):
     await store.create_session(SID, {"system_prompt": "sp", "model": "m"})
     await store.push_inbox(SID, "message", "do the thing")
@@ -112,3 +129,50 @@ async def test_runner_exits_when_disabled(env, store, fake_harness):
     await run(SID)
 
     assert fake_harness == []
+
+
+async def test_runner_syncs_session_prefixes_without_workspace(env, store, fake_harness, gcs_sync):
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    expected = [(f"sessions/{SID}/state/ws/", "ws"), (f"sessions/{SID}/state/home/", "home")]
+    assert gcs_sync["restore"] == expected
+    assert gcs_sync["checkpoint"] == expected
+
+
+async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gcs_sync):
+    await store.create_session(SID, {"workspace": "shared"})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    expected = [("workspaces/shared/", "ws"), (f"sessions/{SID}/state/home/", "home")]
+    assert gcs_sync["restore"] == expected
+    assert gcs_sync["checkpoint"] == expected
+    # claimed during the run, released after
+    assert store.workspaces["shared"]["lease_session_id"] is None
+    assert store.workspaces["shared"]["lease_expires"] == 0.0
+
+
+async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, gcs_sync):
+    await store.create_session(SID, {"workspace": "shared"})
+    await store.push_inbox(SID, "message", "go")
+    await store.claim_workspace("shared", "sess_other", 3600)
+
+    await run(SID)
+
+    assert fake_harness == []  # never started the harness
+    assert gcs_sync["restore"] == []
+    session = await store.get_session(SID)
+    assert session["status"] == "idle"
+    assert session["stop_reason"] == "workspace_busy"
+    (event,) = store.events[SID]
+    assert event["message"]["kind"] == "result"
+    assert event["message"]["subtype"] == "workspace_busy"
+    assert event["message"]["is_error"] is True
+    # the other session keeps its lease
+    assert store.workspaces["shared"]["lease_session_id"] == "sess_other"
+    # the prompt stays queued for a retry
+    assert [m["consumed"] for m in store.inbox[SID]] == [False]

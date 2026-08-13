@@ -15,6 +15,7 @@ class FakeStore:
         self.inbox: dict[str, list[dict[str, Any]]] = {}
         self.approvals: dict[str, dict[str, dict[str, Any]]] = {}
         self.tool_calls: dict[str, list[dict[str, Any]]] = {}
+        self.workspaces: dict[str, dict[str, Any]] = {}
 
     async def create_session(self, session_id, options, created_by=None):
         self.sessions[session_id] = {
@@ -135,3 +136,22 @@ class FakeStore:
 
     async def list_tool_calls(self, session_id):
         return [dict(r) for r in self.tool_calls.get(session_id, [])]
+
+    async def claim_workspace(self, name, session_id, ttl_seconds):
+        doc = self.workspaces.get(name)
+        if (
+            doc
+            and float(doc.get("lease_expires") or 0) > time.time()
+            and doc.get("lease_session_id") != session_id
+        ):
+            return False
+        self.workspaces[name] = {
+            "lease_session_id": session_id,
+            "lease_expires": time.time() + ttl_seconds,
+        }
+        return True
+
+    async def release_workspace(self, name, session_id):
+        doc = self.workspaces.get(name)
+        if doc and doc.get("lease_session_id") == session_id:
+            doc.update(lease_session_id=None, lease_expires=0.0)
