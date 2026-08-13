@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_args
 
+from . import env
 from .errors import OptionsError
 from .types import CanUseTool
 
@@ -59,11 +60,7 @@ class AgentOptions:
     workspace: str | None = None  # local sandbox only: the agent's working directory
 
     def resolved_project(self) -> str:
-        project = (
-            self.project
-            or os.environ.get("SYROS_PROJECT")
-            or os.environ.get("GOOGLE_CLOUD_PROJECT")
-        )
+        project = env.find_project(self.project)
         if not project:
             raise OptionsError(
                 "no GCP project configured: set AgentOptions.project or $SYROS_PROJECT"
@@ -83,7 +80,7 @@ class AgentOptions:
         return cast(ModelBackend, backend)
 
     def resolved_bucket(self) -> str:
-        return self.bucket or os.environ.get("SYROS_BUCKET") or f"{self.resolved_project()}-syros"
+        return env.default_bucket(self.bucket, self.resolved_project())
 
     def resolved_job(self) -> str:
         return self.job or os.environ.get("SYROS_JOB") or "syros-runner"
@@ -160,9 +157,7 @@ def model_env(options: AgentOptions) -> dict[str, str]:
         if not (key := os.environ.get("ANTHROPIC_API_KEY")):
             raise OptionsError("model_backend='anthropic' requires $ANTHROPIC_API_KEY")
         return {"ANTHROPIC_API_KEY": key}
-    project = (
-        options.project or os.environ.get("SYROS_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-    )
+    project = env.find_project(options.project)
     if not project:
         return {}
     return {

@@ -18,6 +18,7 @@ from typing import Any
 
 from claude_agent_sdk.types import HookMatcher
 
+from .env import DEFAULT_APPROVAL_TIMEOUT
 from .store import Store
 from .types import PermissionResult, PermissionResultAllow, PermissionResultDeny
 
@@ -52,7 +53,7 @@ class Gate:
         store: Store,
         session_id: str,
         *,
-        approval_timeout: float = 300.0,
+        approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
         poll_interval: float = 1.0,
     ) -> None:
         self._store = store

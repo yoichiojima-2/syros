@@ -18,14 +18,13 @@ import getpass
 import json
 import os
 
+from . import env
 from .store import Store
 from .types import doc_to_message
 
 
 def _project(args: argparse.Namespace) -> str:
-    project = (
-        args.project or os.environ.get("SYROS_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-    )
+    project = env.find_project(args.project)
     if not project:
         raise SystemExit("set --project or $SYROS_PROJECT")
     return project
@@ -136,7 +135,7 @@ def main() -> None:
     console.add_argument(
         "--approval-timeout",
         type=float,
-        default=float(os.environ.get("SYROS_APPROVAL_TIMEOUT") or 300.0),
+        default=env.approval_timeout(),
     )
     console.add_argument("--no-open", action="store_true")
     console.set_defaults(func=_console)

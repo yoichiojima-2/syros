@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from .. import remote
+from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions
 from ..store import Store, lease_active
 
@@ -75,7 +76,11 @@ def _decided_by() -> str:
 
 class ConsoleAPI:
     def __init__(
-        self, store: Store, options: AgentOptions, *, approval_timeout: float = 300.0
+        self,
+        store: Store,
+        options: AgentOptions,
+        *,
+        approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
     ) -> None:
         self._store = store
         self._options = options
