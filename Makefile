@@ -16,6 +16,6 @@ test:
 # digest — pushing :latest alone is not enough, Cloud Run resolves the tag to
 # a digest at deploy time, not per execution.
 deploy:
-	docker build -t $(IMAGE) .
+	docker build --platform linux/amd64 -t $(IMAGE) .
 	docker push $(IMAGE)
 	gcloud run jobs update $(JOB) --image $(IMAGE) --region $(REGION)
