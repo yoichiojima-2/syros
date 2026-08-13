@@ -66,9 +66,7 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     (
         "GET",
         ("api", "artifacts", None, "file"),
-        lambda api, body, query, space: api.artifact_file(
-            space, (query.get("name") or [""])[0]
-        ),
+        lambda api, body, query, space: api.artifact_file(space, (query.get("name") or [""])[0]),
     ),
 ]
 

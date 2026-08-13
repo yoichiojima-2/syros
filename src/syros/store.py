@@ -394,6 +394,5 @@ class Store:
     async def list_workspaces(self) -> list[dict[str, Any]]:
         """Every workspace lease doc, whether or not the lease is live."""
         return [
-            {"name": s.id, **s.to_dict()}
-            async for s in self._db.collection("workspaces").stream()
+            {"name": s.id, **s.to_dict()} async for s in self._db.collection("workspaces").stream()
         ]

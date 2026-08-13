@@ -23,7 +23,11 @@ class FakeObjects:
 
     @staticmethod
     def _stats(files):
-        return {"file_count": len(files), "total_size": sum(map(len, files.values())), "updated": None}
+        return {
+            "file_count": len(files),
+            "total_size": sum(map(len, files.values())),
+            "updated": None,
+        }
 
     async def workspace_stats(self):
         return {name: self._stats(files) for name, files in self.workspaces.items()}
@@ -356,9 +360,7 @@ async def test_http_artifact_and_workspace_routes():
         workspaces={"team": {"notes.md": b"nn"}},
         spaces={"reports": {"sub/r.html": b"<h1>hi</h1>", "big.bin": b"x" * 200}},
     )
-    server = create_server(
-        api(store, objects=objects), asyncio.get_running_loop(), "127.0.0.1", 0
-    )
+    server = create_server(api(store, objects=objects), asyncio.get_running_loop(), "127.0.0.1", 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
 
