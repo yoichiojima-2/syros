@@ -2,71 +2,65 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Lilac-and-mint palette: the neutrals are tinted violet rather than gray — a
-   lavender-white page, a deeper lilac for chrome (sidebar, headers), white
-   cards — with a violet accent carrying every primary action and mint reserved
-   for "running / online / ok". Light is the default; dark redefines the same
-   tokens under `.dark`, toggled by next-themes.
-
-   Anything that can carry small text (--primary, --muted-foreground, --ok,
-   --warn, --info, --destructive) is picked to clear ~4.5:1 on its own
-   background; the pastels (--primary-soft, --surface) are fills only, and
-   always sit under --foreground. */
+/* Warm, paper-toned palette in the Claude vein: ivory page, a slightly deeper
+   ivory for chrome (sidebar, headers), white cards, and a single clay accent
+   carrying every primary action. Light is the default; dark redefines the same
+   tokens under `.dark`, toggled by next-themes. */
 :root {
-  --background: #fbfaff;
-  --foreground: #221f2e; /* violet-leaning ink, not neutral black */
-  --surface: #f1eefb; /* chrome: sidebar, sticky headers, user bubbles */
+  --background: #faf9f5;
+  --foreground: #141413;
+  --surface: #f0eee6; /* chrome: sidebar, sticky headers, user bubbles */
   --card: #ffffff;
-  --card-foreground: #221f2e;
-  --primary: #6d4bd2; /* violet — primary actions, active nav, links */
+  --card-foreground: #141413;
+  --primary: #c96442; /* clay — primary actions, active nav, charts */
   --primary-foreground: #ffffff;
-  --primary-soft: #e9e2ff; /* violet at tint strength, for fills behind text */
-  --secondary: #ebe7f7;
-  --secondary-foreground: #221f2e;
-  --muted: #ebe7f7;
-  --muted-foreground: #6b6480;
-  --faint: #a09aba;
-  --accent: #ebe7f7;
-  --accent-foreground: #221f2e;
-  --destructive: #d92d63; /* rose rather than fire-engine red */
+  --primary-soft: #f4e4dc; /* clay at tint strength, for fills behind text */
+  --secondary: #eeece4;
+  --secondary-foreground: #141413;
+  --muted: #eeece4;
+  --muted-foreground: #6f6e69;
+  --faint: #a09d94;
+  --accent: #eeece4;
+  --accent-foreground: #141413;
+  --destructive: #b1362b;
   --destructive-foreground: #ffffff;
-  --border: #e5e0f3;
-  --input: #cec7e6;
-  --ring: #6d4bd2;
-  --chart-1: #7c5cd6; /* a step brighter than --primary: bars, not text */
-  --ok: #12876b; /* mint, darkened until it reads as text */
-  --warn: #a1620d;
-  --warn-dot: #eab308;
-  --info: #4f6ad9;
+  --border: #e5e2d8;
+  --input: #d8d5c8;
+  --ring: #c96442;
+  --chart-1: #c96442;
+  --ok: #2c8765;
+  --warn: #a4690d;
+  --warn-dot: #d99a2b;
+  --info: #3f6fb5;
   --radius: 0.75rem;
 }
 
 .dark {
-  --background: #1a1622;
-  --foreground: #f2eefc;
-  --surface: #131019;
-  --card: #241f31;
-  --card-foreground: #f2eefc;
-  --primary: #b49bff;
-  --primary-foreground: #221142;
-  --primary-soft: #362a5e;
-  --secondary: #2e2740;
-  --secondary-foreground: #f2eefc;
-  --muted: #2e2740;
-  --muted-foreground: #a79fc0;
-  --faint: #6f6788;
-  --accent: #2e2740;
-  --accent-foreground: #f2eefc;
-  --destructive: #ff7a9c;
-  --destructive-foreground: #3a0d1c;
-  --border: #322b45;
-  --input: #4a4266;
-  --ring: #b49bff;
-  --chart-1: #b49bff;
-  --ok: #5fd0a8;
-  --warn: #eab308;
-  --warn-dot: #eab308;
-  --info: #8fa8f5;
+  --background: #262624;
+  --foreground: #f5f4ee;
+  --surface: #1f1e1d;
+  --card: #30302e;
+  --card-foreground: #f5f4ee;
+  --primary: #d97757;
+  --primary-foreground: #1f1410;
+  --primary-soft: #43302a;
+  --secondary: #3a3a37;
+  --secondary-foreground: #f5f4ee;
+  --muted: #3a3a37;
+  --muted-foreground: #b7b5ad;
+  --faint: #83817a;
+  --accent: #3a3a37;
+  --accent-foreground: #f5f4ee;
+  --destructive: #e5675a;
+  --destructive-foreground: #24100d;
+  --border: #3e3e3a;
+  --input: #4a4a45;
+  --ring: #d97757;
+  --chart-1: #d97757;
+  --ok: #4eab86;
+  --warn: #e3a951;
+  --warn-dot: #e3a951;
+  --info: #7ba3de;
 }
 
 @theme inline {
@@ -99,9 +93,11 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-xl: calc(var(--radius) + 4px);
-  /* System font stacks only — no shipping or fetching webfonts, since the
-     console is served from localhost and Cloud Run with no egress. */
+  /* Styrene/Copernicus are licensed, so the stacks degrade to the closest
+     system faces rather than shipping or fetching webfonts — the console is
+     served from localhost and Cloud Run with no egress. */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-serif: ui-serif, "Iowan Old Style", Georgia, "Times New Roman", serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
 
@@ -134,15 +130,16 @@ body {
   background: var(--primary-soft);
 }
 
-/* Thin scrollbars that pick up the palette instead of the browser default. */
+/* Thin, warm scrollbars — the default chrome reads cold against the paper. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--input) transparent;
 }
 
-/* Markdown prose in the transcript — quiet headings, tinted code chips,
-   bordered code blocks and tables, all on the console palette. Scoped under
-   .chat-prose so nothing leaks into the rest of the console. */
+/* Markdown prose in the transcript — the agent's answers rendered the way
+   claude.ai renders them: quiet headings, tinted code chips, bordered code
+   blocks and tables, all on the warm palette. Scoped under .chat-prose so
+   nothing leaks into the rest of the console. */
 .chat-prose > *:first-child {
   margin-top: 0;
 }

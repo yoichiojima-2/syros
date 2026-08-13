@@ -40,7 +40,7 @@ export default function SchedulesPage() {
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Schedules</h1>
+        <h1 className="font-serif text-2xl tracking-tight">Schedules</h1>
         {!creating && (
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus />
