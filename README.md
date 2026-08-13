@@ -253,8 +253,8 @@ workspaces — browse a skill, edit a file in place, upload, or delete the skill
 ## Analysis
 
 Firestore holds all the state but is a poor analysis surface. `syros export` snapshots the
-control plane into four flat BigQuery tables — `sessions`, `events`, `tool_calls`,
-`approvals` — in the Terraform-created `syros` dataset (`--dataset` / `$SYROS_DATASET` to
+control plane into five flat BigQuery tables — `sessions`, `events`, `tool_calls`,
+`approvals`, `agents` — in the Terraform-created `syros` dataset (`--dataset` / `$SYROS_DATASET` to
 override):
 
 ```
@@ -274,6 +274,11 @@ FROM syros.tool_calls GROUP BY 1, 2 ORDER BY calls DESC;
 SELECT tool_name, status, decided_by,
        TIMESTAMP_DIFF(decided_at, requested_at, SECOND) AS latency_s
 FROM syros.approvals ORDER BY requested_at DESC;
+
+-- what does each stored agent cost per run?
+SELECT s.agent, COUNT(*) AS runs, AVG(s.cost_usd) AS avg_cost_usd
+FROM syros.sessions s JOIN syros.agents a ON s.agent = a.name
+GROUP BY 1 ORDER BY runs DESC;
 
 -- dig into any message; full payloads live in JSON columns
 SELECT session_id, seq, JSON_VALUE(message.total_cost_usd) AS cost

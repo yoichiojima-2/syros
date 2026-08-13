@@ -2,12 +2,14 @@
 
 Firestore is the control plane, but it is a poor analysis surface: no SQL,
 no joins, no aggregates. `syros export` reads every session document tree
-and loads four flat tables into one BigQuery dataset:
+and loads five flat tables into one BigQuery dataset:
 
     sessions    one row per session (status, cost, timing, options)
     events      one row per mirrored message (kind + full message as JSON)
     tool_calls  the audit trail (tool, decision, input as JSON)
     approvals   the approval queue (status, decider, latency columns)
+    agents      the stored run configurations (name, description, options);
+                sessions.agent joins a run back to the persona it ran as
 
 Each run replaces the tables (WRITE_TRUNCATE), so the export is idempotent
 and needs no watermark state. It runs with the caller's identity — the
@@ -75,6 +77,7 @@ SESSION_FIELDS: list[Field] = [
     ("workspace", "STRING", "NULLABLE", lambda s: (s.get("options") or {}).get("workspace")),
     ("created_by", "STRING", "NULLABLE", _get("created_by")),
     ("deployment", "STRING", "NULLABLE", _get("deployment")),
+    ("agent", "STRING", "NULLABLE", _get("agent")),
     ("trigger", "STRING", "NULLABLE", _get("trigger")),
     ("created_at", "TIMESTAMP", "NULLABLE", _ts("created_at")),
     ("updated_at", "TIMESTAMP", "NULLABLE", _ts("updated_at")),
@@ -111,11 +114,23 @@ APPROVAL_FIELDS: list[Field] = [
     ("input", "JSON", "NULLABLE", lambda a: _json(a.get("input"))),
 ]
 
+AGENT_FIELDS: list[Field] = [
+    ("name", "STRING", "REQUIRED", lambda a: a["name"]),
+    ("description", "STRING", "NULLABLE", _get("description")),
+    ("created_by", "STRING", "NULLABLE", _get("created_by")),
+    ("model", "STRING", "NULLABLE", lambda a: (a.get("options") or {}).get("model")),
+    ("workspace", "STRING", "NULLABLE", lambda a: (a.get("options") or {}).get("workspace")),
+    ("created_at", "TIMESTAMP", "NULLABLE", _ts("created_at")),
+    ("updated_at", "TIMESTAMP", "NULLABLE", _ts("updated_at")),
+    ("options", "JSON", "NULLABLE", lambda a: _json(a.get("options") or {})),
+]
+
 FIELDS: dict[str, list[Field]] = {
     "sessions": SESSION_FIELDS,
     "events": EVENT_FIELDS,
     "tool_calls": TOOL_CALL_FIELDS,
     "approvals": APPROVAL_FIELDS,
+    "agents": AGENT_FIELDS,
 }
 
 SCHEMAS: dict[str, list[tuple[str, str, str]]] = {
@@ -143,6 +158,10 @@ def approval_row(session_id: str, approval: dict[str, Any]) -> dict[str, Any]:
     return _row(APPROVAL_FIELDS, {**approval, "session_id": session_id})
 
 
+def agent_row(agent: dict[str, Any]) -> dict[str, Any]:
+    return _row(AGENT_FIELDS, agent)
+
+
 async def _all_events(
     store: StoreProtocol, session_id: str, page_size: int
 ) -> list[dict[str, Any]]:
@@ -165,6 +184,7 @@ async def collect(store: StoreProtocol, page_size: int = 500) -> dict[str, list[
         "events": [],
         "tool_calls": [],
         "approvals": [],
+        "agents": [agent_row(a) for a in await store.list_agents()],
     }
     for session in sessions:
         session_id = session["id"]
