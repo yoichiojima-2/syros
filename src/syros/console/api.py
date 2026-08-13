@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from .. import remote, schedules
+from .. import remote, deployments
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
 from ..store import StoreProtocol, lease_active, start_pending
@@ -108,8 +108,8 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
             "workspace": options.get("workspace"),
-            # Run provenance, for sessions a schedule created
-            "schedule": session.get("schedule"),
+            # Run provenance, for sessions a deployment created
+            "deployment": session.get("deployment"),
             "trigger": session.get("trigger") or "api",
         }
     )
@@ -300,59 +300,59 @@ class ConsoleAPI:
             ],
         }
 
-    # --- schedules ---
+    # --- deployments ---
 
-    async def _schedule_row(self, schedule: dict[str, Any]) -> dict[str, Any]:
-        """A schedule plus the run it last started, for the schedules list."""
-        session_id = schedule.get("last_session_id")
+    async def _deployment_row(self, deployment: dict[str, Any]) -> dict[str, Any]:
+        """A deployment plus the run it last started, for the deployments list."""
+        session_id = deployment.get("last_session_id")
         session = await self._store.get_session(session_id) if session_id else None
         if session is not None:
             session["id"] = session_id
         return to_jsonable(
             {
-                "name": schedule.get("name"),
-                "cron": schedule.get("cron"),
-                "timezone": schedule.get("timezone") or schedules.DEFAULT_TIMEZONE,
-                "prompt": schedule.get("prompt") or "",
-                "options": schedule.get("options") or {},
-                "enabled": bool(schedule.get("enabled")),
-                "next_run_at": float(schedule.get("next_run_at") or 0.0) or None,
-                "last_run_at": schedule.get("last_run_at"),
-                "last_skipped_at": schedule.get("last_skipped_at"),
-                "last_error": schedule.get("last_error"),
-                "runs": int(schedule.get("runs") or 0),
-                "skips": int(schedule.get("skips") or 0),
-                "created_by": schedule.get("created_by"),
-                "created_at": schedule.get("created_at"),
+                "name": deployment.get("name"),
+                "cron": deployment.get("cron"),
+                "timezone": deployment.get("timezone") or deployments.DEFAULT_TIMEZONE,
+                "prompt": deployment.get("prompt") or "",
+                "options": deployment.get("options") or {},
+                "enabled": bool(deployment.get("enabled")),
+                "next_run_at": float(deployment.get("next_run_at") or 0.0) or None,
+                "last_run_at": deployment.get("last_run_at"),
+                "last_skipped_at": deployment.get("last_skipped_at"),
+                "last_error": deployment.get("last_error"),
+                "runs": int(deployment.get("runs") or 0),
+                "skips": int(deployment.get("skips") or 0),
+                "created_by": deployment.get("created_by"),
+                "created_at": deployment.get("created_at"),
                 "last_run": _run(session) if session else None,
             }
         )
 
-    async def schedules(self) -> dict[str, Any]:
-        rows = await schedules.list_all(store=self._store)
+    async def deployments(self) -> dict[str, Any]:
+        rows = await deployments.list_all(store=self._store)
         return {
             "now": time.time(),
-            "schedules": await asyncio.gather(*(self._schedule_row(s) for s in rows)),
+            "deployments": await asyncio.gather(*(self._deployment_row(s) for s in rows)),
         }
 
-    async def _require_schedule(self, name: str) -> dict[str, Any]:
-        schedule = await self._store.get_schedule(name)
-        if schedule is None:
-            raise NotFound(f"schedule {name} not found")
-        return schedule
+    async def _require_deployment(self, name: str) -> dict[str, Any]:
+        deployment = await self._store.get_deployment(name)
+        if deployment is None:
+            raise NotFound(f"deployment {name} not found")
+        return deployment
 
-    async def schedule(self, name: str, limit: int = 50) -> dict[str, Any]:
-        """One schedule and its run history — the run-status view's payload."""
-        schedule = await self._require_schedule(name)
-        runs = await schedules.runs(name, limit=limit, store=self._store)
+    async def deployment(self, name: str, limit: int = 50) -> dict[str, Any]:
+        """One deployment and its run history — the run-status view's payload."""
+        deployment = await self._require_deployment(name)
+        runs = await deployments.runs(name, limit=limit, store=self._store)
         return {
             "now": time.time(),
-            "schedule": await self._schedule_row(schedule),
+            "deployment": await self._deployment_row(deployment),
             "runs": [_run(r) for r in runs],
         }
 
-    async def create_schedule(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Define a schedule from the console's form.
+    async def create_deployment(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Define a deployment from the console's form.
 
         Run options arrive as the same serialized dict a session stores, so the
         console never has to track which options the sandbox honours — options
@@ -360,39 +360,39 @@ class ConsoleAPI:
         rejected by options_from_doc rather than silently dropped.
         """
         name = str(body.get("name") or "").strip()
-        if await self._store.get_schedule(name) is not None:
-            raise Conflict(f"schedule {name} already exists")
+        if await self._store.get_deployment(name) is not None:
+            raise Conflict(f"deployment {name} already exists")
         run_options = options_from_doc(dict(body.get("options") or {}))
         run_options.project = run_options.project or self._options.project
-        schedule = await schedules.create(
+        deployment = await deployments.create(
             name,
             str(body.get("cron") or ""),
             str(body.get("prompt") or ""),
             run_options,
             options=self._options,
-            timezone=str(body.get("timezone") or schedules.DEFAULT_TIMEZONE),
+            timezone=str(body.get("timezone") or deployments.DEFAULT_TIMEZONE),
             enabled=bool(body.get("enabled", True)),
             created_by=_decided_by(),
             store=self._store,
         )
-        return {"now": time.time(), "schedule": await self._schedule_row(schedule)}
+        return {"now": time.time(), "deployment": await self._deployment_row(deployment)}
 
-    async def set_schedule_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
-        await self._require_schedule(name)
-        await schedules.set_enabled(name, enabled, store=self._store)
+    async def set_deployment_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        await self._require_deployment(name)
+        await deployments.set_enabled(name, enabled, store=self._store)
         return {"now": time.time(), "ok": True, "enabled": enabled}
 
-    async def run_schedule(self, name: str) -> dict[str, Any]:
-        """Fire a schedule off-cycle. Its own clock is untouched."""
-        await self._require_schedule(name)
-        session_id = await schedules.run_now(
+    async def run_deployment(self, name: str) -> dict[str, Any]:
+        """Fire a deployment off-cycle. Its own clock is untouched."""
+        await self._require_deployment(name)
+        session_id = await deployments.run_now(
             name, options=self._options, store=self._store, created_by=_decided_by()
         )
         return {"now": time.time(), "ok": True, "session_id": session_id}
 
-    async def delete_schedule(self, name: str) -> dict[str, Any]:
-        await self._require_schedule(name)
-        await schedules.delete(name, store=self._store)
+    async def delete_deployment(self, name: str) -> dict[str, Any]:
+        await self._require_deployment(name)
+        await deployments.delete(name, store=self._store)
         return {"now": time.time(), "ok": True}
 
     # --- shared workspaces ---

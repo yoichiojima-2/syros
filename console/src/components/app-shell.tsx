@@ -20,7 +20,7 @@ const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard", label: "Dashboard", icon: ChartColumn },
   { href: "/sessions", label: "Sessions", icon: ListTree },
-  { href: "/schedules", label: "Schedules", icon: CalendarClock },
+  { href: "/deployments", label: "Deployments", icon: CalendarClock },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/workspaces", label: "Workspaces", icon: FolderGit2 },
   { href: "/artifacts", label: "Artifacts", icon: Package },
@@ -42,7 +42,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <nav className="flex gap-1 md:flex-col md:gap-0.5">
           {NAV.map(({ href, label, icon: Icon }) => {
-            // detail pages are singular (/session, /schedule, /workspace) and
+            // detail pages are singular (/session, /deployment, /workspace) and
             // keep their list's nav entry lit
             const active = pathname === href || href === `${pathname}s`;
             return (

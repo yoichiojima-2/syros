@@ -1,11 +1,11 @@
-"""Console API tests for the schedules surface."""
+"""Console API tests for the deployments surface."""
 
 import time
 
 import pytest
 
 import syros.remote
-from syros import schedules
+from syros import deployments
 from syros.console.api import Conflict, ConsoleAPI, NotFound, run_outcome
 from syros.errors import OptionsError
 from syros.options import AgentOptions
@@ -29,7 +29,7 @@ def api(store):
 
 
 async def seed(store, name="nightly", **kwargs):
-    return await schedules.create(
+    return await deployments.create(
         name,
         "0 9 * * *",
         "do the thing",
@@ -58,14 +58,14 @@ def test_run_outcome():
 # --- list / detail ---
 
 
-async def test_schedules_lists_with_last_run():
+async def test_deployments_lists_with_last_run():
     store = FakeStore()
     await seed(store)
-    sid = await schedules.run_now("nightly", options=AgentOptions(project="proj-1"), store=store)
+    sid = await deployments.run_now("nightly", options=AgentOptions(project="proj-1"), store=store)
     store.sessions[sid].update(status="idle", stop_reason="success")
 
-    result = await api(store).schedules()
-    (row,) = result["schedules"]
+    result = await api(store).deployments()
+    (row,) = result["deployments"]
     assert row["name"] == "nightly"
     assert row["cron"] == "0 9 * * *"
     assert row["enabled"] is True
@@ -75,18 +75,18 @@ async def test_schedules_lists_with_last_run():
     assert row["last_run"]["duration_s"] is not None
 
 
-async def test_schedule_detail_runs_and_durations():
+async def test_deployment_detail_runs_and_durations():
     store = FakeStore()
     await seed(store)
     options = AgentOptions(project="proj-1")
-    done = await schedules.run_now("nightly", options=options, store=store)
+    done = await deployments.run_now("nightly", options=options, store=store)
     store.sessions[done].update(status="idle", stop_reason="success")
     store.sessions[done]["created_at"] = 100.0
     store.sessions[done]["updated_at"] = 160.0
-    live = await schedules.run_now("nightly", options=options, store=store)
+    live = await deployments.run_now("nightly", options=options, store=store)
     store.sessions[live].update(status="running", lease_expires=time.time() + 60)
 
-    result = await api(store).schedule("nightly")
+    result = await api(store).deployment("nightly")
     by_id = {r["id"]: r for r in result["runs"]}
     assert by_id[done]["outcome"] == "succeeded"
     assert by_id[done]["duration_s"] == pytest.approx(60.0)
@@ -94,17 +94,17 @@ async def test_schedule_detail_runs_and_durations():
     assert by_id[live]["duration_s"] is None  # still counting
 
 
-async def test_schedule_detail_unknown():
+async def test_deployment_detail_unknown():
     with pytest.raises(NotFound):
-        await api(FakeStore()).schedule("ghost")
+        await api(FakeStore()).deployment("ghost")
 
 
 # --- create ---
 
 
-async def test_create_schedule_from_body():
+async def test_create_deployment_from_body():
     store = FakeStore()
-    result = await api(store).create_schedule(
+    result = await api(store).create_deployment(
         {
             "name": "reports",
             "cron": "@daily",
@@ -113,32 +113,32 @@ async def test_create_schedule_from_body():
             "options": {"model": "m", "allowed_tools": ["Read"]},
         }
     )
-    assert result["schedule"]["name"] == "reports"
-    assert result["schedule"]["cron"] == "0 0 * * *"  # alias expanded
-    stored = store.schedules["reports"]
+    assert result["deployment"]["name"] == "reports"
+    assert result["deployment"]["cron"] == "0 0 * * *"  # alias expanded
+    stored = store.deployments["reports"]
     assert stored["options"]["model"] == "m"
     assert stored["timezone"] == "Asia/Tokyo"
 
 
-async def test_create_schedule_duplicate_conflicts():
+async def test_create_deployment_duplicate_conflicts():
     store = FakeStore()
     await seed(store)
     with pytest.raises(Conflict):
-        await api(store).create_schedule(
+        await api(store).create_deployment(
             {"name": "nightly", "cron": "@daily", "prompt": "x", "options": {}}
         )
 
 
-async def test_create_schedule_rejects_unknown_option():
+async def test_create_deployment_rejects_unknown_option():
     with pytest.raises(OptionsError):
-        await api(FakeStore()).create_schedule(
+        await api(FakeStore()).create_deployment(
             {"name": "x", "cron": "@daily", "prompt": "x", "options": {"cwd": "/tmp"}}
         )
 
 
-async def test_create_schedule_rejects_bad_cron():
+async def test_create_deployment_rejects_bad_cron():
     with pytest.raises(Exception):
-        await api(FakeStore()).create_schedule(
+        await api(FakeStore()).create_deployment(
             {"name": "x", "cron": "nope", "prompt": "x", "options": {}}
         )
 
@@ -151,24 +151,24 @@ async def test_pause_resume_run_delete(no_job_trigger):
     await seed(store)
     console = api(store)
 
-    await console.set_schedule_enabled("nightly", False)
-    assert store.schedules["nightly"]["enabled"] is False
-    await console.set_schedule_enabled("nightly", True)
-    assert store.schedules["nightly"]["enabled"] is True
+    await console.set_deployment_enabled("nightly", False)
+    assert store.deployments["nightly"]["enabled"] is False
+    await console.set_deployment_enabled("nightly", True)
+    assert store.deployments["nightly"]["enabled"] is True
 
-    result = await console.run_schedule("nightly")
+    result = await console.run_deployment("nightly")
     sid = result["session_id"]
     assert no_job_trigger == [sid]
     assert store.sessions[sid]["trigger"] == "manual"
 
-    await console.delete_schedule("nightly")
-    assert store.schedules == {}
-    assert sid in store.sessions  # runs survive the schedule
+    await console.delete_deployment("nightly")
+    assert store.deployments == {}
+    assert sid in store.sessions  # runs survive the deployment
 
     for action in (
-        console.set_schedule_enabled("nightly", True),
-        console.run_schedule("nightly"),
-        console.delete_schedule("nightly"),
+        console.set_deployment_enabled("nightly", True),
+        console.run_deployment("nightly"),
+        console.delete_deployment("nightly"),
     ):
         with pytest.raises(NotFound):
             await action
@@ -177,11 +177,11 @@ async def test_pause_resume_run_delete(no_job_trigger):
 # --- provenance in session summaries ---
 
 
-async def test_session_summary_carries_schedule():
+async def test_session_summary_carries_deployment():
     store = FakeStore()
     await seed(store)
-    sid = await schedules.run_now("nightly", options=AgentOptions(project="proj-1"), store=store)
+    sid = await deployments.run_now("nightly", options=AgentOptions(project="proj-1"), store=store)
     result = await api(store).sessions()
     row = next(s for s in result["sessions"] if s["id"] == sid)
-    assert row["schedule"] == "nightly"
+    assert row["deployment"] == "nightly"
     assert row["trigger"] == "manual"

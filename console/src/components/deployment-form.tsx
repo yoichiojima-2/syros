@@ -10,7 +10,7 @@ import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-// The presets cover what people actually schedule; anything else is typed in.
+// The presets cover what people actually deployment; anything else is typed in.
 const PRESETS: { label: string; cron: string }[] = [
   { label: "Hourly", cron: "0 * * * *" },
   { label: "Daily 9am", cron: "0 9 * * *" },
@@ -33,10 +33,10 @@ function browserZone(): string {
   }
 }
 
-/** New-schedule form. Run options mirror the AgentOptions subset a session
+/** New-deployment form. Run options mirror the AgentOptions subset a session
  *  stores, and are posted as that same serialized dict — the server rejects
  *  anything it doesn't recognize rather than dropping it. */
-export function ScheduleForm({
+export function DeploymentForm({
   onCreated,
   onCancel,
 }: {
@@ -78,7 +78,7 @@ export function ScheduleForm({
     if (allowed.length) options.allowed_tools = allowed;
     if (budget.trim()) options.max_budget_usd = Number(budget);
     try {
-      await post("/api/schedules", {
+      await post("/api/deployments", {
         name: name.trim(),
         cron: cron.trim(),
         timezone: timezone.trim(),
@@ -96,7 +96,7 @@ export function ScheduleForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New schedule</CardTitle>
+        <CardTitle>New deployment</CardTitle>
         <CardDescription>
           Every firing starts a fresh session with these options and this prompt.
         </CardDescription>
@@ -228,7 +228,7 @@ export function ScheduleForm({
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
             <Button type="submit" size="sm" disabled={busy}>
-              {busy ? "Creating…" : "Create schedule"}
+              {busy ? "Creating…" : "Create deployment"}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
               Cancel

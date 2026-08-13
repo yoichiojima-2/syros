@@ -19,18 +19,18 @@ import {
 import { RunBadge } from "@/components/run-badge";
 import { RunTimeline } from "@/components/run-timeline";
 import { StatCard } from "@/components/stat-card";
-import { useAction, useNow, useSchedule } from "@/lib/hooks";
+import { useAction, useNow, useDeployment } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { clockTime, compact, cost, duration, relTime, shortId, untilTime } from "@/lib/format";
-import type { RunSummary, ScheduleSummary } from "@/lib/types";
+import type { RunSummary, DeploymentSummary } from "@/lib/types";
 
-// Run history for one schedule: what it is, when it fires next, and how every
+// Run history for one deployment: what it is, when it fires next, and how every
 // run so far went. The runs are ordinary sessions — each row opens its
 // transcript — so this page adds a lens, not a second source of truth.
 
-/** The run options actually set on the schedule, rendered for the badge row.
+/** The run options actually set on the deployment, rendered for the badge row.
  *  The stored dict carries every serializable AgentOptions field, most of them
- *  null on any given schedule; showing those would bury the two that matter. */
+ *  null on any given deployment; showing those would bury the two that matter. */
 function setOptions(options: Record<string, unknown>): [string, string][] {
   return Object.entries(options).flatMap(([key, value]): [string, string][] => {
     if (value === null || value === undefined || value === "" || value === false) return [];
@@ -43,34 +43,34 @@ function setOptions(options: Record<string, unknown>): [string, string][] {
   });
 }
 
-export default function SchedulePage() {
+export default function DeploymentPage() {
   // useSearchParams requires a Suspense boundary under static export
   return (
     <Suspense>
-      <ScheduleInner />
+      <DeploymentInner />
     </Suspense>
   );
 }
 
-function ScheduleInner() {
+function DeploymentInner() {
   const name = useSearchParams().get("name");
   const router = useRouter();
-  const { schedule, runs, missing, refresh } = useSchedule(name);
+  const { deployment, runs, missing, refresh } = useDeployment(name);
   const now = useNow();
   const [flash, act] = useAction();
 
   if (!name || missing) {
     return (
       <p className="pt-20 text-center text-[13px] text-muted-foreground">
-        {name ? `No schedule named ${name}.` : "No schedule selected."}{" "}
-        <Link href="/schedules" className="text-primary hover:underline">
-          Back to schedules
+        {name ? `No deployment named ${name}.` : "No deployment selected."}{" "}
+        <Link href="/deployments" className="text-primary hover:underline">
+          Back to deployments
         </Link>
       </p>
     );
   }
 
-  const paused = schedule ? !schedule.enabled : false;
+  const paused = deployment ? !deployment.enabled : false;
   const command = (fn: () => Promise<string>) =>
     act(async () => {
       const message = await fn();
@@ -83,24 +83,24 @@ function ScheduleInner() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <Link
-            href="/schedules"
+            href="/deployments"
             className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Schedules
+            Deployments
           </Link>
           <h1 className="pt-1 font-mono text-2xl font-semibold tracking-tight">{name}</h1>
-          <ScheduleLine schedule={schedule} now={now} />
+          <DeploymentLine deployment={deployment} now={now} />
         </div>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
-            disabled={!schedule}
+            disabled={!deployment}
             onClick={() =>
               command(async () => {
                 const { session_id } = await post<{ session_id: string }>(
-                  `/api/schedules/${encodeURIComponent(name)}/run`,
+                  `/api/deployments/${encodeURIComponent(name)}/run`,
                 );
                 return `started ${session_id}`;
               })
@@ -112,10 +112,10 @@ function ScheduleInner() {
           <Button
             variant="outline"
             size="sm"
-            disabled={!schedule}
+            disabled={!deployment}
             onClick={() =>
               command(async () => {
-                await post(`/api/schedules/${encodeURIComponent(name)}/enabled`, {
+                await post(`/api/deployments/${encodeURIComponent(name)}/enabled`, {
                   enabled: paused,
                 });
                 return paused ? "resumed" : "paused";
@@ -128,12 +128,12 @@ function ScheduleInner() {
           <Button
             variant="destructive"
             size="sm"
-            disabled={!schedule}
+            disabled={!deployment}
             onClick={() => {
-              if (!confirm(`Delete schedule ${name}? Its past runs are kept.`)) return;
+              if (!confirm(`Delete deployment ${name}? Its past runs are kept.`)) return;
               act(async () => {
-                await post(`/api/schedules/${encodeURIComponent(name)}/delete`);
-                router.push("/schedules");
+                await post(`/api/deployments/${encodeURIComponent(name)}/delete`);
+                router.push("/deployments");
                 return "deleted";
               });
             }}
@@ -144,13 +144,13 @@ function ScheduleInner() {
         </div>
       </div>
 
-      {schedule?.last_error && (
+      {deployment?.last_error && (
         <p className="rounded-lg border border-destructive/40 bg-card px-3 py-2 text-[12px] text-destructive">
-          {schedule.last_error}
+          {deployment.last_error}
         </p>
       )}
 
-      <Stats schedule={schedule} runs={runs} />
+      <Stats deployment={deployment} runs={runs} />
 
       <Card>
         <CardHeader>
@@ -170,21 +170,21 @@ function ScheduleInner() {
           <CardDescription>What every firing runs</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {schedule === null ? (
+          {deployment === null ? (
             <Skeleton className="h-20 w-full" />
           ) : (
             <>
               <pre className="chat-prose overflow-x-auto rounded-lg border border-border bg-surface px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">
-                {schedule.prompt}
+                {deployment.prompt}
               </pre>
               <div className="flex flex-wrap gap-1.5">
-                {setOptions(schedule.options).map(([key, value]) => (
+                {setOptions(deployment.options).map(([key, value]) => (
                   <Badge key={key} variant="secondary" className="font-mono">
                     {key}: {value}
                   </Badge>
                 ))}
-                {schedule.created_by && (
-                  <Badge className="font-mono">created by {schedule.created_by}</Badge>
+                {deployment.created_by && (
+                  <Badge className="font-mono">created by {deployment.created_by}</Badge>
                 )}
               </div>
             </>
@@ -206,17 +206,17 @@ function ScheduleInner() {
   );
 }
 
-function ScheduleLine({ schedule, now }: { schedule: ScheduleSummary | null; now: number }) {
-  if (!schedule) return <Skeleton className="mt-2 h-4 w-72" />;
+function DeploymentLine({ deployment, now }: { deployment: DeploymentSummary | null; now: number }) {
+  if (!deployment) return <Skeleton className="mt-2 h-4 w-72" />;
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1.5 text-[13px] text-muted-foreground">
-      <code className="font-mono text-foreground">{schedule.cron}</code>
+      <code className="font-mono text-foreground">{deployment.cron}</code>
       <span className="text-faint">·</span>
-      <span className="font-mono">{schedule.timezone}</span>
+      <span className="font-mono">{deployment.timezone}</span>
       <span className="text-faint">·</span>
-      {schedule.enabled ? (
-        <span title={clockTime(schedule.next_run_at)}>
-          next run {untilTime(schedule.next_run_at, now)}
+      {deployment.enabled ? (
+        <span title={clockTime(deployment.next_run_at)}>
+          next run {untilTime(deployment.next_run_at, now)}
         </span>
       ) : (
         <Badge>
@@ -229,10 +229,10 @@ function ScheduleLine({ schedule, now }: { schedule: ScheduleSummary | null; now
 }
 
 function Stats({
-  schedule,
+  deployment,
   runs,
 }: {
-  schedule: ScheduleSummary | null;
+  deployment: DeploymentSummary | null;
   runs: RunSummary[] | null;
 }) {
   // Rates and averages only mean something over runs that finished; a run
@@ -254,7 +254,7 @@ function Stats({
             ? null
             : runs.length === 0
               ? "never"
-              : (schedule?.last_run?.outcome ?? runs[0].outcome)
+              : (deployment?.last_run?.outcome ?? runs[0].outcome)
         }
         sub={runs?.length ? `${runs.length} in history` : "no runs yet"}
       />
@@ -274,8 +274,8 @@ function Stats({
         label="Total spend"
         value={totalCost === undefined ? null : cost(totalCost)}
         sub={
-          schedule && schedule.skips > 0
-            ? `${schedule.skips} slot${schedule.skips === 1 ? "" : "s"} skipped (run still active)`
+          deployment && deployment.skips > 0
+            ? `${deployment.skips} slot${deployment.skips === 1 ? "" : "s"} skipped (run still active)`
             : "across the runs shown"
         }
       />

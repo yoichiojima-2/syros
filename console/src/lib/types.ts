@@ -31,8 +31,8 @@ export interface SessionSummary {
   updated_at: number | null;
   model: string | null;
   workspace: string | null;
-  schedule: string | null; // the schedule that started it, if any
-  trigger: string; // "api" | "schedule" | "manual"
+  deployment: string | null; // the deployment that started it, if any
+  trigger: string; // "api" | "deployment" | "manual"
 }
 
 // Mirrors run_outcome() in src/syros/console/api.py — keep the two in sync.
@@ -47,13 +47,13 @@ export type RunOutcome =
   | "failed"
   | "cancelled";
 
-/** A session seen as one run of a schedule. duration_s is null while it runs. */
+/** A session seen as one run of a deployment. duration_s is null while it runs. */
 export interface RunSummary extends SessionSummary {
   outcome: RunOutcome;
   duration_s: number | null;
 }
 
-export interface ScheduleSummary {
+export interface DeploymentSummary {
   name: string;
   cron: string;
   timezone: string;
@@ -71,14 +71,14 @@ export interface ScheduleSummary {
   last_run: RunSummary | null;
 }
 
-export interface SchedulesResponse {
+export interface DeploymentsResponse {
   now: number;
-  schedules: ScheduleSummary[];
+  deployments: DeploymentSummary[];
 }
 
-export interface ScheduleResponse {
+export interface DeploymentResponse {
   now: number;
-  schedule: ScheduleSummary;
+  deployment: DeploymentSummary;
   runs: RunSummary[];
 }
 

@@ -1,27 +1,27 @@
 """Scheduled runs: a cron expression that fires sessions on its own.
 
-A schedule is one Firestore document holding the cron, a prompt, and the same
+A deployment is one Firestore document holding the cron, a prompt, and the same
 serialized `AgentOptions` a session carries. Firing it is exactly what a client
 does by hand — create a session, queue the prompt, trigger the Cloud Run Job —
 so a scheduled run *is* an ordinary session, visible in the same session list,
 transcript, approval queue and audit trail. Nothing about the runner knows a
-schedule exists.
+deployment exists.
 
 What moves the clock is a tick (`syros tick`), run on a Cloud Scheduler cron
 against a Cloud Run Job. The tick is stateless and idempotent: it fires the
 slots that are due and advances `next_run_at`, so two overlapping ticks, or one
 that comes back after an outage, can neither double-fire nor backfill.
 
-    schedules/{name}
+    deployments/{name}
         cron, timezone, prompt, options   what to run, and when
-        enabled                           paused schedules keep their history
+        enabled                           paused deployments keep their history
         next_run_at                       epoch seconds; the tick's only cursor
         last_run_at, last_session_id      the newest run
         last_skipped_at, last_error       why a slot produced no run
         runs, skips                       counters, for display
 
-Sessions a schedule creates carry `schedule` (its name) and `trigger`
-("schedule" for a cron firing, "manual" for run-now), which is what the
+Sessions a deployment creates carry `deployment` (its name) and `trigger`
+("deployment" for a cron firing, "manual" for run-now), which is what the
 console's run history queries on.
 """
 
@@ -40,8 +40,8 @@ from .store import Store, StoreProtocol, lease_active, new_session_id, start_pen
 DEFAULT_TIMEZONE = "UTC"
 
 
-class ScheduleError(SyrosError):
-    """A schedule definition is invalid, missing, or already exists."""
+class DeploymentError(SyrosError):
+    """A deployment definition is invalid, missing, or already exists."""
 
 
 def _epoch(value: Any) -> float:
@@ -63,15 +63,15 @@ def build(
     created_by: str | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """The Firestore document for a new schedule, with its first slot set.
+    """The Firestore document for a new deployment, with its first slot set.
 
-    `run_options` are the options every run of this schedule gets — the same
-    subset a session stores, so a schedule can name a model, a shared
+    `run_options` are the options every run of this deployment gets — the same
+    subset a session stores, so a deployment can name a model, a shared
     workspace, artifact spaces, allowed tools, or a budget.
     """
-    validate_name("schedule", name)
+    validate_name("deployment", name)
     if not isinstance(prompt, str) or not prompt.strip():
-        raise ScheduleError("a schedule needs a prompt")
+        raise DeploymentError("a deployment needs a prompt")
     cron.validate(expression, timezone)
     now = time.time() if now is None else now
     return {
@@ -108,8 +108,8 @@ async def create(
     store: StoreProtocol | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Define a schedule. `options` is the deployment (project/region/job);
-    `run_options` is what each run of the schedule is given."""
+    """Define a deployment. `options` is the deployment (project/region/job);
+    `run_options` is what each run of the deployment is given."""
     options = options or AgentOptions()
     run_options = run_options or AgentOptions()
     # Every run inherits the deployment's project, so validate against it here
@@ -127,23 +127,23 @@ async def create(
         now=now,
     )
     store = _store(options, store)
-    if await store.get_schedule(name) is not None:
-        raise ScheduleError(f"schedule {name!r} already exists")
-    await store.create_schedule(name, doc)
+    if await store.get_deployment(name) is not None:
+        raise DeploymentError(f"deployment {name!r} already exists")
+    await store.create_deployment(name, doc)
     return {"name": name, **doc}
 
 
 async def get(
     name: str, *, options: AgentOptions | None = None, store: StoreProtocol | None = None
 ) -> dict[str, Any] | None:
-    return await _store(options or AgentOptions(), store).get_schedule(name)
+    return await _store(options or AgentOptions(), store).get_deployment(name)
 
 
 async def list_all(
     *, options: AgentOptions | None = None, store: StoreProtocol | None = None
 ) -> list[dict[str, Any]]:
-    schedules = await _store(options or AgentOptions(), store).list_schedules()
-    return sorted(schedules, key=lambda s: s.get("name") or "")
+    deployments = await _store(options or AgentOptions(), store).list_deployments()
+    return sorted(deployments, key=lambda s: s.get("name") or "")
 
 
 async def set_enabled(
@@ -155,27 +155,27 @@ async def set_enabled(
     now: float | None = None,
 ) -> dict[str, Any]:
     """Pause or resume. Resuming re-bases the next slot on the current time,
-    so a schedule paused over a weekend doesn't come back already overdue."""
+    so a deployment paused over a weekend doesn't come back already overdue."""
     store = _store(options or AgentOptions(), store)
-    schedule = await _require(store, name)
+    deployment = await _require(store, name)
     fields: dict[str, Any] = {"enabled": bool(enabled)}
     if enabled:
         now = time.time() if now is None else now
         fields["next_run_at"] = cron.next_after(
-            schedule["cron"], now, schedule.get("timezone") or DEFAULT_TIMEZONE
+            deployment["cron"], now, deployment.get("timezone") or DEFAULT_TIMEZONE
         )
         fields["last_error"] = None
-    await store.update_schedule(name, **fields)
-    return {**schedule, **fields}
+    await store.update_deployment(name, **fields)
+    return {**deployment, **fields}
 
 
 async def delete(
     name: str, *, options: AgentOptions | None = None, store: StoreProtocol | None = None
 ) -> None:
-    """Remove the schedule. Its past runs are ordinary sessions and stay."""
+    """Remove the deployment. Its past runs are ordinary sessions and stay."""
     store = _store(options or AgentOptions(), store)
     await _require(store, name)
-    await store.delete_schedule(name)
+    await store.delete_deployment(name)
 
 
 async def runs(
@@ -185,15 +185,15 @@ async def runs(
     options: AgentOptions | None = None,
     store: StoreProtocol | None = None,
 ) -> list[dict[str, Any]]:
-    """This schedule's sessions, newest first."""
-    return await _store(options or AgentOptions(), store).list_schedule_sessions(name, limit)
+    """This deployment's sessions, newest first."""
+    return await _store(options or AgentOptions(), store).list_deployment_sessions(name, limit)
 
 
 async def _require(store: StoreProtocol, name: str) -> dict[str, Any]:
-    schedule = await store.get_schedule(name)
-    if schedule is None:
-        raise ScheduleError(f"no such schedule: {name}")
-    return schedule
+    deployment = await store.get_deployment(name)
+    if deployment is None:
+        raise DeploymentError(f"no such deployment: {name}")
+    return deployment
 
 
 async def run_now(
@@ -204,54 +204,54 @@ async def run_now(
     created_by: str | None = None,
     now: float | None = None,
 ) -> str:
-    """Fire a schedule immediately, off-cycle. Returns the new session id.
+    """Fire a deployment immediately, off-cycle. Returns the new session id.
 
     The slot clock is left alone: an out-of-band run is for testing the prompt
-    or catching up, not for moving the schedule.
+    or catching up, not for moving the deployment.
     """
     options = options or AgentOptions()
     store = _store(options, store)
-    schedule = await _require(store, name)
-    return await launch(store, options, schedule, trigger="manual", created_by=created_by, now=now)
+    deployment = await _require(store, name)
+    return await launch(store, options, deployment, trigger="manual", created_by=created_by, now=now)
 
 
 async def launch(
     store: StoreProtocol,
     options: AgentOptions,
-    schedule: dict[str, Any],
+    deployment: dict[str, Any],
     *,
-    trigger: str = "schedule",
+    trigger: str = "deployment",
     created_by: str | None = None,
     now: float | None = None,
 ) -> str:
-    """Start one run of a schedule: a session, the prompt, the job trigger."""
-    name = schedule["name"]
+    """Start one run of a deployment: a session, the prompt, the job trigger."""
+    name = deployment["name"]
     now = time.time() if now is None else now
     session_id = new_session_id()
     await store.create_session(
         session_id,
-        dict(schedule.get("options") or {}),
-        created_by=created_by or f"schedule:{name}",
-        schedule=name,
+        dict(deployment.get("options") or {}),
+        created_by=created_by or f"deployment:{name}",
+        deployment=name,
         trigger=trigger,
     )
-    await remote.send_prompt(store, session_id, options, schedule.get("prompt") or "")
-    await store.update_schedule(
+    await remote.send_prompt(store, session_id, options, deployment.get("prompt") or "")
+    await store.update_deployment(
         name,
         last_run_at=now,
         last_session_id=session_id,
-        runs=int(schedule.get("runs") or 0) + 1,
+        runs=int(deployment.get("runs") or 0) + 1,
         last_error=None,
     )
     return session_id
 
 
 async def _run_active(store: StoreProtocol, session_id: str | None, now: float) -> bool:
-    """Is the schedule's previous run still going?
+    """Is the deployment's previous run still going?
 
     A live lease is the definitive yes; a triggered execution still inside the
     start grace window counts too. Both windows expire on their own, so a job
-    that dies (or never comes up) stops blocking the schedule by itself.
+    that dies (or never comes up) stops blocking the deployment by itself.
     """
     if not session_id:
         return False
@@ -267,11 +267,11 @@ async def tick(
     store: StoreProtocol | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Fire every schedule whose slot has come due. The whole scheduler.
+    """Fire every deployment whose slot has come due. The whole scheduler.
 
     Called on a Cloud Scheduler cron; safe to call at any interval and from
     anywhere, since a slot is consumed by a transaction rather than by being
-    observed. Cron granularity is therefore the tick interval: a schedule fires
+    observed. Cron granularity is therefore the tick interval: a deployment fires
     at the first tick at or after its time, never before it.
     """
     options = options or AgentOptions()
@@ -281,40 +281,40 @@ async def tick(
     skipped: list[dict[str, str]] = []
     errors: list[dict[str, str]] = []
 
-    for schedule in await list_all(store=store):
-        name = schedule.get("name") or ""
-        due = float(schedule.get("next_run_at") or 0.0)
-        if not schedule.get("enabled") or due <= 0 or due > now:
+    for deployment in await list_all(store=store):
+        name = deployment.get("name") or ""
+        due = float(deployment.get("next_run_at") or 0.0)
+        if not deployment.get("enabled") or due <= 0 or due > now:
             continue
-        timezone = schedule.get("timezone") or DEFAULT_TIMEZONE
+        timezone = deployment.get("timezone") or DEFAULT_TIMEZONE
         try:
             # Slots are computed from now, not from the missed slot: a tick
             # that comes back after an outage fires once and catches up,
             # instead of replaying every slot it slept through.
-            following = cron.next_after(schedule.get("cron") or "", now, timezone)
+            following = cron.next_after(deployment.get("cron") or "", now, timezone)
         except cron.CronError as exc:
             # An expression that can no longer produce a time would spin at
-            # every tick, so the schedule is parked with the reason on it.
-            await store.update_schedule(name, enabled=False, last_error=str(exc))
-            errors.append({"schedule": name, "error": str(exc)})
+            # every tick, so the deployment is parked with the reason on it.
+            await store.update_deployment(name, enabled=False, last_error=str(exc))
+            errors.append({"deployment": name, "error": str(exc)})
             continue
         if not await store.claim_slot(name, due, following):
             continue  # another tick took this slot, or it was paused meanwhile
-        if await _run_active(store, schedule.get("last_session_id"), now):
-            # One run per schedule at a time — the Databricks default, and the
+        if await _run_active(store, deployment.get("last_session_id"), now):
+            # One run per deployment at a time — the Databricks default, and the
             # only safe one when runs share a workspace, whose lease the second
             # run would lose anyway.
-            await store.update_schedule(
-                name, last_skipped_at=now, skips=int(schedule.get("skips") or 0) + 1
+            await store.update_deployment(
+                name, last_skipped_at=now, skips=int(deployment.get("skips") or 0) + 1
             )
-            skipped.append({"schedule": name, "session_id": schedule.get("last_session_id") or ""})
+            skipped.append({"deployment": name, "session_id": deployment.get("last_session_id") or ""})
             continue
         try:
-            session_id = await launch(store, options, schedule, now=now)
-        except Exception as exc:  # one bad schedule must not end the tick
-            await store.update_schedule(name, last_error=f"{type(exc).__name__}: {exc}")
-            errors.append({"schedule": name, "error": f"{type(exc).__name__}: {exc}"})
+            session_id = await launch(store, options, deployment, now=now)
+        except Exception as exc:  # one bad deployment must not end the tick
+            await store.update_deployment(name, last_error=f"{type(exc).__name__}: {exc}")
+            errors.append({"deployment": name, "error": f"{type(exc).__name__}: {exc}"})
             continue
-        fired.append({"schedule": name, "session_id": session_id})
+        fired.append({"deployment": name, "session_id": session_id})
 
     return {"now": now, "fired": fired, "skipped": skipped, "errors": errors}

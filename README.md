@@ -111,40 +111,40 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
 Docker image builds its own copy in a Node stage, so deploys need no local build.
 
-## Schedules
+## Deployments
 
-A schedule is a cron expression plus a prompt plus the usual run options, stored as one
+A deployment is a cron expression plus a prompt plus the usual run options, stored as one
 Firestore document. Each firing starts a *fresh ordinary session* — same list, transcript,
-approval queue, audit trail, kill switch — tagged with the schedule's name, so scheduled
-work is governed exactly like interactive work. Nothing in the runner knows schedules
+approval queue, audit trail, kill switch — tagged with the deployment's name, so scheduled
+work is governed exactly like interactive work. Nothing in the runner knows deployments
 exist.
 
 ```
-syros schedules create nightly-report \
+syros deployments create nightly-report \
   --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "profile the CSVs and rewrite report.md" \
   --model claude-sonnet-5 --workspace reports --allow Read --allow Write
 
-syros schedules                      # each schedule, its next slot, last run
-syros schedules runs nightly-report  # run history: outcome, trigger, cost
-syros schedules run nightly-report   # fire once, off-cycle (clock untouched)
-syros schedules pause|resume|delete nightly-report
+syros deployments                      # each deployment, its next slot, last run
+syros deployments runs nightly-report  # run history: outcome, trigger, cost
+syros deployments run nightly-report   # fire once, off-cycle (clock untouched)
+syros deployments pause|resume|delete nightly-report
 ```
 
-The console has the same surface with a run-status view per schedule: outcome/duration
+The console has the same surface with a run-status view per deployment: outcome/duration
 bars over the run history (click a bar for that run's transcript), success rate, average
 duration, spend, and a create/pause/run-now/delete UI. Cron is the standard 5-field
-syntax (`@daily` etc. work), evaluated as wall-clock time in the schedule's IANA
-timezone, so a 9am schedule stays at 9am across DST.
+syntax (`@daily` etc. work), evaluated as wall-clock time in the deployment's IANA
+timezone, so a 9am deployment stays at 9am across DST.
 
-What advances the clock is `syros tick`, which fires every due schedule and exits;
+What advances the clock is `syros tick`, which fires every due deployment and exits;
 Terraform wires Cloud Scheduler → a `syros-scheduler` Cloud Run Job to run it every
-minute (`tick_schedule` to change — its cadence is the effective granularity of all
-schedules). The tick is transactional and idempotent: overlapping ticks can't
+minute (`tick_deployment` to change — its cadence is the effective granularity of all
+deployments). The tick is transactional and idempotent: overlapping ticks can't
 double-fire, an outage catches up with one run rather than replaying missed slots, and
 a slot that comes due while the previous run is still active is skipped and counted
-(one live run per schedule — also what a shared workspace's lease would force anyway).
-Failures are visible, not silent: a schedule whose launch fails records `last_error`,
+(one live run per deployment — also what a shared workspace's lease would force anyway).
+Failures are visible, not silent: a deployment whose launch fails records `last_error`,
 and one whose cron can no longer fire is auto-paused with the reason on it.
 
 ## Analysis

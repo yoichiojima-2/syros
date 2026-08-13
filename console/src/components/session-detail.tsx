@@ -145,17 +145,17 @@ export function SessionDetail({ sid }: { sid: string }) {
         {session && (
           <>
             <StateBadge state={session.state} />
-            {/* a scheduled run is an ordinary session; say which schedule owns
+            {/* a scheduled run is an ordinary session; say which deployment owns
                 it so the transcript links back to its history */}
-            {session.schedule && (
+            {session.deployment && (
               <Link
-                href={`/schedule?name=${encodeURIComponent(session.schedule)}`}
+                href={`/deployment?name=${encodeURIComponent(session.deployment)}`}
                 className="hover:opacity-80"
-                title={`Run of schedule ${session.schedule} (${session.trigger})`}
+                title={`Run of deployment ${session.deployment} (${session.trigger})`}
               >
                 <Badge className="font-mono">
                   <CalendarClock className="size-3" />
-                  {session.schedule}
+                  {session.deployment}
                 </Badge>
               </Link>
             )}
