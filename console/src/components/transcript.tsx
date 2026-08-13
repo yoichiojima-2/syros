@@ -5,6 +5,7 @@ import { FileCode2 } from "lucide-react";
 import type { ContentBlock, TranscriptEvent, TranscriptMessage } from "@/lib/types";
 import { artifactToolPath } from "@/lib/artifacts";
 import { compact, cost, pretty } from "@/lib/format";
+import { renderMarkdown } from "@/lib/markdown";
 import { cn } from "@/lib/utils";
 
 // Renders the event feed. Message kinds and block types mirror the Firestore
@@ -118,10 +119,9 @@ function MessageView({
             return (
               <div
                 key={i}
-                className="text-[15px] leading-7 whitespace-pre-wrap [overflow-wrap:break-word]"
-              >
-                {block.text}
-              </div>
+                className="chat-prose text-[15px] leading-7 [overflow-wrap:break-word]"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(block.text || "") }}
+              />
             );
           if (block.type === "thinking")
             return (
