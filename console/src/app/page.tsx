@@ -24,7 +24,7 @@ export default function OverviewPage() {
         <StatCard
           label="Active sessions"
           value={active === undefined ? null : String(active)}
-          sub={stalled ? `${stalled} stalled` : "running, queued, or stalled"}
+          sub={stalled ? `${stalled} stalled` : "running, starting, queued, or stalled"}
         />
         <StatCard
           label="Total cost"

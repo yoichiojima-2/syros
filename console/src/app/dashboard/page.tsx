@@ -29,6 +29,7 @@ const RANGES: { key: RangeKey; label: string; days?: number }[] = [
 
 const STATE_ORDER: SessionState[] = [
   "running",
+  "starting",
   "queued",
   "stalled",
   "idle",

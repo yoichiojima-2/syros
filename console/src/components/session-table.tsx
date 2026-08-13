@@ -17,10 +17,11 @@ import { StateBadge } from "@/components/state-badge";
 import { cost, relTime, shortId } from "@/lib/format";
 import type { SessionSummary } from "@/lib/types";
 
-/** A running session holds a live lease — the server refuses to delete it, so
- * the row is neither selectable nor individually deletable. */
+/** A running session holds a live lease, and a starting one has an execution
+ * inbound — the server refuses to delete either, so the row is neither
+ * selectable nor individually deletable. */
 export function deletable(session: SessionSummary): boolean {
-  return session.state !== "running";
+  return session.state !== "running" && session.state !== "starting";
 }
 
 export function SessionTable({

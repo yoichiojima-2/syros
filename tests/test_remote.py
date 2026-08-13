@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -11,7 +12,7 @@ from syros import (
     TextBlock,
 )
 from syros.errors import SessionTerminated
-from syros.remote import run_remote
+from syros.remote import run_remote, send_prompt
 from syros.types import message_to_doc
 
 from .fakes import FakeStore
@@ -107,6 +108,30 @@ async def test_resume_starts_after_seq_head(no_job_trigger):
     await runner_task
     assert [type(m).__name__ for m in collected] == ["AssistantMessage", "ResultMessage"]
     assert collected[0].content == [TextBlock(text="turn2")]
+
+
+async def test_send_prompt_marks_session_starting(no_job_trigger):
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+
+    await send_prompt(store, "sess_1", options(), "hello")
+
+    session = await store.get_session("sess_1")
+    assert session["status"] == "starting"
+    assert session["triggered_at"] == pytest.approx(time.time(), abs=5)
+
+
+async def test_send_prompt_leaves_a_live_run_alone(no_job_trigger):
+    """A session an execution already holds is past "starting" — no trigger,
+    and nothing that would make a running session look like it never started."""
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.claim_session("sess_1", "lease-1", 60)
+
+    await send_prompt(store, "sess_1", options(), "hello")
+
+    assert no_job_trigger == []
+    assert (await store.get_session("sess_1"))["status"] == "running"
 
 
 async def test_resume_terminated_session_raises():
