@@ -93,10 +93,15 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-xl: calc(var(--radius) + 4px);
-  /* System font stacks only — no shipping or fetching webfonts, since the
-     console is served from localhost and Cloud Run with no egress. */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  /* Geist, self-hosted: the `geist` package ships the woff2 files, so the build
+     bundles them into the static export and the console serves them from its own
+     origin — nothing is fetched from a third party at build or run time, which
+     keeps the no-egress property localhost and Cloud Run need. The variables come
+     from next/font on <html> (layout.tsx); `@theme inline` is what makes
+     font-sans / font-mono resolve them at use time rather than freezing them
+     here. The system stacks stay behind as the fallback. */
+  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
 
   @keyframes pulse-dot {
@@ -119,6 +124,9 @@
 body {
   background: var(--background);
   color: var(--foreground);
+  /* costs, token counts and durations sit in columns — keep the digits from
+     jittering as values change */
+  font-variant-numeric: tabular-nums;
 }
 
 ::selection {
@@ -155,6 +163,7 @@ body {
   margin: 1.1em 0 0.45em;
   font-weight: 600;
   line-height: 1.35;
+  letter-spacing: -0.011em;
 }
 .chat-prose h1 {
   font-size: 1.25em;

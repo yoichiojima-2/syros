@@ -12,6 +12,12 @@ import type { PreviewKind } from "@/lib/artifacts";
 // sandboxed iframe (scripts allowed, no same-origin — the document is inert
 // toward the console); markdown and SVG render in a script-less iframe, so
 // agent-authored content can't escape into the page.
+//
+// These documents stay on system font stacks rather than the console's Geist:
+// without allow-same-origin the iframe has an opaque origin, so a webfont from
+// the console's own origin is a cross-origin fetch the server sends no CORS
+// header for, and inlining the woff2 as a data: URI into every srcdoc is not
+// worth it here. Agent artifacts reading as plain documents is fine.
 
 export const PALETTE = {
   light: { bg: "#ffffff", fg: "#18181b", muted: "#71717a", border: "#e4e4e7", code: "#f4f4f5" },
@@ -26,7 +32,7 @@ export function markdownDoc(markdown: string, dark: boolean): string {
       font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
     h1, h2, h3, h4 { line-height: 1.3; margin: 1.4em 0 0.5em; } h1:first-child { margin-top: 0; }
     a { color: inherit; } img, svg, video { max-width: 100%; }
-    code { font: 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    code { font: 0.85em ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
       background: ${c.code}; border-radius: 4px; padding: 0.1em 0.35em; }
     pre { background: ${c.code}; border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
     pre code { background: none; padding: 0; }

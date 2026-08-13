@@ -667,6 +667,7 @@ async def test_static_serving_next_export():
         "sessions.html": b"sessions-page",
         "404.html": b"not-found-page",
         "_next/static/x.js": b"js",
+        "_next/static/media/x.woff2": b"\x00",
     }
     server = create_server(
         api(FakeStore()), asyncio.get_running_loop(), "127.0.0.1", 0, static=static
@@ -693,6 +694,13 @@ async def test_static_serving_next_export():
 
         status, _, headers = await asyncio.to_thread(fetch, "/_next/static/x.js")
         assert status == 200
+        assert "immutable" in headers["Cache-Control"]
+
+        # the self-hosted console fonts ride the same immutable path, and must
+        # not pick up a charset the way text/* types do
+        status, _, headers = await asyncio.to_thread(fetch, "/_next/static/media/x.woff2")
+        assert status == 200
+        assert headers["Content-Type"] == "font/woff2"
         assert "immutable" in headers["Cache-Control"]
 
         status, body, _ = await asyncio.to_thread(fetch, "/nope")
