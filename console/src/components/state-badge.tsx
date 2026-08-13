@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import type { SessionState } from "@/lib/types";
 
 // State is never carried by color alone: the badge always pairs dot + label.
-const DOT: Record<SessionState, string> = {
+export const STATE_DOT: Record<SessionState, string> = {
   running: "bg-ok animate-pulse-dot",
   stalled: "bg-warn-dot",
   queued: "bg-info",
@@ -15,7 +15,7 @@ const DOT: Record<SessionState, string> = {
 export function StateBadge({ state, className }: { state: SessionState; className?: string }) {
   return (
     <Badge className={className}>
-      <span className={cn("size-[7px] rounded-full", DOT[state] || "bg-faint")} />
+      <span className={cn("size-[7px] rounded-full", STATE_DOT[state] || "bg-faint")} />
       {state}
     </Badge>
   );
