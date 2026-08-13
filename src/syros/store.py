@@ -166,8 +166,9 @@ class Store:
                 "claude_session_id": None,
                 "created_by": created_by,
                 # Run provenance: which schedule owns this session (None for an
-                # ordinary query) and what started it — "api", "schedule" for a
-                # cron firing, "manual" for a run-now on a schedule.
+                # ordinary query) and what started it — "api", "console" for the
+                # console's new-session form, "schedule" for a cron firing,
+                # "manual" for a run-now on a schedule.
                 "schedule": schedule,
                 "trigger": trigger,
                 "created_at": self._firestore.SERVER_TIMESTAMP,

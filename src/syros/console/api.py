@@ -19,7 +19,7 @@ from .. import remote, schedules
 from ..names import validate_name, validate_tags
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
-from ..store import StoreProtocol, lease_active, start_pending
+from ..store import StoreProtocol, lease_active, new_session_id, start_pending
 from .objects import MAX_PREVIEW_BYTES, ObjectStoreProtocol
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
@@ -193,6 +193,32 @@ class ConsoleAPI:
     async def sessions(self) -> dict[str, Any]:
         sessions = await self._store.list_sessions(limit=50)
         return {"now": time.time(), "sessions": [_summary(s) for s in sessions]}
+
+    async def create_session(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Start a fresh session from the console's form.
+
+        Exactly the three steps a client's query() takes — create the session
+        document, queue the prompt, trigger the job — so a console-started
+        session is an ordinary session and nothing downstream knows the console
+        exists. Run options arrive as the serialized dict a session stores, like
+        create_schedule, so an option the console doesn't know is rejected by
+        options_from_doc rather than silently dropped.
+        """
+        prompt = str(body.get("prompt") or "")
+        if not prompt.strip():
+            raise ValueError("a session needs a prompt")
+        run_options = options_from_doc(dict(body.get("options") or {}))
+        # Sessions run in the console's deployment, so validate against its
+        # project here rather than letting the job trigger be what finds the
+        # problem — a rejected form beats a session stuck in "queued".
+        run_options.project = run_options.project or self._options.project
+        run_options.validate()
+        session_id = new_session_id()
+        await self._store.create_session(
+            session_id, run_options.serialize(), created_by=_decided_by(), trigger="console"
+        )
+        await remote.send_prompt(self._store, session_id, self._options, prompt)
+        return {"now": time.time(), "ok": True, "session_id": session_id}
 
     async def poll(self, session_id: str, after: int) -> dict[str, Any]:
         """One polling unit: session summary, events past the cursor, pending

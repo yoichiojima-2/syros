@@ -327,6 +327,54 @@ async def test_approvals_across_sessions():
     assert rows["hash1"]["deadline"] == pytest.approx(result["now"] + 10.0, abs=1.0)
 
 
+# --- create session ---
+
+
+async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "profile the CSVs",
+            "options": {"model": "claude-sonnet-5", "workspace": "team", "allowed_tools": ["Read"]},
+        }
+    )
+
+    sid = result["session_id"]
+    assert result["ok"] is True
+    session = store.sessions[sid]
+    assert session["options"]["model"] == "claude-sonnet-5"
+    assert session["options"]["workspace"] == "team"
+    assert session["options"]["allowed_tools"] == ["Read"]
+    assert session["trigger"] == "console"
+    assert session["created_by"]
+    assert store.inbox[sid] == [{"kind": "message", "text": "profile the CSVs", "consumed": False}]
+    assert no_job_trigger == [("proj-1", "asia-northeast1", "syros-runner", sid)]
+    # and it shows up as an ordinary session, on its way up
+    assert (await api(store).poll(sid, after=0))["session"]["state"] == "starting"
+
+
+async def test_create_session_requires_a_prompt(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(ValueError):
+        await api(store).create_session({"prompt": "   ", "options": {}})
+    assert store.sessions == {}
+
+
+async def test_create_session_rejects_unknown_option(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(OptionsError):
+        await api(store).create_session({"prompt": "go", "options": {"cwd": "/tmp"}})
+    assert store.sessions == {}
+
+
+async def test_create_session_rejects_invalid_option(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(OptionsError):
+        await api(store).create_session({"prompt": "go", "options": {"workspace": "../escape"}})
+    assert store.sessions == {}
+
+
 # --- prompt / interrupt / kill ---
 
 
@@ -906,6 +954,17 @@ async def test_http_smoke():
 
         status, body = await asyncio.to_thread(fetch, "GET", "/api/sessions/sess_x/poll")
         assert status == 404
+
+        # create: POST on the collection, next to its GET
+        status, body = await asyncio.to_thread(
+            fetch, "POST", "/api/sessions", {"prompt": "hello", "options": {"model": "m"}}
+        )
+        assert status == 200
+        created = json.loads(body)["session_id"]
+        assert store.sessions[created]["options"]["model"] == "m"
+
+        status, body = await asyncio.to_thread(fetch, "POST", "/api/sessions", {"prompt": ""})
+        assert status == 400
 
         status, body = await asyncio.to_thread(
             fetch, "POST", "/api/sessions/sess_1/prompt", {"text": "hi"}

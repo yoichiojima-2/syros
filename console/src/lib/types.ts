@@ -32,7 +32,7 @@ export interface SessionSummary {
   model: string | null;
   workspace: string | null;
   schedule: string | null; // the schedule that started it, if any
-  trigger: string; // "api" | "schedule" | "manual"
+  trigger: string; // "api" | "console" | "schedule" | "manual"
 }
 
 // Mirrors run_outcome() in src/syros/console/api.py — keep the two in sync.
