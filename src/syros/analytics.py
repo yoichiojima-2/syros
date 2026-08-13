@@ -19,60 +19,10 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+from collections.abc import Callable
 from typing import Any
 
 from .store import StoreProtocol
-
-SESSIONS_SCHEMA = [
-    ("session_id", "STRING", "REQUIRED"),
-    ("status", "STRING", "NULLABLE"),
-    ("stop_reason", "STRING", "NULLABLE"),
-    ("disabled", "BOOL", "NULLABLE"),
-    ("cost_usd", "FLOAT64", "NULLABLE"),
-    ("seq_head", "INT64", "NULLABLE"),
-    ("model", "STRING", "NULLABLE"),
-    ("created_by", "STRING", "NULLABLE"),
-    ("created_at", "TIMESTAMP", "NULLABLE"),
-    ("updated_at", "TIMESTAMP", "NULLABLE"),
-    ("options", "JSON", "NULLABLE"),
-]
-
-EVENTS_SCHEMA = [
-    ("session_id", "STRING", "REQUIRED"),
-    ("seq", "INT64", "NULLABLE"),
-    ("ts", "TIMESTAMP", "NULLABLE"),
-    ("kind", "STRING", "NULLABLE"),
-    ("message", "JSON", "NULLABLE"),
-]
-
-TOOL_CALLS_SCHEMA = [
-    ("session_id", "STRING", "REQUIRED"),
-    ("ts", "TIMESTAMP", "NULLABLE"),
-    ("tool_name", "STRING", "NULLABLE"),
-    ("decision", "STRING", "NULLABLE"),
-    ("call_hash", "STRING", "NULLABLE"),
-    ("tool_use_id", "STRING", "NULLABLE"),
-    ("input", "JSON", "NULLABLE"),
-]
-
-APPROVALS_SCHEMA = [
-    ("session_id", "STRING", "REQUIRED"),
-    ("call_hash", "STRING", "NULLABLE"),
-    ("tool_name", "STRING", "NULLABLE"),
-    ("status", "STRING", "NULLABLE"),
-    ("decided_by", "STRING", "NULLABLE"),
-    ("deny_message", "STRING", "NULLABLE"),
-    ("requested_at", "TIMESTAMP", "NULLABLE"),
-    ("decided_at", "TIMESTAMP", "NULLABLE"),
-    ("input", "JSON", "NULLABLE"),
-]
-
-SCHEMAS: dict[str, list[tuple[str, str, str]]] = {
-    "sessions": SESSIONS_SCHEMA,
-    "events": EVENTS_SCHEMA,
-    "tool_calls": TOOL_CALLS_SCHEMA,
-    "approvals": APPROVALS_SCHEMA,
-}
 
 
 def _timestamp(value: Any) -> str | None:
@@ -95,59 +45,99 @@ def _json(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+# One spec per column: (name, bigquery type, mode, extractor). Both the table
+# schema and the row builder derive from it, so a column can't be added to one
+# without the other.
+Field = tuple[str, str, str, Callable[[dict[str, Any]], Any]]
+
+
+def _get(name: str) -> Callable[[dict[str, Any]], Any]:
+    return lambda doc: doc.get(name)
+
+
+def _ts(name: str) -> Callable[[dict[str, Any]], Any]:
+    return lambda doc: _timestamp(doc.get(name))
+
+
+SESSION_FIELDS: list[Field] = [
+    ("session_id", "STRING", "REQUIRED", lambda s: s["id"]),
+    ("status", "STRING", "NULLABLE", _get("status")),
+    ("stop_reason", "STRING", "NULLABLE", _get("stop_reason")),
+    ("disabled", "BOOL", "NULLABLE", lambda s: bool(s.get("disabled"))),
+    (
+        "cost_usd",
+        "FLOAT64",
+        "NULLABLE",
+        lambda s: float(s["cost_usd"]) if s.get("cost_usd") is not None else None,
+    ),
+    ("seq_head", "INT64", "NULLABLE", _get("seq_head")),
+    ("model", "STRING", "NULLABLE", lambda s: (s.get("options") or {}).get("model")),
+    ("created_by", "STRING", "NULLABLE", _get("created_by")),
+    ("created_at", "TIMESTAMP", "NULLABLE", _ts("created_at")),
+    ("updated_at", "TIMESTAMP", "NULLABLE", _ts("updated_at")),
+    ("options", "JSON", "NULLABLE", lambda s: _json(s.get("options") or {})),
+]
+
+EVENT_FIELDS: list[Field] = [
+    ("session_id", "STRING", "REQUIRED", _get("session_id")),
+    ("seq", "INT64", "NULLABLE", _get("seq")),
+    ("ts", "TIMESTAMP", "NULLABLE", _ts("ts")),
+    ("kind", "STRING", "NULLABLE", lambda e: (e.get("message") or {}).get("kind")),
+    ("message", "JSON", "NULLABLE", lambda e: _json(e.get("message") or {})),
+]
+
+TOOL_CALL_FIELDS: list[Field] = [
+    ("session_id", "STRING", "REQUIRED", _get("session_id")),
+    ("ts", "TIMESTAMP", "NULLABLE", _ts("ts")),
+    ("tool_name", "STRING", "NULLABLE", _get("tool_name")),
+    ("decision", "STRING", "NULLABLE", _get("decision")),
+    ("call_hash", "STRING", "NULLABLE", _get("call_hash")),
+    ("tool_use_id", "STRING", "NULLABLE", _get("tool_use_id")),
+    ("input", "JSON", "NULLABLE", lambda c: _json(c.get("input"))),
+]
+
+APPROVAL_FIELDS: list[Field] = [
+    ("session_id", "STRING", "REQUIRED", _get("session_id")),
+    ("call_hash", "STRING", "NULLABLE", _get("call_hash")),
+    ("tool_name", "STRING", "NULLABLE", _get("tool_name")),
+    ("status", "STRING", "NULLABLE", _get("status")),
+    ("decided_by", "STRING", "NULLABLE", _get("decided_by")),
+    ("deny_message", "STRING", "NULLABLE", _get("deny_message")),
+    ("requested_at", "TIMESTAMP", "NULLABLE", _ts("requested_at")),
+    ("decided_at", "TIMESTAMP", "NULLABLE", _ts("decided_at")),
+    ("input", "JSON", "NULLABLE", lambda a: _json(a.get("input"))),
+]
+
+FIELDS: dict[str, list[Field]] = {
+    "sessions": SESSION_FIELDS,
+    "events": EVENT_FIELDS,
+    "tool_calls": TOOL_CALL_FIELDS,
+    "approvals": APPROVAL_FIELDS,
+}
+
+SCHEMAS: dict[str, list[tuple[str, str, str]]] = {
+    name: [(n, t, m) for n, t, m, _ in fields] for name, fields in FIELDS.items()
+}
+
+
+def _row(fields: list[Field], doc: dict[str, Any]) -> dict[str, Any]:
+    return {name: extract(doc) for name, _, _, extract in fields}
+
+
 def session_row(session: dict[str, Any]) -> dict[str, Any]:
-    options = session.get("options") or {}
-    cost = session.get("cost_usd")
-    return {
-        "session_id": session["id"],
-        "status": session.get("status"),
-        "stop_reason": session.get("stop_reason"),
-        "disabled": bool(session.get("disabled")),
-        "cost_usd": float(cost) if cost is not None else None,
-        "seq_head": session.get("seq_head"),
-        "model": options.get("model"),
-        "created_by": session.get("created_by"),
-        "created_at": _timestamp(session.get("created_at")),
-        "updated_at": _timestamp(session.get("updated_at")),
-        "options": _json(options),
-    }
+    return _row(SESSION_FIELDS, session)
 
 
 def event_row(session_id: str, event: dict[str, Any]) -> dict[str, Any]:
-    message = event.get("message") or {}
-    return {
-        "session_id": session_id,
-        "seq": event.get("seq"),
-        "ts": _timestamp(event.get("ts")),
-        "kind": message.get("kind"),
-        "message": _json(message),
-    }
+    return _row(EVENT_FIELDS, {**event, "session_id": session_id})
 
 
 def tool_call_row(session_id: str, call: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "session_id": session_id,
-        "ts": _timestamp(call.get("ts")),
-        "tool_name": call.get("tool_name"),
-        "decision": call.get("decision"),
-        "call_hash": call.get("call_hash"),
-        "tool_use_id": call.get("tool_use_id"),
-        "input": _json(call.get("input")),
-    }
+    return _row(TOOL_CALL_FIELDS, {**call, "session_id": session_id})
 
 
 def approval_row(session_id: str, approval: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "session_id": session_id,
-        "call_hash": approval.get("call_hash"),
-        "tool_name": approval.get("tool_name"),
-        "status": approval.get("status"),
-        "decided_by": approval.get("decided_by"),
-        "deny_message": approval.get("deny_message"),
-        "requested_at": _timestamp(approval.get("requested_at")),
-        "decided_at": _timestamp(approval.get("decided_at")),
-        "input": _json(approval.get("input")),
-    }
+    return _row(APPROVAL_FIELDS, {**approval, "session_id": session_id})
 
 
 async def _all_events(
