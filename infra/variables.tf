@@ -61,6 +61,24 @@ variable "dataset_id" {
   default     = "syros"
 }
 
+variable "sandbox_bigquery" {
+  description = "Let sandboxed sessions query BigQuery (the built-in `bigquery` MCP server). Grants the runner service account project-level roles/bigquery.jobUser + roles/bigquery.dataViewer — read access to EVERY dataset in the project, not just the syros audit tables. Off by default."
+  type        = bool
+  default     = false
+}
+
+variable "bq_max_bytes" {
+  description = "maximum_bytes_billed for one agent query (also the dry-run refusal threshold)"
+  type        = number
+  default     = 1073741824 # 1 GiB
+}
+
+variable "bq_max_rows" {
+  description = "Rows one agent query may return"
+  type        = number
+  default     = 200
+}
+
 variable "scheduler_job_name" {
   description = "Cloud Run Job that runs `syros tick`"
   type        = string

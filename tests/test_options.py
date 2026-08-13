@@ -31,6 +31,47 @@ def test_accepts_http_mcp_server():
     ).validate()
 
 
+def test_accepts_builtin_bigquery_server():
+    AgentOptions(
+        project="p", mcp_servers={"bq": {"type": "builtin", "name": "bigquery"}}
+    ).validate()
+
+
+def test_rejects_unknown_builtin_name():
+    options = AgentOptions(project="p", mcp_servers={"x": {"type": "builtin", "name": "spanner"}})
+    with pytest.raises(OptionsError, match="unknown builtin"):
+        options.validate()
+
+
+def test_rejects_extra_keys_in_builtin_config():
+    options = AgentOptions(
+        project="p",
+        mcp_servers={"bq": {"type": "builtin", "name": "bigquery", "dataset": "other"}},
+    )
+    with pytest.raises(OptionsError, match="unknown builtin key"):
+        options.validate()
+
+
+def test_rejects_path_like_mcp_key_for_builtin():
+    # The key becomes part of the tool name (mcp__{key}__query), so it has to
+    # be a plain addressable name.
+    options = AgentOptions(
+        project="p", mcp_servers={"My BQ": {"type": "builtin", "name": "bigquery"}}
+    )
+    with pytest.raises(OptionsError, match="mcp server"):
+        options.validate()
+
+
+def test_builtin_survives_serialize_round_trip():
+    from syros.options import options_from_doc
+
+    options = AgentOptions(project="p", mcp_servers={"bq": {"type": "builtin", "name": "bigquery"}})
+    restored = options_from_doc(options.serialize())
+    restored.project = "p"
+    restored.validate()
+    assert restored.mcp_servers == {"bq": {"type": "builtin", "name": "bigquery"}}
+
+
 def test_machine_local_options_are_type_errors():
     with pytest.raises(TypeError):
         AgentOptions(cwd="/tmp")  # not a syros option

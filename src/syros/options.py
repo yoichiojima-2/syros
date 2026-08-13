@@ -38,6 +38,12 @@ _SERIALIZED_FIELDS = (
 
 ArtifactMode = Literal["rw", "ro"]
 
+# Platform-owned in-process MCP servers, requested by reference because options
+# travel through Firestore. Resolved into live server objects in the sandbox
+# (runner.BUILTIN_SERVERS) — this module must stay importable on a client with
+# no google-cloud-bigquery and no reason to import claude_agent_sdk.
+BUILTIN_MCP_SERVERS = ("bigquery",)
+
 
 @dataclass
 class AgentOptions:
@@ -144,12 +150,26 @@ class AgentOptions:
         for name, config in self.mcp_servers.items():
             if not isinstance(config, dict):
                 raise OptionsError(
-                    f"mcp server {name!r}: only dict configs (http/sse) are supported"
+                    f"mcp server {name!r}: only dict configs (http/sse/builtin) are supported"
                 )
-            if config.get("type") not in ("http", "sse"):
+            kind = config.get("type")
+            if kind == "builtin":
+                # The key becomes part of the tool name (mcp__{key}__query), so
+                # it has to be addressable in allowed_tools.
+                validate_name("mcp server", name)
+                if unknown := sorted(set(config) - {"type", "name"}):
+                    raise OptionsError(
+                        f"mcp server {name!r}: unknown builtin key(s): {', '.join(unknown)}"
+                    )
+                if config.get("name") not in BUILTIN_MCP_SERVERS:
+                    raise OptionsError(
+                        f"mcp server {name!r}: unknown builtin {config.get('name')!r} —"
+                        f" available: {', '.join(BUILTIN_MCP_SERVERS)}"
+                    )
+            elif kind not in ("http", "sse"):
                 raise OptionsError(
-                    f"mcp server {name!r}: type must be 'http' or 'sse' — stdio and"
-                    " in-process servers cannot run in the sandbox"
+                    f"mcp server {name!r}: type must be 'http', 'sse' or 'builtin' — stdio"
+                    " and caller-defined in-process servers cannot run in the sandbox"
                 )
         self.resolved_project()
 

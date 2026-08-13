@@ -665,7 +665,7 @@ def main() -> None:
     connectors.set_defaults(func=_connectors)
 
     export = sub.add_parser("export")
-    export.add_argument("--dataset", default=os.environ.get("SYROS_DATASET") or "syros")
+    export.add_argument("--dataset", default=env.dataset())
     export.set_defaults(func=_export)
 
     console = sub.add_parser("console")

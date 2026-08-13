@@ -12,6 +12,8 @@ import asyncio
 import os
 import sys
 import uuid
+from collections.abc import Callable
+from typing import Any
 
 from claude_agent_sdk import ClaudeSDKClient
 
@@ -20,7 +22,7 @@ from .gate import Gate
 from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store
 from .types import ResultMessage, SystemMessage, UserMessage, message_to_doc
-from . import artifacts, connectors, workspace
+from . import artifacts, bigquery, connectors, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -29,6 +31,26 @@ INBOX_POLL_SECONDS = 2.0
 # would put one Firestore write (and one console row) per thinking chunk in
 # the feed; the actual thinking text still arrives in the assistant message.
 NOISY_SYSTEM_SUBTYPES = {"thinking_tokens"}
+
+# Serialized builtin references -> live in-process SDK servers. Keyed by the
+# same names options.BUILTIN_MCP_SERVERS advertises; the pair is asserted equal
+# in the tests, so a builtin can't be accepted client-side and then be
+# unresolvable in the sandbox.
+BUILTIN_SERVERS: dict[str, Callable[[str, str], Any]] = {
+    "bigquery": lambda key, project: bigquery.build_server(key, env.BigQueryEnv.from_env(project)),
+}
+
+
+def resolve_mcp_servers(configs: dict[str, dict[str, Any]], project: str) -> dict[str, Any]:
+    """Swap builtin references for live servers; http/sse configs pass through
+    as the plain dicts the SDK already understands."""
+    resolved: dict[str, Any] = {}
+    for key, config in configs.items():
+        if config.get("type") == "builtin":
+            resolved[key] = BUILTIN_SERVERS[config["name"]](key, project)
+        else:
+            resolved[key] = dict(config)
+    return resolved
 
 
 async def _watch_interrupt(store: Store, session_id: str, client: ClaudeSDKClient) -> None:
@@ -176,6 +198,7 @@ async def run(session_id: str) -> None:
         setting_sources=["user"],
     )
     sdk_options.hooks = gate.hooks()
+    sdk_options.mcp_servers = resolve_mcp_servers(options.mcp_servers, config.project)
 
     seq = int(session.get("seq_head") or 0)
     cost = float(session.get("cost_usd") or 0.0)
