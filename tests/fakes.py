@@ -162,3 +162,6 @@ class FakeStore:
         doc = self.workspaces.get(name)
         if doc and doc.get("lease_session_id") == session_id:
             doc.update(lease_session_id=None, lease_expires=0.0)
+
+    async def list_workspaces(self):
+        return [{"name": k, **v} for k, v in self.workspaces.items()]

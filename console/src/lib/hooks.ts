@@ -9,7 +9,13 @@ import type {
   PollResponse,
   SessionsResponse,
   SessionSummary,
+  SpaceArtifactsResponse,
+  SpaceSummary,
+  SpacesResponse,
+  StoredFile,
   TranscriptEvent,
+  WorkspacesResponse,
+  WorkspaceSummary,
 } from "./types";
 
 /** Ticker on the server's clock (see api.ts) driving countdowns and relative times. */
@@ -52,6 +58,50 @@ export function useSessions(intervalMs = 4000): SessionSummary[] | null {
       .catch(() => {});
   }, intervalMs);
   return sessions;
+}
+
+export function useWorkspaces(intervalMs = 4000): WorkspaceSummary[] | null {
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
+  usePolling(() => {
+    api<WorkspacesResponse>("/api/workspaces")
+      .then((data) => setWorkspaces(data.workspaces))
+      .catch(() => {});
+  }, intervalMs);
+  return workspaces;
+}
+
+export function useArtifactSpaces(intervalMs = 8000): SpaceSummary[] | null {
+  const [spaces, setSpaces] = useState<SpaceSummary[] | null>(null);
+  usePolling(() => {
+    api<SpacesResponse>("/api/artifacts")
+      .then((data) => setSpaces(data.spaces))
+      .catch(() => {});
+  }, intervalMs);
+  return spaces;
+}
+
+export function useSpaceArtifacts(space: string | null, intervalMs = 8000): StoredFile[] | null {
+  const [files, setFiles] = useState<StoredFile[] | null>(null);
+  useEffect(() => {
+    setFiles(null);
+    if (!space) return;
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return;
+      api<SpaceArtifactsResponse>(`/api/artifacts/${space}`)
+        .then((data) => {
+          if (!cancelled) setFiles(data.artifacts);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const timer = setInterval(poll, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [space, intervalMs]);
+  return files;
 }
 
 export function useApprovals(intervalMs = 3000): {

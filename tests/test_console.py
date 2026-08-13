@@ -14,6 +14,42 @@ from syros.options import AgentOptions
 from .fakes import FakeStore
 
 
+class FakeObjects:
+    """Implements syros.console.objects.ObjectStoreProtocol over a name->bytes dict."""
+
+    def __init__(self, workspaces=None, spaces=None):
+        self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
+        self.spaces: dict[str, dict[str, bytes]] = spaces or {}
+
+    @staticmethod
+    def _stats(files):
+        return {"file_count": len(files), "total_size": sum(map(len, files.values())), "updated": None}
+
+    async def workspace_stats(self):
+        return {name: self._stats(files) for name, files in self.workspaces.items()}
+
+    async def workspace_files(self, name):
+        files = self.workspaces.get(name, {})
+        return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
+
+    async def space_stats(self):
+        return {name: self._stats(files) for name, files in self.spaces.items()}
+
+    async def list_artifacts(self, space):
+        files = self.spaces.get(space, {})
+        return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
+
+    async def read_artifact(self, space, name):
+        import mimetypes
+
+        files = self.spaces.get(space, {})
+        if name not in files:
+            raise FileNotFoundError(name)
+        if len(files[name]) > 100:
+            raise ValueError("too large")
+        return files[name], mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+
 @pytest.fixture(autouse=True)
 def no_job_trigger(monkeypatch):
     triggered = []
@@ -200,6 +236,78 @@ async def test_delete_unknown_session():
         await api(FakeStore()).delete("sess_missing")
 
 
+# --- workspaces ---
+
+
+async def test_workspaces_merges_gcs_leases_and_sessions():
+    store = FakeStore()
+    await store.create_session("sess_1", {"workspace": "team"})
+    await store.claim_workspace("team", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("stale", "sess_2", ttl_seconds=-1)  # expired lease
+    objects = FakeObjects(workspaces={"team": {"a.md": b"aa"}, "orphan": {"b.md": b"b"}})
+
+    result = await api(store, objects=objects).workspaces()
+
+    rows = {w["name"]: w for w in result["workspaces"]}
+    assert set(rows) == {"team", "stale", "orphan"}
+    assert rows["team"]["busy"] is True
+    assert rows["team"]["lease_session_id"] == "sess_1"
+    assert rows["team"]["file_count"] == 1
+    assert rows["team"]["total_size"] == 2
+    assert [s["id"] for s in rows["team"]["sessions"]] == ["sess_1"]
+    assert rows["stale"]["busy"] is False
+    assert rows["stale"]["lease_session_id"] is None
+    assert rows["orphan"]["busy"] is False
+    assert rows["orphan"]["sessions"] == []
+
+
+async def test_workspace_files_and_unknown():
+    store = FakeStore()
+    objects = FakeObjects(workspaces={"team": {"b.md": b"bb", "a.md": b"a"}})
+    console = api(store, objects=objects)
+
+    result = await console.workspace_files("team")
+    assert [f["name"] for f in result["files"]] == ["a.md", "b.md"]
+
+    with pytest.raises(NotFound):
+        await console.workspace_files("nope")
+
+    # a leased-but-empty workspace exists
+    await store.claim_workspace("empty", "sess_1", ttl_seconds=60)
+    assert (await console.workspace_files("empty"))["files"] == []
+
+
+# --- artifact spaces ---
+
+
+async def test_artifact_spaces_and_files():
+    objects = FakeObjects(spaces={"reports": {"r.html": b"<h1>hi</h1>", "d.csv": b"1,2"}})
+    console = api(FakeStore(), objects=objects)
+
+    result = await console.artifact_spaces()
+    assert result["spaces"] == [
+        {"name": "reports", "file_count": 2, "total_size": 14, "updated": None}
+    ]
+
+    listing = await console.artifacts("reports")
+    assert [f["name"] for f in listing["artifacts"]] == ["d.csv", "r.html"]
+
+    data, content_type = await console.artifact_file("reports", "r.html")
+    assert data == b"<h1>hi</h1>"
+    assert content_type == "text/html"
+
+    with pytest.raises(NotFound):
+        await console.artifact_file("reports", "missing.html")
+
+
+async def test_artifact_file_too_large():
+    from syros.console.api import TooLarge
+
+    objects = FakeObjects(spaces={"reports": {"big.html": b"x" * 200}})
+    with pytest.raises(TooLarge):
+        await api(FakeStore(), objects=objects).artifact_file("reports", "big.html")
+
+
 # --- http smoke ---
 
 
@@ -236,6 +344,60 @@ async def test_http_smoke():
 
         status, body = await asyncio.to_thread(fetch, "GET", "/api/approvals")
         assert status == 200 and json.loads(body)["approvals"] == []
+    finally:
+        server.shutdown()
+
+
+async def test_http_artifact_and_workspace_routes():
+    from syros.console.server import create_server
+
+    store = FakeStore()
+    objects = FakeObjects(
+        workspaces={"team": {"notes.md": b"nn"}},
+        spaces={"reports": {"sub/r.html": b"<h1>hi</h1>", "big.bin": b"x" * 200}},
+    )
+    server = create_server(
+        api(store, objects=objects), asyncio.get_running_loop(), "127.0.0.1", 0
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    def fetch(path):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", path)
+        response = conn.getresponse()
+        return response.status, response.read(), dict(response.getheaders())
+
+    try:
+        status, body, _ = await asyncio.to_thread(fetch, "/api/workspaces")
+        assert status == 200
+        assert [w["name"] for w in json.loads(body)["workspaces"]] == ["team"]
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/workspaces/team/files")
+        assert status == 200
+        assert [f["name"] for f in json.loads(body)["files"]] == ["notes.md"]
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/artifacts")
+        assert status == 200
+        assert [s["name"] for s in json.loads(body)["spaces"]] == ["reports"]
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/artifacts/reports")
+        assert status == 200
+        assert [f["name"] for f in json.loads(body)["artifacts"]] == ["big.bin", "sub/r.html"]
+
+        # raw download: name (with a slash) rides the query string
+        status, body, headers = await asyncio.to_thread(
+            fetch, "/api/artifacts/reports/file?name=sub%2Fr.html"
+        )
+        assert (status, body) == (200, b"<h1>hi</h1>")
+        assert headers["Content-Type"] == "text/html"
+        assert headers["X-Content-Type-Options"] == "nosniff"
+
+        status, _, _ = await asyncio.to_thread(fetch, "/api/artifacts/reports/file?name=nope")
+        assert status == 404
+
+        status, _, _ = await asyncio.to_thread(fetch, "/api/artifacts/reports/file?name=big.bin")
+        assert status == 413
     finally:
         server.shutdown()
 

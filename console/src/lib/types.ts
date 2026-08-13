@@ -81,3 +81,54 @@ export interface ApprovalsResponse {
   now: number;
   approvals: ApprovalWithSession[];
 }
+
+export interface WorkspaceSessionRef {
+  id: string;
+  state: SessionState;
+  updated_at: number | null;
+}
+
+export interface WorkspaceSummary {
+  name: string;
+  busy: boolean;
+  lease_session_id: string | null;
+  file_count: number;
+  total_size: number;
+  updated: number | null;
+  sessions: WorkspaceSessionRef[];
+}
+
+export interface WorkspacesResponse {
+  now: number;
+  workspaces: WorkspaceSummary[];
+}
+
+export interface StoredFile {
+  name: string;
+  size: number;
+  updated: number | null;
+}
+
+export interface WorkspaceFilesResponse {
+  now: number;
+  name: string;
+  files: StoredFile[];
+}
+
+export interface SpaceSummary {
+  name: string;
+  file_count: number;
+  total_size: number;
+  updated: number | null;
+}
+
+export interface SpacesResponse {
+  now: number;
+  spaces: SpaceSummary[];
+}
+
+export interface SpaceArtifactsResponse {
+  now: number;
+  space: string;
+  artifacts: StoredFile[];
+}
