@@ -66,6 +66,12 @@ variable "console_name" {
   default = "syros-console"
 }
 
+variable "console_invokers" {
+  description = "Principals allowed to open the console, e.g. [\"user:me@example.com\", \"group:oncall@example.com\"]"
+  type        = list(string)
+  default     = []
+}
+
 variable "vpc_connector" {
   description = "Optional Serverless VPC connector for egress lockdown; null = default egress"
   type        = string

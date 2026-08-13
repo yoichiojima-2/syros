@@ -233,6 +233,26 @@ resource "google_cloud_run_v2_job_iam_member" "console_runs_job" {
   member   = "serviceAccount:${google_service_account.console.email}"
 }
 
+# The workspaces and artifacts pages list and preview objects in the session
+# bucket, and workspace files are editable from the console (edit in place,
+# upload, delete). objectUser rather than the runner's objectAdmin: the console
+# needs to read, write and delete objects, never to set IAM policy on them.
+resource "google_storage_bucket_iam_member" "console_bucket" {
+  bucket = google_storage_bucket.sessions.name
+  role   = "roles/storage.objectUser"
+  member = "serviceAccount:${google_service_account.console.email}"
+}
+
+# Who may open the console. No allUsers here by design: reach it with
+# `gcloud run services proxy`, which authenticates as the caller.
+resource "google_cloud_run_v2_service_iam_member" "console_invokers" {
+  for_each = toset(var.console_invokers)
+  name     = google_cloud_run_v2_service.console.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = each.value
+}
+
 resource "google_cloud_run_v2_service" "console" {
   name                = var.console_name
   location            = var.region
@@ -259,6 +279,16 @@ resource "google_cloud_run_v2_service" "console" {
       env {
         name  = "SYROS_JOB"
         value = var.job_name
+      }
+      # Prompting an idle session re-triggers the runner job, which is looked up
+      # by (project, region, job) — the default region is only right by accident.
+      env {
+        name  = "SYROS_REGION"
+        value = var.region
+      }
+      env {
+        name  = "SYROS_BUCKET"
+        value = google_storage_bucket.sessions.name
       }
     }
   }
