@@ -227,6 +227,29 @@ require a workspace admin to approve the app the OAuth flow registers. Rolling o
 the new image before creating connector-bearing sessions — older runner images reject the
 new option field.
 
+## Skills
+
+Sessions can carry [Agent Skills](https://code.claude.com/docs/en/skills) — a skill is a
+directory (`SKILL.md` plus resources) under `skills/{name}/` in the same bucket the
+sessions use. The runner restores the whole prefix into the sandbox HOME's
+`.claude/skills/` at run start, so `claude_agent_sdk` discovers every skill in every
+session — no per-session opt-in, and nothing new to deploy. The prefix is the single
+source of truth: checkpoints never write skills back, so a skill deleted from the console
+stays deleted.
+
+```
+syros skills                         # list skills in the bucket
+syros skills files pdf               # list one skill's files
+syros skills cat pdf SKILL.md        # print one skill file
+syros skills sync                    # seed skills/ from the official anthropics/skills repo
+```
+
+`sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
+tarball and copies each skill into the bucket — nothing is vendored, and the copies are
+editable snapshots: re-syncing overwrites official files but never touches skills (or
+files) the tarball doesn't carry. The console has a Skills view with the same surface as
+workspaces — browse a skill, edit a file in place, upload, or delete the skill.
+
 ## Analysis
 
 Firestore holds all the state but is a poor analysis surface. `syros export` snapshots the
@@ -276,7 +299,7 @@ AgentOptions(
 which is what makes an unattended audit a schedule rather than a person:
 
 ```
-syros schedules create nightly-audit --cron "0 9 * * *" --tz Asia/Tokyo \
+syros deployments create nightly-audit --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "Query the syros BigQuery tables: yesterday's spend by model, any
             denied or killed tool calls, approvals that timed out. Write
             findings.md to the audit artifact space." \
