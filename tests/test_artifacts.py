@@ -25,6 +25,12 @@ class FakeBlob:
     def exists(self):
         return self.name in self.bucket.objects
 
+    def reload(self):
+        pass
+
+    def download_as_bytes(self):
+        return self.bucket.objects[self.name]
+
 
 class FakeListing(list):
     def __init__(self, blobs, prefixes):
@@ -127,6 +133,22 @@ def test_checkpoint_excludes_mounted_spaces(bucket, tmp_path):
 
     assert workspace.checkpoint("p", "b", "sessions/s/state/ws/", ws, ("artifacts/",)) == 1
     assert set(bucket.objects) == {"sessions/s/state/ws/notes.md"}
+
+
+def test_read_artifact(bucket):
+    bucket.objects["artifacts/team/sub/report.html"] = b"<h1>hi</h1>"
+
+    data, content_type = artifacts.read_artifact("p", "b", "team", "sub/report.html", max_bytes=100)
+    assert data == b"<h1>hi</h1>"
+    assert content_type == "text/html"
+
+    with pytest.raises(FileNotFoundError):
+        artifacts.read_artifact("p", "b", "team", "missing.html", max_bytes=100)
+    with pytest.raises(ValueError):
+        artifacts.read_artifact("p", "b", "team", "sub/report.html", max_bytes=2)
+    for bad in ("", "/abs", "a/../b", ".."):
+        with pytest.raises(OptionsError):
+            artifacts.read_artifact("p", "b", "team", bad, max_bytes=100)
 
 
 def test_mount_prompt_lists_spaces_with_modes():

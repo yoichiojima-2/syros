@@ -9,6 +9,7 @@ purpose — callers wrap in asyncio.to_thread (same contract as workspace.py).
 
 from __future__ import annotations
 
+import mimetypes
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -50,6 +51,11 @@ def mount_prompt(spaces: dict[str, str]) -> str | None:
         " is discarded when the session ends. Write deliverables into a"
         " read-write artifact space to publish them."
     )
+    lines.append(
+        "Published files are visible to humans in the syros console and to other"
+        " sessions that mount the same space — prefer self-contained HTML (inline"
+        " CSS/JS, no external fetches) for reports and dashboards."
+    )
     return "\n".join(lines)
 
 
@@ -79,6 +85,23 @@ def list_artifacts(project: str, bucket_name: str, space: str) -> list[Artifact]
         for blob in _bucket(project, bucket_name).list_blobs(prefix=prefix)
         if blob.name != prefix
     ]
+
+
+def read_artifact(
+    project: str, bucket_name: str, space: str, name: str, *, max_bytes: int
+) -> tuple[bytes, str]:
+    """Download one artifact: (data, content type). Raises FileNotFoundError for
+    a missing blob and ValueError when it exceeds max_bytes (download instead)."""
+    if not name or name.startswith("/") or ".." in name.split("/"):
+        raise OptionsError(f"invalid artifact name {name!r}")
+    prefix = space_prefix(space)
+    blob = _bucket(project, bucket_name).blob(prefix + name)
+    if not blob.exists():
+        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{name}")
+    blob.reload()
+    if (blob.size or 0) > max_bytes:
+        raise ValueError(f"{name} is {blob.size} bytes (limit {max_bytes})")
+    return blob.download_as_bytes(), mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
 def push(project: str, bucket_name: str, space: str, paths: list[Path]) -> int:

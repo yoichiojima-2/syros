@@ -86,6 +86,7 @@ class StoreProtocol(Protocol):
     async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]: ...
     async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool: ...
     async def release_workspace(self, name: str, session_id: str) -> None: ...
+    async def list_workspaces(self) -> list[dict[str, Any]]: ...
 
 
 class Store:
@@ -389,3 +390,9 @@ class Store:
             )
 
         await _release(transaction)
+
+    async def list_workspaces(self) -> list[dict[str, Any]]:
+        """Every workspace lease doc, whether or not the lease is live."""
+        return [
+            {"name": s.id, **s.to_dict()} async for s in self._db.collection("workspaces").stream()
+        ]

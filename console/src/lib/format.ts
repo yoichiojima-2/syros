@@ -22,6 +22,12 @@ export function compact(value: unknown, max: number): string {
   return text.length > max ? text.slice(0, max) + "…" : text;
 }
 
+export function bytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function pretty(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }

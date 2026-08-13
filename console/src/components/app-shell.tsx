@@ -3,7 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartColumn, LayoutDashboard, ListTree, ShieldCheck } from "lucide-react";
+import {
+  ChartColumn,
+  FolderGit2,
+  LayoutDashboard,
+  ListTree,
+  Package,
+  ShieldCheck,
+} from "lucide-react";
 import { useOnline } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -13,6 +20,8 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: ChartColumn },
   { href: "/sessions", label: "Sessions", icon: ListTree },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
+  { href: "/workspaces", label: "Workspaces", icon: FolderGit2 },
+  { href: "/artifacts", label: "Artifacts", icon: Package },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
