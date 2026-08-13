@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol, runtime_checkable
 
-from .. import artifacts, workspace
+from .. import artifacts, skills, workspace
 
 # One artifact preview per request; anything bigger is a download, not a view.
 # Doubles as the ceiling on a workspace file the console will open for editing.
@@ -27,6 +27,13 @@ class ObjectStoreProtocol(Protocol):
     async def space_stats(self) -> dict[str, dict[str, Any]]: ...
     async def list_artifacts(self, space: str) -> list[dict[str, Any]]: ...
     async def read_artifact(self, space: str, name: str) -> tuple[bytes, str]: ...
+    async def skill_stats(self) -> dict[str, dict[str, Any]]: ...
+    async def skill_files(self, name: str) -> list[dict[str, Any]]: ...
+    async def read_skill_file(self, name: str, file: str) -> tuple[bytes, str]: ...
+    async def write_skill_file(self, name: str, file: str, data: bytes) -> None: ...
+    async def delete_skill_file(self, name: str, file: str) -> None: ...
+    async def delete_skill(self, name: str) -> int: ...
+    async def sync_official_skills(self) -> dict[str, Any]: ...
 
 
 def _stats(blobs, prefix: str) -> dict[str, dict[str, Any]]:
@@ -100,4 +107,35 @@ class GcsObjects:
             space,
             name,
             max_bytes=MAX_PREVIEW_BYTES,
+        )
+
+    async def skill_stats(self) -> dict[str, dict[str, Any]]:
+        return await asyncio.to_thread(lambda: _stats(self._list("skills/"), "skills/"))
+
+    async def skill_files(self, name: str) -> list[dict[str, Any]]:
+        prefix = skills.skill_prefix(name)
+        return await asyncio.to_thread(lambda: _files(self._list(prefix), prefix))
+
+    async def read_skill_file(self, name: str, file: str) -> tuple[bytes, str]:
+        return await asyncio.to_thread(
+            skills.read_file,
+            self._project,
+            self._bucket,
+            name,
+            file,
+            max_bytes=MAX_PREVIEW_BYTES,
+        )
+
+    async def write_skill_file(self, name: str, file: str, data: bytes) -> None:
+        await asyncio.to_thread(skills.write_file, self._project, self._bucket, name, file, data)
+
+    async def delete_skill_file(self, name: str, file: str) -> None:
+        await asyncio.to_thread(skills.delete_file, self._project, self._bucket, name, file)
+
+    async def delete_skill(self, name: str) -> int:
+        return await asyncio.to_thread(skills.delete_skill, self._project, self._bucket, name)
+
+    async def sync_official_skills(self) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            lambda: skills.sync_official(self._project, self._bucket, max_bytes=MAX_PREVIEW_BYTES)
         )

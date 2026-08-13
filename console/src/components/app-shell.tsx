@@ -11,6 +11,7 @@ import {
   ListTree,
   Package,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 import { useOnline } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/schedules", label: "Schedules", icon: CalendarClock },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/workspaces", label: "Workspaces", icon: FolderGit2 },
+  { href: "/skills", label: "Skills", icon: Sparkles },
   { href: "/artifacts", label: "Artifacts", icon: Package },
 ];
 

@@ -18,6 +18,8 @@ syros artifacts <space> push <path...>  upload local files/dirs into a space
 syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
+syros skills                            list skills in the bucket
+syros skills sync                       seed skills/ from the official anthropics/skills repo
 syros console                           serve the web console (localhost or Cloud Run)
 syros export                            snapshot Firestore into BigQuery for analysis
 """
@@ -265,6 +267,26 @@ async def _artifacts(args) -> None:
     print(f"published {count} file(s) from {session_id} to {args.space}")
 
 
+async def _skills(args) -> None:
+    from . import skills
+    from .console.objects import MAX_PREVIEW_BYTES, GcsObjects
+
+    project = _project(args)
+    bucket = env.default_bucket(args.bucket, project)
+    if args.action == "sync":
+        summary = await asyncio.to_thread(
+            skills.sync_official, project, bucket, max_bytes=MAX_PREVIEW_BYTES
+        )
+        print(f"synced {summary['files']} file(s) across {len(summary['skills'])} skill(s)")
+        for skipped in summary["skipped"]:
+            print(f"    skipped {skipped['skill']}/{skipped['file']} ({skipped['size']} bytes)")
+        return
+    stats = await GcsObjects(project, bucket).skill_stats()
+    for name in sorted(stats):
+        stat = stats[name]
+        print(f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']} bytes")
+
+
 async def _export(args) -> None:
     from .analytics import collect, load
 
@@ -349,6 +371,11 @@ def main() -> None:
     artifacts.add_argument("args", nargs="*")
     artifacts.add_argument("--bucket", default=None)
     artifacts.set_defaults(func=_artifacts)
+
+    skills = sub.add_parser("skills")
+    skills.add_argument("action", nargs="?", default="list", choices=["list", "sync"])
+    skills.add_argument("--bucket", default=None)
+    skills.set_defaults(func=_skills)
 
     export = sub.add_parser("export")
     export.add_argument("--dataset", default=os.environ.get("SYROS_DATASET") or "syros")

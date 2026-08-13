@@ -109,6 +109,40 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         ("api", "workspaces", None, "file", "delete"),
         lambda api, body, query, name: api.delete_workspace_file(name, str(body.get("name") or "")),
     ),
+    ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
+    ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
+    (
+        "GET",
+        ("api", "skills", None, "files"),
+        lambda api, body, query, name: api.skill_files(name),
+    ),
+    # Skill file names may contain "/", so — as with workspaces — the file
+    # rides the query string on GET and the JSON body on POST, never a segment.
+    (
+        "GET",
+        ("api", "skills", None, "file"),
+        lambda api, body, query, name: api.skill_file(name, (query.get("name") or [""])[0]),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "file"),
+        lambda api, body, query, name: api.write_skill_file(
+            name,
+            str(body.get("name") or ""),
+            str(body.get("content") or ""),
+            str(body.get("encoding") or "utf-8"),
+        ),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "file", "delete"),
+        lambda api, body, query, name: api.delete_skill_file(name, str(body.get("name") or "")),
+    ),
+    (
+        "POST",
+        ("api", "skills", None, "delete"),
+        lambda api, body, query, name: api.delete_skill(name),
+    ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
     ("GET", ("api", "artifacts", None), lambda api, body, query, space: api.artifacts(space)),
     # The artifact name rides the query string: names may contain "/", which
