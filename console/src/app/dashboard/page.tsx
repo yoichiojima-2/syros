@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Bar,
   BarChart,
@@ -18,7 +19,14 @@ import { useSessions } from "@/lib/hooks";
 import { ACTIVE_STATES, type SessionState, type SessionSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const DAYS = 14;
+type RangeKey = "24h" | "7d" | "14d";
+
+const RANGES: { key: RangeKey; label: string; days?: number }[] = [
+  { key: "24h", label: "24h" },
+  { key: "7d", label: "7d", days: 7 },
+  { key: "14d", label: "14d", days: 14 },
+];
+
 const STATE_ORDER: SessionState[] = [
   "running",
   "starting",
@@ -29,19 +37,45 @@ const STATE_ORDER: SessionState[] = [
   "unknown",
 ];
 
-interface DayBucket {
+interface Bucket {
   label: string;
   count: number;
   cost: number;
 }
 
-// Bucket sessions into the last DAYS calendar days (browser-local), oldest first.
-function byDay(sessions: SessionSummary[]): DayBucket[] {
-  const buckets = new Map<string, DayBucket>();
+// Bucket sessions into the selected range (browser-local), oldest first:
+// hourly buckets for the last 24 hours, or calendar-day buckets otherwise.
+function bucketize(sessions: SessionSummary[], range: RangeKey): Bucket[] {
+  const buckets = new Map<string, Bucket>();
+  const days = RANGES.find((r) => r.key === range)?.days;
+  if (days === undefined) {
+    const hour = new Date();
+    hour.setMinutes(0, 0, 0);
+    hour.setHours(hour.getHours() - 23);
+    for (let i = 0; i < 24; i++) {
+      buckets.set(hour.toISOString(), {
+        label: `${String(hour.getHours()).padStart(2, "0")}:00`,
+        count: 0,
+        cost: 0,
+      });
+      hour.setHours(hour.getHours() + 1);
+    }
+    for (const s of sessions) {
+      if (!s.created_at) continue;
+      const t = new Date(s.created_at * 1000);
+      t.setMinutes(0, 0, 0);
+      const bucket = buckets.get(t.toISOString());
+      if (bucket) {
+        bucket.count += 1;
+        bucket.cost += s.cost_usd;
+      }
+    }
+    return [...buckets.values()];
+  }
   const day = new Date();
   day.setHours(0, 0, 0, 0);
-  day.setDate(day.getDate() - (DAYS - 1));
-  for (let i = 0; i < DAYS; i++) {
+  day.setDate(day.getDate() - (days - 1));
+  for (let i = 0; i < days; i++) {
     buckets.set(day.toDateString(), {
       label: `${day.getMonth() + 1}/${day.getDate()}`,
       count: 0,
@@ -62,12 +96,14 @@ function byDay(sessions: SessionSummary[]): DayBucket[] {
 
 export default function DashboardPage() {
   const sessions = useSessions();
+  const [range, setRange] = useState<RangeKey>("24h");
+  const rangeLabel = range === "24h" ? "24 hours" : `${RANGES.find((r) => r.key === range)?.days} days`;
 
   const active = sessions?.filter((s) => ACTIVE_STATES.has(s.state)).length ?? 0;
   const totalCost = sessions?.reduce((sum, s) => sum + s.cost_usd, 0);
   const billed = sessions?.filter((s) => s.cost_usd > 0).length || 0;
   const events = sessions?.reduce((sum, s) => sum + s.seq_head, 0);
-  const days = sessions ? byDay(sessions) : null;
+  const days = sessions ? bucketize(sessions, range) : null;
   const scope = `across the ${sessions?.length ?? 0} most recent sessions`;
 
   return (
@@ -98,21 +134,39 @@ export default function DashboardPage() {
           sub={scope}
         />
       </div>
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-0.5 w-fit">
+        {RANGES.map((r) => (
+          <button
+            key={r.key}
+            onClick={() => setRange(r.key)}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              range === r.key
+                ? "bg-secondary text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <DailyChart
-          title="Sessions per day"
-          description={`Started in the last ${DAYS} days, ${scope}`}
+          title={range === "24h" ? "Sessions per hour" : "Sessions per day"}
+          description={`Started in the last ${rangeLabel}, ${scope}`}
           data={days?.map((d) => ({ label: d.label, value: d.count })) ?? null}
           tickFormat={(v) => String(v)}
           format={(v) => `${v} session${v === 1 ? "" : "s"}`}
           integer
+          range={range}
         />
         <DailyChart
-          title="Spend per day"
-          description={`By session start date, ${scope}`}
+          title={range === "24h" ? "Spend per hour" : "Spend per day"}
+          description={`By session start time, ${scope}`}
           data={days?.map((d) => ({ label: d.label, value: d.cost })) ?? null}
           tickFormat={(v) => `$${v.toFixed(2)}`}
           format={cost}
+          range={range}
         />
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -139,6 +193,7 @@ function DailyChart({
   tickFormat,
   format,
   integer,
+  range,
 }: {
   title: string;
   description: string;
@@ -146,6 +201,7 @@ function DailyChart({
   tickFormat: (v: number) => string;
   format: (v: number) => string;
   integer?: boolean;
+  range: RangeKey;
 }) {
   const empty = data !== null && data.every((d) => d.value === 0);
   return (
@@ -159,7 +215,7 @@ function DailyChart({
           <Skeleton className="h-48 w-full" />
         ) : empty ? (
           <p className="py-16 text-center text-[13px] text-muted-foreground">
-            Nothing in the last {DAYS} days.
+            Nothing in the last {range === "24h" ? "24 hours" : range === "7d" ? "7 days" : "14 days"}.
           </p>
         ) : (
           <ResponsiveContainer width="100%" height={192}>
@@ -170,7 +226,7 @@ function DailyChart({
                 tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}
                 axisLine={{ stroke: "var(--border)" }}
                 tickLine={false}
-                interval={1}
+                interval={range === "24h" ? 3 : range === "7d" ? 0 : 1}
               />
               <YAxis
                 allowDecimals={!integer}
