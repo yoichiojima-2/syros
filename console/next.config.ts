@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
-// Production builds are a static export committed into the Python package
-// (src/syros/console/static/) so `pip install syros` and the Docker image need
-// no Node toolchain. `next dev` instead proxies /api to a locally running
+// Production builds are a static export emitted into the Python package
+// (src/syros/console/static/, gitignored — run `make console` before building
+// the Docker image or a wheel). `next dev` instead proxies /api to a locally running
 // `syros console` (rewrites don't exist in a static export).
 const nextConfig: NextConfig =
   process.env.NODE_ENV === "development"
