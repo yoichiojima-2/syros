@@ -28,23 +28,29 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  checks:
+    name: Lint and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pytest tests/ -q
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format
+        run: uv run ruff format --check .
+      - name: pytest
+        run: uv run pytest tests/ -q
 
-  check-gcp-secrets:
+  gcp-secrets:
+    name: Check GCP secrets
     runs-on: ubuntu-latest
     outputs:
       configured: ${{ steps.check.outputs.configured }}
     steps:
       - id: check
+        name: Probe repo secrets
         env:
           WIP: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           SA: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -57,8 +63,9 @@ jobs:
           fi
 
   deploy:
-    needs: [test, check-gcp-secrets]
-    if: needs.check-gcp-secrets.outputs.configured == 'true'
+    name: Build and deploy
+    needs: [checks, gcp-secrets]
+    if: needs.gcp-secrets.outputs.configured == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -73,7 +80,8 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
       - name: Build and push image
         run: |
@@ -85,13 +93,14 @@ jobs:
 
       # Deploy by digest: Cloud Run resolves tags at deploy time, not per
       # execution, so pinning the digest is what actually rolls the release.
-      - name: Deploy Cloud Run job and console service
+      - name: Roll Cloud Run job and console service
         run: |
           gcloud run jobs update "$JOB" --image "$DIGEST" --region "$REGION"
           gcloud run services update "$SERVICE" --image "$DIGEST" --region "$REGION"
 
   github-release:
-    needs: test
+    name: Publish GitHub Release
+    needs: checks
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
