@@ -37,7 +37,8 @@ def test_runner_env_defaults(monkeypatch):
     assert config.project == "proj"
     assert config.bucket == "proj-syros"
     assert config.stay_alive == 60.0
-    assert config.lease_ttl == 3600.0
+    assert config.lease_ttl == 180.0
+    assert config.heartbeat == 60.0
     assert config.work_dir == Path("/work")
 
 

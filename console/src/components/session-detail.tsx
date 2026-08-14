@@ -12,6 +12,7 @@ import { Composer } from "@/components/composer";
 import { ApprovalCard } from "@/components/approval-card";
 import { ArtifactPanel } from "@/components/artifact-panel";
 import { deriveArtifacts } from "@/lib/artifacts";
+import { eventMessage } from "@/lib/types";
 import { useAction, useNow, useSessionPoll } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cost } from "@/lib/format";
@@ -34,7 +35,7 @@ export function SessionDetail({ sid }: { sid: string }) {
     setPending((prev) => {
       let next = prev;
       for (const event of fresh) {
-        const message = event.message;
+        const message = eventMessage(event);
         if (message?.kind !== "user" || typeof message.content !== "string") continue;
         const i = next.indexOf(message.content);
         if (i !== -1) next = [...next.slice(0, i), ...next.slice(i + 1)];
@@ -45,7 +46,12 @@ export function SessionDetail({ sid }: { sid: string }) {
 
   // The agent owes a response while a prompt waits in the inbox or a live
   // turn hasn't reached its result row yet — that's when the typing dots show.
-  const lastKind = events.length ? events[events.length - 1].message?.kind : undefined;
+  // Last *message* kind: journal-only records (audit rows, lifecycle) at the
+  // tail must not hide a turn's result from the typing indicator.
+  const lastKind = events.reduce<string | undefined>(
+    (kind, event) => eventMessage(event)?.kind ?? kind,
+    undefined,
+  );
   const working =
     !dead &&
     (pending.length > 0 ||

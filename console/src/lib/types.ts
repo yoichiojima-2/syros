@@ -26,7 +26,9 @@ export interface SessionSummary {
   disabled: boolean;
   stop_reason: string | null;
   cost_usd: number;
-  seq_head: number;
+  seq_head: number; // advisory event count of the active branch
+  active_branch: string;
+  branches: string[];
   created_at: number | null;
   updated_at: number | null;
   model: string | null;
@@ -139,9 +141,31 @@ export interface TranscriptMessage {
   duration_ms?: number | null;
 }
 
+// One journal record — mirrors the envelope in src/syros/journal.py. The
+// transcript is a tree: uuid/parent_uuid chain records within a branch, and
+// only one branch (the session's active one) streams to the browser.
+export type JournalType = "message" | "prompt" | "tool_call" | "approval" | "lifecycle";
+
 export interface TranscriptEvent {
+  uuid?: string;
+  parent_uuid?: string | null;
+  branch?: string;
   seq: number;
-  message: TranscriptMessage;
+  type?: JournalType;
+  ts?: number | null;
+  context?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
+  message?: TranscriptMessage; // pre-journal event docs only
+}
+
+/** The message a record renders as, or null for journal-only records
+ *  (tool_call, approval, lifecycle) — mirrors journal.event_message. */
+export function eventMessage(event: TranscriptEvent): TranscriptMessage | null {
+  if (event.message) return event.message;
+  if (event.type === "message") return (event.payload || {}) as TranscriptMessage;
+  if (event.type === "prompt")
+    return { kind: "user", content: String((event.payload as { text?: string })?.text ?? "") };
+  return null;
 }
 
 export interface SessionsResponse {

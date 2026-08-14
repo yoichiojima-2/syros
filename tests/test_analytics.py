@@ -13,18 +13,31 @@ from syros.analytics import (
     session_row,
     tool_call_row,
 )
-from .fakes import FakeStore
+from .fakes import FakeStore, append_message
 
 
 async def _populated_store() -> FakeStore:
     store = FakeStore()
     await store.create_session("sess_a", {"model": "claude-sonnet-5"}, created_by="alice")
     await store.update_session("sess_a", status="idle", cost_usd=0.42, seq_head=2)
-    await store.append_event("sess_a", 1, {"kind": "assistant", "content": [{"type": "text"}]})
-    await store.append_event("sess_a", 2, {"kind": "result", "total_cost_usd": 0.42})
-    await store.record_tool_call(
+    await append_message(store, "sess_a", 1, {"kind": "assistant", "content": [{"type": "text"}]})
+    await append_message(store, "sess_a", 2, {"kind": "result", "total_cost_usd": 0.42})
+    from syros.journal import make_event
+
+    await store.append_event(
         "sess_a",
-        {"tool_name": "Bash", "input": {"command": "ls"}, "call_hash": "h1", "decision": "allowed"},
+        make_event(
+            "tool_call",
+            {
+                "tool_name": "Bash",
+                "input": {"command": "ls"},
+                "call_hash": "h1",
+                "decision": "allowed",
+            },
+            parent_uuid=None,
+            branch="main",
+            seq=3,
+        ),
     )
     await store.request_approval("sess_a", "h1", "Bash", {"command": "ls"})
     await store.decide_approval("sess_a", "h1", allow=True, decided_by="alice")
@@ -43,8 +56,10 @@ async def _populated_store() -> FakeStore:
 async def test_collect_flattens_every_collection():
     tables = await collect(await _populated_store())
     assert {r["session_id"] for r in tables["sessions"]} == {"sess_a", "sess_b"}
-    assert [r["seq"] for r in tables["events"]] == [1, 2]
+    assert [r["seq"] for r in tables["events"]] == [1, 2, 3]
     assert tables["events"][1]["kind"] == "result"
+    assert tables["events"][2]["type"] == "tool_call"
+    assert tables["events"][2]["kind"] is None
     assert tables["tool_calls"][0]["tool_name"] == "Bash"
     assert tables["approvals"][0]["status"] == "allow"
     assert all(r["session_id"] == "sess_a" for r in tables["events"])
@@ -76,7 +91,7 @@ async def test_collect_pages_through_long_event_feeds():
     store = FakeStore()
     await store.create_session("sess_a", {})
     for seq in range(1, 8):
-        await store.append_event("sess_a", seq, {"kind": "assistant"})
+        await append_message(store, "sess_a", seq, {"kind": "assistant"})
     tables = await collect(store, page_size=3)
     assert [r["seq"] for r in tables["events"]] == list(range(1, 8))
 

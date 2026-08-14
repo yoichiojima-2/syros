@@ -139,7 +139,7 @@ async def test_tick_skips_while_previous_run_active():
     first = await deployments.tick(OPTS, store=store, now=now + 400)
     sid = first["fired"][0]["session_id"]
     # the run took the lease and is still going
-    store.sessions[sid].update(status="running", lease_expires=now + 10_000)
+    store.sessions[sid]["runtime"].update(status="running", lease_expires=now + 10_000)
     result = await deployments.tick(OPTS, store=store, now=now + 800)
     assert result["fired"] == []
     assert result["skipped"] == [{"deployment": "nightly", "session_id": sid}]
@@ -157,9 +157,9 @@ async def test_starting_run_blocks_only_within_grace():
     first = await deployments.tick(OPTS, store=store, now=now + 400)
     sid = first["fired"][0]["session_id"]
     # launch marked it "starting"; the lease is never taken (job never came up)
-    assert store.sessions[sid]["status"] == "starting"
+    assert store.sessions[sid]["runtime"]["status"] == "starting"
     # still inside the start grace at the next due slot -> skip
-    store.sessions[sid]["triggered_at"] = now + 800 - 10
+    store.sessions[sid]["runtime"]["triggered_at"] = now + 800 - 10
     within = await deployments.tick(OPTS, store=store, now=now + 800)
     assert within["skipped"] and not within["fired"]
     # grace lapsed: the job never came up, so the deployment fires again

@@ -9,6 +9,18 @@ from .fakes import FakeStore
 SID = "sess_run"
 
 
+def feed(store, sid=SID):
+    """The session's journal records in seq order."""
+    return sorted(store.events.get(sid, {}).values(), key=lambda e: e["seq"])
+
+
+def messages(store, sid=SID):
+    """Only the records that render as messages (message + prompt), as docs."""
+    from syros.journal import event_message
+
+    return [doc for e in feed(store, sid) if (doc := event_message(e)) is not None]
+
+
 class FakeClient:
     def __init__(self, options):
         self.options = options
@@ -108,20 +120,36 @@ async def test_runner_full_turn(env, store, fake_harness):
     # skills mounted into HOME are only visible with user settings enabled
     assert client.options.setting_sources == ["user"]
 
-    # thinking_tokens progress events are dropped; everything else is mirrored
-    kinds = [e["message"]["kind"] for e in store.events[SID]]
-    assert kinds == ["user", "system", "assistant", "result"]
-    assert store.events[SID][0]["message"]["content"] == "do the thing"
-    assert store.events[SID][1]["message"]["subtype"] == "init"
-    assert [e["seq"] for e in store.events[SID]] == [1, 2, 3, 4]
+    # thinking_tokens progress events are dropped; everything else is journaled
+    events = feed(store)
+    assert [e["type"] for e in events] == [
+        "lifecycle",  # claimed
+        "prompt",
+        "message",  # init
+        "message",  # assistant
+        "message",  # result
+        "lifecycle",  # released
+    ]
+    assert [m["kind"] for m in messages(store)] == ["user", "system", "assistant", "result"]
+    assert messages(store)[0]["content"] == "do the thing"
+    assert messages(store)[1]["subtype"] == "init"
+    assert [e["seq"] for e in events] == [1, 2, 3, 4, 5, 6]
+    # the tree: each record chains to the previous one on the branch
+    assert [e["parent_uuid"] for e in events] == [None] + [e["uuid"] for e in events[:-1]]
+    assert all(e["branch"] == "main" for e in events)
+    # context snapshots ride on runner-emitted records
+    assert events[1]["context"]["model"] == "m"
+    assert events[1]["context"]["lease_id"]
 
     session = await store.get_session(SID)
-    assert session["status"] == "idle"
-    assert session["stop_reason"] == "success"
-    assert session["seq_head"] == 4
+    assert session["runtime"]["status"] == "idle"
+    assert session["runtime"]["stop_reason"] == "success"
+    assert session["seq_head"] == 6
+    assert session["tip_uuid"] == events[-1]["uuid"]
     assert session["cost_usd"] == 0.25
     assert session["claude_session_id"] == "claude-uuid-1"
-    assert session["lease_expires"] == 0.0
+    assert session["branches"]["main"]["claude_session_id"] == "claude-uuid-1"
+    assert session["runtime"]["lease_expires"] == 0.0
 
 
 async def test_runner_runs_queued_prompts_as_separate_turns(env, store, fake_harness):
@@ -135,14 +163,15 @@ async def test_runner_runs_queued_prompts_as_separate_turns(env, store, fake_har
     # never glued into one mega-prompt: each prompt gets its own query...
     assert client.prompts == ["first", "second"]
     # ...and the feed interleaves each prompt with its own turn
-    kinds = [e["message"]["kind"] for e in store.events[SID]]
-    assert kinds == ["user", "system", "assistant", "result"] * 2
-    assert store.events[SID][0]["message"]["content"] == "first"
-    assert store.events[SID][4]["message"]["content"] == "second"
+    docs = messages(store)
+    assert [m["kind"] for m in docs] == ["user", "system", "assistant", "result"] * 2
+    assert docs[0]["content"] == "first"
+    assert docs[4]["content"] == "second"
 
     session = await store.get_session(SID)
     assert session["cost_usd"] == 0.5
-    assert session["seq_head"] == 8
+    # claimed + 2×(prompt + 3 messages) + released
+    assert session["seq_head"] == 10
 
 
 async def test_runner_exits_when_lease_held(env, store, fake_harness):
@@ -268,16 +297,121 @@ async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, g
     assert fake_harness == []  # never started the harness
     assert gcs_sync["restore"] == []
     session = await store.get_session(SID)
-    assert session["status"] == "idle"
-    assert session["stop_reason"] == "workspace_busy"
-    (event,) = store.events[SID]
-    assert event["message"]["kind"] == "result"
-    assert event["message"]["subtype"] == "workspace_busy"
-    assert event["message"]["is_error"] is True
+    assert session["runtime"]["status"] == "idle"
+    assert session["runtime"]["stop_reason"] == "workspace_busy"
+    assert [e["type"] for e in feed(store)] == ["lifecycle", "lifecycle", "message"]
+    (doc,) = messages(store)
+    assert doc["kind"] == "result"
+    assert doc["subtype"] == "workspace_busy"
+    assert doc["is_error"] is True
     # the other session keeps its lease
     assert store.workspaces["shared"]["lease_session_id"] == "sess_other"
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]
+
+
+async def test_runner_recovers_head_from_journal_after_crash(env, store, fake_harness):
+    from .fakes import append_message
+
+    await store.create_session(SID, {})
+    # crash scenario: three records journaled but seq_head flushed only to 1
+    for seq in (1, 2, 3):
+        await append_message(store, SID, seq, {"kind": "assistant", "content": []})
+    await store.update_session(SID, seq_head=1)
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    events = feed(store)
+    # nothing overwritten: the 3 pre-crash records survive and the new run
+    # continued at seq 4
+    assert len(events) == 3 + 6
+    assert [e["seq"] for e in events] == list(range(1, 10))
+    assert events[3]["type"] == "lifecycle" and events[3]["payload"]["event"] == "claimed"
+    # the new records chain onto the pre-crash tip
+    assert events[3]["parent_uuid"] == events[2]["uuid"]
+
+
+async def test_runner_forks_sdk_session_on_fresh_branch(env, store, fake_harness):
+    from .fakes import append_message
+
+    await store.create_session(SID, {})
+    base = await append_message(store, SID, 1, {"kind": "result"})
+    await store.update_session(SID, claude_session_id="c-old", seq_head=1)
+    await store.create_branch(
+        SID, "br_a", base_uuid=base["uuid"], base_seq=1, claude_session_id="c-turn1"
+    )
+    await store.push_inbox(SID, "message", "try again")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    # the SDK resumed the branch's base session and forked it there
+    assert client.options.resume == "c-turn1"
+    assert client.options.fork_session is True
+    # new records landed on the branch, continuing past its base
+    branch_events = await store.list_events(SID, "br_a", after=0)
+    assert [e["seq"] for e in branch_events] == [2, 3, 4, 5, 6, 7]
+    session = await store.get_session(SID)
+    # after the turn, branch and session agree on the new SDK session
+    assert session["branches"]["br_a"]["claude_session_id"] == "claude-uuid-1"
+    assert session["claude_session_id"] == "claude-uuid-1"
+
+
+async def test_runner_forks_even_when_branch_shares_current_sdk_session(env, store, fake_harness):
+    # Rewinding into the latest run: the branch's base SDK session IS the
+    # session's current one. Fork detection must key off journal state (a
+    # never-run branch), not id inequality — this is exactly the case where
+    # comparing ids says "no fork" and the abandoned tip would be resumed.
+    from .fakes import append_message
+
+    await store.create_session(SID, {})
+    base = await append_message(store, SID, 1, {"kind": "result"})
+    await store.update_session(SID, claude_session_id="c-current", seq_head=1)
+    await store.create_branch(
+        SID, "br_a", base_uuid=base["uuid"], base_seq=1, claude_session_id="c-current"
+    )
+    await store.push_inbox(SID, "message", "try again")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    assert client.options.resume == "c-current"
+    assert client.options.fork_session is True
+
+
+async def test_runner_stops_writing_when_lease_lost(env, store, monkeypatch):
+    import asyncio
+
+    class SlowClient(FakeClient):
+        async def receive_response(self):
+            async for message in super().receive_response():
+                await asyncio.sleep(0.03)
+                yield message
+
+    monkeypatch.setenv("SYROS_LEASE_TTL", "0.05")  # heartbeat every ~0.017s
+    monkeypatch.setattr(syros.runner, "ClaudeSDKClient", SlowClient)
+    monkeypatch.setattr(syros.runner.workspace, "restore", lambda *a: 0)
+    monkeypatch.setattr(syros.runner.workspace, "checkpoint", lambda *a: 0)
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "go")
+
+    # the lease is stolen as soon as the runner starts heartbeating
+    original = store.renew_lease
+
+    async def stolen(session_id, lease_id, ttl):
+        store.sessions[SID]["runtime"]["lease_id"] = "thief"
+        return await original(session_id, lease_id, ttl)
+
+    monkeypatch.setattr(store, "renew_lease", stolen)
+
+    await run(SID)
+
+    session = await store.get_session(SID)
+    # the loser wrote no release: the thief's claim state stands untouched
+    assert session["runtime"]["status"] == "running"
+    assert session["runtime"]["stop_reason"] is None
+    assert session["runtime"]["lease_id"] == "thief"
 
 
 async def test_runner_resolves_builtin_mcp_server(env, store, fake_harness, monkeypatch):
@@ -358,12 +492,13 @@ async def test_runner_fails_fast_on_connector_error(
     assert fake_harness == []  # never started the harness
     assert gcs_sync["restore"] == []
     session = await store.get_session(SID)
-    assert session["status"] == "idle"
-    assert session["stop_reason"] == "connector_error"
-    (event,) = store.events[SID]
-    assert event["message"]["kind"] == "result"
-    assert event["message"]["subtype"] == "connector_error"
-    assert event["message"]["is_error"] is True
+    assert session["runtime"]["status"] == "idle"
+    assert session["runtime"]["stop_reason"] == "connector_error"
+    assert [e["type"] for e in feed(store)] == ["lifecycle", "lifecycle", "message"]
+    (doc,) = messages(store)
+    assert doc["kind"] == "result"
+    assert doc["subtype"] == "connector_error"
+    assert doc["is_error"] is True
     # the workspace lease claimed just before the connector check is released
     assert store.workspaces["shared"]["lease_session_id"] is None
     # the prompt stays queued for a retry

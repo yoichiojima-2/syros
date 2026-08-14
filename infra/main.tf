@@ -103,6 +103,54 @@ resource "google_firestore_field" "approvals_status" {
   }
 }
 
+# journal tailing filters one branch and orders by seq (store.list_events);
+# equality + order-by on different fields needs a composite index
+resource "google_firestore_index" "events_by_branch" {
+  database   = google_firestore_database.default.name
+  collection = "events"
+
+  fields {
+    field_path = "branch"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "seq"
+    order      = "ASCENDING"
+  }
+}
+
+# recover_head reads one branch's newest record (branch == + seq DESC);
+# composite indexes are direction-sensitive, so the ASC pair above can't serve it
+resource "google_firestore_index" "events_by_branch_desc" {
+  database   = google_firestore_database.default.name
+  collection = "events"
+
+  fields {
+    field_path = "branch"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "seq"
+    order      = "DESCENDING"
+  }
+}
+
+# the audit trail reads tool_call records out of the journal in write order
+# (store.list_tool_calls): type equality + ts order-by
+resource "google_firestore_index" "events_by_type" {
+  database   = google_firestore_database.default.name
+  collection = "events"
+
+  fields {
+    field_path = "type"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "ts"
+    order      = "ASCENDING"
+  }
+}
+
 resource "google_storage_bucket" "sessions" {
   name                        = "${var.project}-syros"
   location                    = var.region

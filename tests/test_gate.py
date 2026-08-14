@@ -1,6 +1,7 @@
 import asyncio
 
 from syros.gate import Gate, call_hash
+from syros.journal import JournalWriter
 from syros.types import PermissionResultAllow, PermissionResultDeny
 
 from .fakes import FakeStore
@@ -16,16 +17,21 @@ async def make_store(disabled=False):
     return store
 
 
+def make_gate(store, **kwargs):
+    writer = JournalWriter(store, SID, branch="main", seq=0, tip_uuid=None)
+    return Gate(store, SID, writer, **kwargs)
+
+
 def hook_input(tool="Bash", tool_input=None):
     return {"tool_name": tool, "tool_input": tool_input or {"command": "ls"}}
 
 
 async def test_audit_written_before_allow():
     store = await make_store()
-    gate = Gate(store, SID)
+    gate = make_gate(store)
     result = await gate._pre_tool_use(hook_input(), "t1", None)
     assert result == {}
-    (row,) = store.tool_calls[SID]
+    (row,) = await store.list_tool_calls(SID)
     assert row["tool_name"] == "Bash"
     assert row["decision"] == "allowed"
     assert row["call_hash"] == call_hash("Bash", {"command": "ls"})
@@ -33,16 +39,16 @@ async def test_audit_written_before_allow():
 
 async def test_kill_switch_denies_and_audits():
     store = await make_store(disabled=True)
-    gate = Gate(store, SID)
+    gate = make_gate(store)
     result = await gate._pre_tool_use(hook_input(), "t1", None)
     assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-    (row,) = store.tool_calls[SID]
+    (row,) = await store.list_tool_calls(SID)
     assert row["decision"] == "killed"
 
 
 async def test_can_use_tool_allow_roundtrip():
     store = await make_store()
-    gate = Gate(store, SID, approval_timeout=5, poll_interval=0.01)
+    gate = make_gate(store, approval_timeout=5, poll_interval=0.01)
 
     async def decider():
         while not await store.list_pending_approvals(SID):
@@ -58,7 +64,7 @@ async def test_can_use_tool_allow_roundtrip():
 
 async def test_can_use_tool_deny_message():
     store = await make_store()
-    gate = Gate(store, SID, approval_timeout=5, poll_interval=0.01)
+    gate = make_gate(store, approval_timeout=5, poll_interval=0.01)
 
     async def decider():
         while not await store.list_pending_approvals(SID):
@@ -77,7 +83,7 @@ async def test_can_use_tool_deny_message():
 
 async def test_can_use_tool_timeout_denies():
     store = await make_store()
-    gate = Gate(store, SID, approval_timeout=0.05, poll_interval=0.01)
+    gate = make_gate(store, approval_timeout=0.05, poll_interval=0.01)
     result = await gate.can_use_tool("Bash", {"command": "rm x"}, None)
     assert isinstance(result, PermissionResultDeny)
     assert "timed out" in result.message

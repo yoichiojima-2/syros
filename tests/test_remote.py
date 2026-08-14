@@ -15,7 +15,7 @@ from syros.errors import SessionTerminated
 from syros.remote import run_remote, send_prompt
 from syros.types import message_to_doc
 
-from .fakes import FakeStore
+from .fakes import FakeStore, append_message
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +40,7 @@ async def drive_runner(store, session_id, messages, *, start_seq=0):
     seq = start_seq
     for message in messages:
         seq += 1
-        await store.append_event(session_id, seq, message_to_doc(message))
+        await append_message(store, session_id, seq, message_to_doc(message))
     await store.release_session(session_id, status="idle", stop_reason="success", seq_head=seq)
 
 
@@ -89,7 +89,7 @@ async def test_resume_starts_after_seq_head(no_job_trigger):
     store = FakeStore()
     session_id = "sess_existing"
     await store.create_session(session_id, {})
-    await store.append_event(session_id, 1, message_to_doc(RESULT))  # old turn
+    await append_message(store, session_id, 1, message_to_doc(RESULT))  # old turn
     await store.update_session(session_id, status="idle", seq_head=1)
 
     async def run():
@@ -117,8 +117,8 @@ async def test_send_prompt_marks_session_starting(no_job_trigger):
     await send_prompt(store, "sess_1", options(), "hello")
 
     session = await store.get_session("sess_1")
-    assert session["status"] == "starting"
-    assert session["triggered_at"] == pytest.approx(time.time(), abs=5)
+    assert session["runtime"]["status"] == "starting"
+    assert session["runtime"]["triggered_at"] == pytest.approx(time.time(), abs=5)
 
 
 async def test_send_prompt_leaves_a_live_run_alone(no_job_trigger):
@@ -131,7 +131,7 @@ async def test_send_prompt_leaves_a_live_run_alone(no_job_trigger):
     await send_prompt(store, "sess_1", options(), "hello")
 
     assert no_job_trigger == []
-    assert (await store.get_session("sess_1"))["status"] == "running"
+    assert (await store.get_session("sess_1"))["runtime"]["status"] == "running"
 
 
 async def test_resume_terminated_session_raises():
@@ -141,6 +141,78 @@ async def test_resume_terminated_session_raises():
     with pytest.raises(SessionTerminated):
         async for _ in run_remote("x", options(resume="sess_dead"), store=store):
             pass
+
+
+async def test_from_event_rewinds_onto_a_new_branch(no_job_trigger):
+    from syros.journal import make_event
+    from syros.remote import attach_session
+
+    store = FakeStore()
+    sid = "sess_tree"
+    await store.create_session(sid, {})
+    # two finished turns on main; contexts record the SDK session per turn
+    prompt1 = make_event("prompt", {"text": "one"}, parent_uuid=None, branch="main", seq=1)
+    await store.append_event(sid, prompt1)
+    result1 = make_event(
+        "message",
+        message_to_doc(RESULT),
+        parent_uuid=prompt1["uuid"],
+        branch="main",
+        seq=2,
+        context={"claude_session_id": "c-turn1"},
+    )
+    await store.append_event(sid, result1)
+    prompt2 = make_event(
+        "prompt", {"text": "two"}, parent_uuid=result1["uuid"], branch="main", seq=3
+    )
+    await store.append_event(sid, prompt2)
+    await store.update_session(sid, seq_head=3, status="idle")
+
+    # rewinding from mid-turn-2 snaps to the turn boundary: turn 1's result
+    session_id, branch, cursor = await attach_session(
+        store, options(resume=sid, from_event=prompt2["uuid"])
+    )
+    assert session_id == sid
+    assert branch.startswith("br_") and cursor == 3
+
+    session = await store.get_session(sid)
+    assert session["active_branch"] == branch
+    assert session["branches"][branch]["base_uuid"] == result1["uuid"]
+    assert session["branches"][branch]["base_seq"] == 2
+    # the SDK session to fork from is the one that produced the base turn —
+    # the result payload's own session_id, not the context snapshot (which
+    # lags one run behind on a run's first turn)
+    assert session["branches"][branch]["claude_session_id"] == "claude-uuid"
+    # the branch opens with its provenance record, chained to the base
+    (created,) = await store.list_events(sid, branch, after=0)
+    assert created["type"] == "lifecycle"
+    assert created["payload"]["event"] == "branch_created"
+    assert created["parent_uuid"] == result1["uuid"]
+    # main is untouched
+    assert [e["seq"] for e in await store.list_events(sid, "main", after=0)] == [1, 2, 3]
+
+
+async def test_from_event_refuses_running_session(no_job_trigger):
+    import pytest as _pytest
+
+    from syros.errors import SyrosError
+    from syros.remote import attach_session
+
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.claim_session("sess_1", "lease-1", 60)
+    with _pytest.raises(SyrosError, match="interrupt"):
+        await attach_session(store, options(resume="sess_1", from_event="e1"))
+
+
+async def test_from_event_requires_resume(no_job_trigger):
+    import pytest as _pytest
+
+    from syros.errors import SyrosError
+    from syros.remote import attach_session
+
+    with _pytest.raises(SyrosError, match="requires resume"):
+        await attach_session(FakeStore(), options(from_event="e1"))
 
 
 async def test_approval_relay(no_job_trigger):
@@ -167,7 +239,7 @@ async def test_approval_relay(no_job_trigger):
         await store.request_approval(session_id, "hash1", "Bash", {"command": "rm"})
         while (await store.get_approval(session_id, "hash1"))["status"] == "pending":
             await asyncio.sleep(0.01)
-        await store.append_event(session_id, 1, message_to_doc(RESULT))
+        await append_message(store, session_id, 1, message_to_doc(RESULT))
 
     runner_task = asyncio.create_task(runner())
     collected = await asyncio.wait_for(query_task, timeout=5)

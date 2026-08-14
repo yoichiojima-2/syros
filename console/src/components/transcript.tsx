@@ -3,6 +3,7 @@
 import { useLayoutEffect, useRef } from "react";
 import { FileCode2 } from "lucide-react";
 import type { ContentBlock, TranscriptEvent, TranscriptMessage } from "@/lib/types";
+import { eventMessage } from "@/lib/types";
 import { artifactToolPath } from "@/lib/artifacts";
 import { compact, cost, pretty } from "@/lib/format";
 import { renderMarkdown } from "@/lib/markdown";
@@ -218,6 +219,46 @@ function MessageView({
   return null;
 }
 
+// Journal-only records (tool_call, approval, lifecycle): one muted mono chip
+// each. The audit trail reads inline with the chat without competing with it.
+function JournalRow({ event }: { event: TranscriptEvent }) {
+  const payload = (event.payload || {}) as Record<string, unknown>;
+  if (event.type === "tool_call") {
+    const killed = payload.decision === "killed";
+    return (
+      <CollapsibleRow
+        className={killed ? "[&>summary]:text-destructive" : ""}
+        summary={
+          <>
+            <span className="text-[11px] tracking-wide uppercase">audit</span>{" "}
+            <b className="font-semibold text-foreground">{String(payload.tool_name || "?")}</b>{" "}
+            {String(payload.decision || "")}
+          </>
+        }
+        detail={JSON.stringify(payload.input || {}, null, 2)}
+      />
+    );
+  }
+  if (event.type === "approval") {
+    const decided = payload.phase === "decided";
+    return (
+      <div className="font-mono text-[11px] text-faint">
+        approval {decided ? String(payload.status || "") : "requested"} ·{" "}
+        {String(payload.tool_name || "")}
+        {payload.decided_by ? ` · by ${String(payload.decided_by)}` : ""}
+      </div>
+    );
+  }
+  if (event.type === "lifecycle") {
+    // claimed/released are runner plumbing; branch_created and errors are the
+    // ones a reader cares about.
+    const kind = String(payload.event || "");
+    if (kind === "claimed" || kind === "released") return null;
+    return <div className="font-mono text-[11px] text-faint">— {kind} —</div>;
+  }
+  return null;
+}
+
 export function Transcript({
   events,
   placeholder,
@@ -260,14 +301,20 @@ export function Transcript({
         {placeholder !== null && events.length === 0 && pending.length === 0 && (
           <p className="pt-16 text-center text-[13px] text-muted-foreground">{placeholder}</p>
         )}
-        {events.map((event) => (
-          <MessageView
-            key={event.seq}
-            message={event.message || {}}
-            artifactPaths={artifactPaths}
-            onOpenArtifact={onOpenArtifact}
-          />
-        ))}
+        {events.map((event) => {
+          const key = event.uuid ?? String(event.seq);
+          const message = eventMessage(event);
+          if (message)
+            return (
+              <MessageView
+                key={key}
+                message={message}
+                artifactPaths={artifactPaths}
+                onOpenArtifact={onOpenArtifact}
+              />
+            );
+          return <JournalRow key={key} event={event} />;
+        })}
         {/* Prompts render the instant they're sent; the runner mirrors them
             into the feed when it picks them up, and the dimmed copy drops. */}
         {pending.map((text, i) => (

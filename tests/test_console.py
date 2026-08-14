@@ -24,7 +24,7 @@ from syros.options import AgentOptions
 from syros.skills import skill_prefix
 from syros.workspace import workspace_prefix
 
-from .fakes import FakeStore
+from .fakes import FakeStore, append_message
 
 
 class FakeObjects:
@@ -264,7 +264,7 @@ async def test_poll_events_after_cursor_and_approval_deadline():
     store = FakeStore()
     await store.create_session("sess_1", {"model": "claude-sonnet-5"})
     for seq in (1, 2, 3):
-        await store.append_event("sess_1", seq, {"kind": "assistant", "content": []})
+        await append_message(store, "sess_1", seq, {"kind": "assistant", "content": []})
     await store.request_approval("sess_1", "hash1", "Bash", {"command": "rm"})
 
     result = await api(store, approval_timeout=10.0).poll("sess_1", after=1)
@@ -348,7 +348,12 @@ async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
     assert session["options"]["allowed_tools"] == ["Read"]
     assert session["trigger"] == "console"
     assert session["created_by"]
-    assert store.inbox[sid] == [{"kind": "message", "text": "profile the CSVs", "consumed": False}]
+    (queued,) = store.inbox[sid]
+    assert (queued["kind"], queued["text"], queued["consumed"]) == (
+        "message",
+        "profile the CSVs",
+        False,
+    )
     assert no_job_trigger == [("proj-1", "asia-northeast1", "syros-runner", sid)]
     # and it shows up as an ordinary session, on its way up
     assert (await api(store).poll(sid, after=0))["session"]["state"] == "starting"
@@ -410,7 +415,8 @@ async def test_prompt_triggers_job_when_idle(no_job_trigger):
 
     assert result["triggered"] is True
     assert no_job_trigger == [("proj-1", "asia-northeast1", "syros-runner", "sess_1")]
-    assert store.inbox["sess_1"] == [{"kind": "message", "text": "hello", "consumed": False}]
+    (queued,) = store.inbox["sess_1"]
+    assert (queued["kind"], queued["text"], queued["consumed"]) == ("message", "hello", False)
     assert (await api(store).poll("sess_1", after=0))["session"]["state"] == "starting"
 
 
@@ -440,11 +446,12 @@ async def test_interrupt_and_kill():
     await store.create_session("sess_1", {})
 
     await api(store).interrupt("sess_1")
-    assert store.inbox["sess_1"] == [{"kind": "interrupt", "text": None, "consumed": False}]
+    (queued,) = store.inbox["sess_1"]
+    assert (queued["kind"], queued["text"], queued["consumed"]) == ("interrupt", None, False)
 
     await api(store).kill("sess_1")
     session = await store.get_session("sess_1")
-    assert session["status"] == "terminated"
+    assert session["runtime"]["status"] == "terminated"
     assert session["disabled"] is True
 
 
@@ -454,7 +461,7 @@ async def test_interrupt_and_kill():
 async def test_delete_removes_session_and_history():
     store = FakeStore()
     await store.create_session("sess_1", {})
-    await store.append_event("sess_1", 1, {"kind": "user", "content": "hi"})
+    await append_message(store, "sess_1", 1, {"kind": "user", "content": "hi"})
     await store.request_approval("sess_1", "hash1", "Bash", {"command": "ls"})
 
     result = await api(store).delete("sess_1")
@@ -503,7 +510,7 @@ async def test_delete_many_removes_every_session():
     store = FakeStore()
     for sid in ("sess_1", "sess_2", "sess_3"):
         await store.create_session(sid, {})
-    await store.append_event("sess_2", 1, {"kind": "user", "content": "hi"})
+    await append_message(store, "sess_2", 1, {"kind": "user", "content": "hi"})
 
     result = await api(store).delete_many(["sess_1", "sess_2"])
 

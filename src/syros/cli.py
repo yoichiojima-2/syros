@@ -3,6 +3,7 @@
 syros sessions                          list recent sessions
 syros workspaces                        list shared workspaces and their leases
 syros tail <session_id>                 follow a session's message feed
+syros rewind <session_id> <event_uuid>  branch the transcript from a past event
 syros approvals <session_id>            list pending approvals
 syros approvals <session_id> allow <call_hash>
 syros approvals <session_id> deny <call_hash> [-m reason]
@@ -80,13 +81,16 @@ def _local(epoch: float | None, timezone: str = "UTC") -> str:
 
 
 async def _sessions(args) -> None:
+    from .store import runtime
+
     store = _store(args)
     for session in await store.list_sessions():
         published = session.get("published")
+        state = runtime(session)
         print(
-            f"{session['id']}  {session.get('status'):<10}"
+            f"{session['id']}  {state.get('status'):<10}"
             f"  ${float(session.get('cost_usd') or 0):.4f}"
-            f"  {session.get('stop_reason') or '':<14}"
+            f"  {state.get('stop_reason') or '':<14}"
             f"  {'' if published is None else f'{published} published':<14}"
             f"  {(session.get('options') or {}).get('workspace') or ''}"
         )
@@ -103,15 +107,42 @@ async def _workspaces(args) -> None:
 
 
 async def _tail(args) -> None:
+    from .journal import event_message
+
     store = _store(args)
+    session = await store.get_session(args.session_id)
+    if session is None:
+        raise SystemExit(f"no such session: {args.session_id}")
+    branch = session.get("active_branch") or "main"
     cursor = 0
     while True:
-        events = await store.list_events(args.session_id, after=cursor)
+        events = await store.list_events(args.session_id, branch, after=cursor)
         for event in events:
             cursor = int(event["seq"])
-            print(f"[{cursor}] {doc_to_message(event['message'])}")
+            doc = event_message(event)
+            if doc is not None:
+                print(f"[{cursor}] {doc_to_message(doc)}")
+            else:
+                # Journal-only records (tool_call, approval, lifecycle): one
+                # compact line each — the audit trail inline with the chat.
+                payload = json.dumps(event.get("payload") or {}, default=str)
+                print(f"[{cursor}] <{event.get('type')}> {payload[:200]}")
         if not events:
             await asyncio.sleep(1.0)
+
+
+async def _rewind(args) -> None:
+    from . import remote
+
+    store = _store(args)
+    session = await store.get_session(args.session_id)
+    if session is None:
+        raise SystemExit(f"no such session: {args.session_id}")
+    branch, cursor = await remote.branch_from_event(
+        store, args.session_id, session, args.event_uuid
+    )
+    print(f"rewound {args.session_id} to {args.event_uuid}")
+    print(f"    new branch {branch} (cursor {cursor}) — next prompt continues from there")
 
 
 async def _approvals(args) -> None:
@@ -273,12 +304,15 @@ async def _deployments(args) -> None:
         return
 
     # runs: the deployment's own history
+    from .store import runtime
+
     for session in await deployments.runs(args.name, limit=args.limit, store=store):
+        state = runtime(session)
         print(
-            f"{session['id']}  {session.get('status'):<10}"
+            f"{session['id']}  {state.get('status'):<10}"
             f"  {session.get('trigger') or '':<9}"
             f"  ${float(session.get('cost_usd') or 0):.4f}"
-            f"  {session.get('stop_reason') or '':<22}"
+            f"  {state.get('stop_reason') or '':<22}"
             f"  {_local(_epoch(session.get('created_at')))}"
         )
 
@@ -604,6 +638,11 @@ def main() -> None:
     tail = sub.add_parser("tail")
     tail.add_argument("session_id")
     tail.set_defaults(func=_tail)
+
+    rewind = sub.add_parser("rewind", help="branch a session's transcript from a past event")
+    rewind.add_argument("session_id")
+    rewind.add_argument("event_uuid")
+    rewind.set_defaults(func=_rewind)
 
     approvals = sub.add_parser("approvals")
     approvals.add_argument("session_id")

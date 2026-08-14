@@ -5,8 +5,9 @@ no joins, no aggregates. `syros export` reads every session document tree
 and loads five flat tables into one BigQuery dataset:
 
     sessions    one row per session (status, cost, timing, options)
-    events      one row per mirrored message (kind + full message as JSON)
-    tool_calls  the audit trail (tool, decision, input as JSON)
+    events      one row per journal record, every branch (envelope + rendered
+                message as JSON)
+    tool_calls  the audit trail, read out of the journal's tool_call records
     approvals   the approval queue (status, decider, latency columns)
     agents      the stored run configurations (name, description, options);
                 sessions.agent joins a run back to the persona it ran as
@@ -24,7 +25,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from .store import StoreProtocol
+from .journal import event_message
+from .store import StoreProtocol, runtime
 
 
 def _timestamp(value: Any) -> str | None:
@@ -63,8 +65,8 @@ def _ts(name: str) -> Callable[[dict[str, Any]], Any]:
 
 SESSION_FIELDS: list[Field] = [
     ("session_id", "STRING", "REQUIRED", lambda s: s["id"]),
-    ("status", "STRING", "NULLABLE", _get("status")),
-    ("stop_reason", "STRING", "NULLABLE", _get("stop_reason")),
+    ("status", "STRING", "NULLABLE", lambda s: runtime(s).get("status")),
+    ("stop_reason", "STRING", "NULLABLE", lambda s: runtime(s).get("stop_reason")),
     ("disabled", "BOOL", "NULLABLE", lambda s: bool(s.get("disabled"))),
     (
         "cost_usd",
@@ -86,14 +88,25 @@ SESSION_FIELDS: list[Field] = [
 
 EVENT_FIELDS: list[Field] = [
     ("session_id", "STRING", "REQUIRED", _get("session_id")),
+    ("uuid", "STRING", "NULLABLE", _get("uuid")),
+    ("parent_uuid", "STRING", "NULLABLE", _get("parent_uuid")),
+    ("branch", "STRING", "NULLABLE", _get("branch")),
     ("seq", "INT64", "NULLABLE", _get("seq")),
+    ("type", "STRING", "NULLABLE", _get("type")),
     ("ts", "TIMESTAMP", "NULLABLE", _ts("ts")),
-    ("kind", "STRING", "NULLABLE", lambda e: (e.get("message") or {}).get("kind")),
-    ("message", "JSON", "NULLABLE", lambda e: _json(e.get("message") or {})),
+    # kind/message describe the record's message rendering (None for
+    # journal-only records); payload/context are the envelope itself.
+    ("kind", "STRING", "NULLABLE", lambda e: (event_message(e) or {}).get("kind")),
+    ("message", "JSON", "NULLABLE", lambda e: _json(event_message(e) or {})),
+    ("payload", "JSON", "NULLABLE", lambda e: _json(e.get("payload") or {})),
+    ("context", "JSON", "NULLABLE", lambda e: _json(e.get("context") or {})),
 ]
 
 TOOL_CALL_FIELDS: list[Field] = [
     ("session_id", "STRING", "REQUIRED", _get("session_id")),
+    ("uuid", "STRING", "NULLABLE", _get("uuid")),
+    ("branch", "STRING", "NULLABLE", _get("branch")),
+    ("seq", "INT64", "NULLABLE", _get("seq")),
     ("ts", "TIMESTAMP", "NULLABLE", _ts("ts")),
     ("tool_name", "STRING", "NULLABLE", _get("tool_name")),
     ("decision", "STRING", "NULLABLE", _get("decision")),
@@ -163,17 +176,20 @@ def agent_row(agent: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _all_events(
-    store: StoreProtocol, session_id: str, page_size: int
+    store: StoreProtocol, session: dict[str, Any], page_size: int
 ) -> list[dict[str, Any]]:
+    session_id = session["id"]
     rows: list[dict[str, Any]] = []
-    cursor = 0
-    while True:
-        events = await store.list_events(session_id, after=cursor, limit=page_size)
-        for event in events:
-            cursor = int(event["seq"])
-            rows.append(event_row(session_id, event))
-        if len(events) < page_size:
-            return rows
+    for branch in sorted(session.get("branches") or {"main": {}}):
+        cursor = 0
+        while True:
+            events = await store.list_events(session_id, branch, after=cursor, limit=page_size)
+            for event in events:
+                cursor = int(event["seq"])
+                rows.append(event_row(session_id, event))
+            if len(events) < page_size:
+                break
+    return rows
 
 
 async def collect(store: StoreProtocol, page_size: int = 500) -> dict[str, list[dict[str, Any]]]:
@@ -189,7 +205,7 @@ async def collect(store: StoreProtocol, page_size: int = 500) -> dict[str, list[
     for session in sessions:
         session_id = session["id"]
         events, calls, approvals = await asyncio.gather(
-            _all_events(store, session_id, page_size),
+            _all_events(store, session, page_size),
             store.list_tool_calls(session_id),
             store.list_approvals(session_id),
         )

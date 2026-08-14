@@ -37,7 +37,7 @@ from . import agents, cron, remote
 from .errors import SyrosError
 from .names import validate_name
 from .options import AgentOptions, options_from_doc
-from .store import Store, StoreProtocol, lease_active, new_session_id, start_pending
+from .store import Store, StoreProtocol, lease_active, new_session_id, runtime, start_pending
 
 DEFAULT_TIMEZONE = "UTC"
 
@@ -281,7 +281,7 @@ async def _run_active(store: StoreProtocol, session_id: str | None, now: float) 
     if not session_id:
         return False
     session = await store.get_session(session_id)
-    if not session or session.get("disabled") or session.get("status") == "terminated":
+    if not session or session.get("disabled") or runtime(session).get("status") == "terminated":
         return False
     return lease_active(session, now) or start_pending(session, now)
 

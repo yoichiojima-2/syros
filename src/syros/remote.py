@@ -12,9 +12,10 @@ import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
+from . import journal
 from .errors import SessionTerminated, SyrosError
+from .store import Store, StoreProtocol, lease_active, new_session_id, runtime
 from .options import AgentOptions
-from .store import Store, StoreProtocol, lease_active, new_session_id
 from .types import Message, PermissionResultAllow, ResultMessage, doc_to_message
 
 EVENT_POLL_SECONDS = 0.5
@@ -76,16 +77,100 @@ async def _relay_approvals(store: StoreProtocol, session_id: str, options: Agent
         )
 
 
-async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[str, int]:
-    """Resolve (session_id, cursor) — reusing options.resume or creating anew."""
+async def _turn_base(
+    store: StoreProtocol, session_id: str, event: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The turn boundary at or before `event`: the nearest result message,
+    walking parent_uuid back. None means the event precedes the first turn.
+
+    Rewind granularity is turns because that is where the SDK can fork its own
+    transcript — the result message's context records which SDK session the
+    turn belonged to.
+    """
+    current: dict[str, Any] | None = event
+    while current is not None:
+        if (
+            current.get("type") == "message"
+            and (current.get("payload") or {}).get("kind") == "result"
+        ):
+            return current
+        parent = current.get("parent_uuid")
+        current = await store.get_event(session_id, parent) if parent else None
+    return current
+
+
+async def branch_from_event(
+    store: StoreProtocol, session_id: str, session: dict[str, Any], from_event: str
+) -> tuple[str, int]:
+    """Rewind: branch the transcript from a past event, returning the new
+    (branch, cursor). Conversation-only — workspace state keeps its latest
+    checkpoint.
+
+    Model-memory caveat: the SDK forks at the *end* of the base turn's SDK
+    session. Turns from the same runner execution share one SDK session, so a
+    rewind into the middle of the latest run removes the later turns from the
+    journal while the forked model context may still contain them. Rewinds
+    across runs (the common case: each re-trigger starts a new SDK session)
+    fork cleanly.
+    """
+    if lease_active(session):
+        raise SyrosError(f"session {session_id} is running — interrupt it before rewinding")
+    event = await store.get_event(session_id, from_event)
+    if event is None:
+        raise SyrosError(f"event {from_event} not found in session {session_id}")
+    base = await _turn_base(store, session_id, event)
+    branch_id = journal.new_branch_id()
+    base_uuid = base["uuid"] if base else None
+    base_seq = int(base["seq"]) if base else 0
+    # The result payload's session_id is the SDK session that produced *this*
+    # turn; the context snapshot can lag one run behind (it is refreshed only
+    # after a turn completes), so the payload wins.
+    claude_session_id = ((base or {}).get("payload") or {}).get("session_id") or (
+        (base or {}).get("context") or {}
+    ).get("claude_session_id")
+    await store.create_branch(
+        session_id,
+        branch_id,
+        base_uuid=base_uuid,
+        base_seq=base_seq,
+        claude_session_id=claude_session_id,
+    )
+    # The branch's first record marks where it came from; the runner's
+    # recover_head then continues from here.
+    await store.append_event(
+        session_id,
+        journal.make_event(
+            "lifecycle",
+            {"event": "branch_created", "from_event": from_event, "base_uuid": base_uuid},
+            parent_uuid=base_uuid,
+            branch=branch_id,
+            seq=base_seq + 1,
+        ),
+    )
+    return branch_id, base_seq + 1
+
+
+async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[str, str, int]:
+    """Resolve (session_id, branch, cursor) — reusing options.resume (optionally
+    rewound to options.from_event) or creating anew."""
+    if options.from_event and not options.resume:
+        raise SyrosError("from_event requires resume=<session_id>")
     if options.resume:
         session_id = options.resume
         session = await store.get_session(session_id)
         if session is None:
             raise SyrosError(f"session {session_id} not found")
-        if session.get("status") == "terminated":
+        if runtime(session).get("status") == "terminated":
             raise SessionTerminated(session_id)
-        return session_id, int(session.get("seq_head") or 0)
+        if options.from_event:
+            branch, cursor = await branch_from_event(store, session_id, session, options.from_event)
+            return session_id, branch, cursor
+        branch = session.get("active_branch") or "main"
+        # Cursor from the journal itself, not the advisory seq_head: after a
+        # mid-turn crash seq_head lags, and a stale cursor would replay the
+        # crashed turn's partial messages as if they answered the new prompt.
+        head, _tip = await store.recover_head(session_id, branch)
+        return session_id, branch, head
     # An agent reference resolves here, once: the session stores the merged
     # options, so a later edit to the agent never changes this session.
     from . import agents
@@ -93,7 +178,7 @@ async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[s
     options = await agents.resolve(store, options)
     session_id = new_session_id()
     await store.create_session(session_id, options.serialize(), agent=options.agent)
-    return session_id, 0
+    return session_id, "main", 0
 
 
 async def send_prompt(
@@ -119,23 +204,28 @@ async def send_prompt(
 
 
 async def stream_response(
-    store: StoreProtocol, session_id: str, options: AgentOptions, after: int
+    store: StoreProtocol, session_id: str, options: AgentOptions, branch: str, after: int
 ) -> AsyncIterator[tuple[int, Message]]:
-    """Yield (seq, message) from the event feed until a ResultMessage, relaying
-    pending approvals to options.can_use_tool while waiting."""
+    """Yield (seq, message) from one branch of the journal until a
+    ResultMessage, relaying pending approvals to options.can_use_tool while
+    waiting. Journal-only records (tool_call, approval, lifecycle) advance the
+    cursor without yielding — the SDK stream never carried them."""
     cursor = after
     while True:
-        events = await store.list_events(session_id, after=cursor)
+        events = await store.list_events(session_id, branch, after=cursor)
         for event in events:
             cursor = int(event["seq"])
-            message = doc_to_message(event["message"])
+            doc = journal.event_message(event)
+            if doc is None:
+                continue
+            message = doc_to_message(doc)
             yield cursor, message
             if isinstance(message, ResultMessage):
                 return
         await _relay_approvals(store, session_id, options)
         if not events:
             session = await store.get_session(session_id)
-            if session and session.get("status") == "terminated":
+            if session and runtime(session).get("status") == "terminated":
                 raise SessionTerminated(session_id)
             await asyncio.sleep(EVENT_POLL_SECONDS)
 
@@ -147,7 +237,7 @@ async def run_remote(
     store: StoreProtocol | None = None,
 ) -> AsyncIterator[Message]:
     store = store or Store(options.resolved_project())
-    session_id, cursor = await attach_session(store, options)
+    session_id, branch, cursor = await attach_session(store, options)
     await send_prompt(store, session_id, options, prompt)
-    async for _, message in stream_response(store, session_id, options, cursor):
+    async for _, message in stream_response(store, session_id, options, branch, cursor):
         yield message

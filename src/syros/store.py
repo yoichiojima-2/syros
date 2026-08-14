@@ -1,17 +1,36 @@
 """Firestore session store — the entire control plane.
 
 Layout:
-    sessions/{sid}                    status, options, lease, seq_head, cost_usd, disabled, ...
-    sessions/{sid}/events/{seq:012d}  {seq, message, ts}      one doc per mirrored message
+    sessions/{sid}          durable identity (options, cost_usd, provenance, ...),
+                            transcript topology (branches, active_branch, tip_uuid,
+                            seq_head — advisory, never trusted for allocation),
+                            and a `runtime` map holding everything ephemeral
+                            (status, stop_reason, lease_id, lease_expires,
+                            heartbeat_at, triggered_at). The split mirrors how
+                            Claude Code separates liveness files from the
+                            durable transcript: runtime is meaningless once the
+                            run is over, the rest is the record.
+    sessions/{sid}/events/{uuid}
+                            one journal record per doc (see journal.py) — the
+                            transcript tree. Doc id is the record's uuid, so a
+                            crashed runner resuming with a stale counter can
+                            never overwrite history; recover_head reads the
+                            real head back from the journal.
     sessions/{sid}/inbox/{auto}       {kind, text, ts, consumed}
-    sessions/{sid}/approvals/{hash}   {tool_name, input, status, ...}
-    sessions/{sid}/tool_calls/{auto}  audit rows, written before the tool executes
+    sessions/{sid}/approvals/{hash}   {tool_name, input, status, ...} — the
+                                      operational approval queue; the journal
+                                      carries mirror "approval" records
     workspaces/{name}                 {lease_session_id, lease_expires, ...} — the
                                       exclusive lease on a shared workspace
     deployments/{name}                  {cron, timezone, prompt, options, enabled,
                                       next_run_at, ...} — a cron that fires runs
     agents/{name}                     {options, description, ...} — a stored,
                                       named run configuration (persona)
+
+Rewind: a session's transcript is a tree of branches. Creating a branch from a
+past event (AgentOptions.from_event) rewinds the *conversation* only — the
+workspace and HOME checkpoints in GCS keep their latest state, and rewind
+granularity is turn boundaries (the SDK forks at a result message).
 """
 
 from __future__ import annotations
@@ -34,6 +53,14 @@ def new_session_id() -> str:
     return f"sess_{secrets.token_hex(12)}"
 
 
+def runtime(session: dict[str, Any] | None) -> dict[str, Any]:
+    """A session's ephemeral state map. Workspace lease docs keep their fields
+    flat, so the fallback lets lease_active serve both document shapes."""
+    if not session:
+        return {}
+    return session.get("runtime") or session
+
+
 def lease_active(session: dict[str, Any] | None, now: float | None = None) -> bool:
     """Whether a live sandbox execution currently holds this session.
 
@@ -43,7 +70,8 @@ def lease_active(session: dict[str, Any] | None, now: float | None = None) -> bo
     """
     if not session:
         return False
-    return float(session.get("lease_expires") or 0) > (now if now is not None else time.time())
+    state = runtime(session)
+    return float(state.get("lease_expires") or 0) > (now if now is not None else time.time())
 
 
 def start_pending(session: dict[str, Any] | None, now: float | None = None) -> bool:
@@ -54,10 +82,30 @@ def start_pending(session: dict[str, Any] | None, now: float | None = None) -> b
     nothing clears it if the execution never starts. Past the grace window the
     status is stale, so treat the session as dead rather than starting.
     """
-    if not session or session.get("status") != "starting":
+    state = runtime(session)
+    if state.get("status") != "starting":
         return False
-    triggered_at = float(session.get("triggered_at") or 0)
+    triggered_at = float(state.get("triggered_at") or 0)
     return (now if now is not None else time.time()) - triggered_at < START_GRACE_SECONDS
+
+
+# Session-doc fields that live inside the `runtime` map. update_session and the
+# fake both translate these to their nested paths, so callers keep writing
+# update_session(status=...) without knowing about the split.
+RUNTIME_FIELDS = frozenset(
+    {"status", "stop_reason", "lease_id", "lease_expires", "heartbeat_at", "triggered_at"}
+)
+
+
+def _tool_call_row(event: dict[str, Any]) -> dict[str, Any]:
+    """A "tool_call" journal record flattened to the audit-row shape."""
+    return {
+        **(event.get("payload") or {}),
+        "ts": event.get("ts"),
+        "uuid": event.get("uuid"),
+        "branch": event.get("branch"),
+        "seq": event.get("seq"),
+    }
 
 
 @runtime_checkable
@@ -91,10 +139,22 @@ class StoreProtocol(Protocol):
     async def release_session(
         self, session_id: str, *, status: str, stop_reason: str | None, **fields: Any
     ) -> None: ...
-    async def append_event(self, session_id: str, seq: int, message: dict[str, Any]) -> None: ...
+    async def renew_lease(self, session_id: str, lease_id: str, ttl_seconds: float) -> bool: ...
+    async def create_branch(
+        self,
+        session_id: str,
+        branch_id: str,
+        *,
+        base_uuid: str | None,
+        base_seq: int,
+        claude_session_id: str | None,
+    ) -> None: ...
+    async def append_event(self, session_id: str, event: dict[str, Any]) -> None: ...
     async def list_events(
-        self, session_id: str, after: int, limit: int = 200
+        self, session_id: str, branch: str, after: int, limit: int = 200
     ) -> list[dict[str, Any]]: ...
+    async def get_event(self, session_id: str, uuid: str) -> dict[str, Any] | None: ...
+    async def recover_head(self, session_id: str, branch: str) -> tuple[int, str | None]: ...
     async def push_inbox(self, session_id: str, kind: str, text: str | None = None) -> None: ...
     async def pop_messages(self, session_id: str) -> list[str]: ...
     async def take_interrupt(self, session_id: str) -> bool: ...
@@ -119,7 +179,6 @@ class StoreProtocol(Protocol):
     async def list_pending_approvals(self, session_id: str) -> list[dict[str, Any]]: ...
     async def list_approvals(self, session_id: str) -> list[dict[str, Any]]: ...
     async def list_all_pending_approvals(self) -> list[dict[str, Any]]: ...
-    async def record_tool_call(self, session_id: str, row: dict[str, Any]) -> None: ...
     async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]: ...
     async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool: ...
     async def release_workspace(self, name: str, session_id: str) -> None: ...
@@ -164,15 +223,32 @@ class Store:
         await self._session(session_id).create(
             {
                 "options": options,
-                "status": "queued",
-                "stop_reason": None,
                 "disabled": False,
                 "cost_usd": 0.0,
-                "seq_head": 0,
-                "lease_id": None,
-                "lease_expires": 0.0,
-                "triggered_at": 0.0,
                 "claude_session_id": None,
+                # Transcript topology. seq_head/tip_uuid describe the active
+                # branch and are advisory (display/cursor seeds) — the journal
+                # itself is the source of truth via recover_head.
+                "branches": {
+                    "main": {
+                        "created_at": time.time(),
+                        "base_uuid": None,
+                        "base_seq": 0,
+                        "claude_session_id": None,
+                    }
+                },
+                "active_branch": "main",
+                "tip_uuid": None,
+                "seq_head": 0,
+                # Everything ephemeral — meaningless once the run is over.
+                "runtime": {
+                    "status": "queued",
+                    "stop_reason": None,
+                    "lease_id": None,
+                    "lease_expires": 0.0,
+                    "heartbeat_at": 0.0,
+                    "triggered_at": 0.0,
+                },
                 "created_by": created_by,
                 # Run provenance: which deployment owns this session (None for an
                 # ordinary query) and what started it — "api", "console" for the
@@ -193,6 +269,9 @@ class Store:
         return snapshot.to_dict() if snapshot.exists else None
 
     async def update_session(self, session_id: str, **fields: Any) -> None:
+        # Runtime fields go to their nested paths so a status flip can never
+        # clobber the durable half of the document.
+        fields = {(f"runtime.{k}" if k in RUNTIME_FIELDS else k): v for k, v in fields.items()}
         fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
         await self._session(session_id).update(fields)
 
@@ -259,13 +338,16 @@ class Store:
             if not snapshot.exists:
                 return
             session = snapshot.to_dict()
-            if session.get("disabled") or session.get("status") in ("running", "terminated"):
+            if session.get("disabled") or runtime(session).get("status") in (
+                "running",
+                "terminated",
+            ):
                 return
             transaction.update(
                 reference,
                 {
-                    "status": "starting",
-                    "triggered_at": time.time(),
+                    "runtime.status": "starting",
+                    "runtime.triggered_at": time.time(),
                     "updated_at": firestore.SERVER_TIMESTAMP,
                 },
             )
@@ -287,22 +369,54 @@ class Store:
             if not snapshot.exists:
                 return None
             session = snapshot.to_dict()
-            if session.get("status") == "terminated" or session.get("disabled"):
+            if runtime(session).get("status") == "terminated" or session.get("disabled"):
                 return None
-            if lease_active(session) and session.get("lease_id") != lease_id:
+            if lease_active(session) and runtime(session).get("lease_id") != lease_id:
                 return None
+            now = time.time()
             transaction.update(
                 reference,
                 {
-                    "status": "running",
-                    "lease_id": lease_id,
-                    "lease_expires": time.time() + ttl_seconds,
+                    "runtime.status": "running",
+                    "runtime.lease_id": lease_id,
+                    "runtime.lease_expires": now + ttl_seconds,
+                    "runtime.heartbeat_at": now,
                     "updated_at": firestore.SERVER_TIMESTAMP,
                 },
             )
             return session
 
         return await _claim(transaction)
+
+    async def renew_lease(self, session_id: str, lease_id: str, ttl_seconds: float) -> bool:
+        """Heartbeat: extend the lease this runner already holds. False means
+        the lease was lost (stolen, terminated, killed) and the run must stop."""
+        transaction = self._db.transaction()
+        reference = self._session(session_id)
+        firestore = self._firestore
+
+        @firestore.async_transactional
+        async def _renew(transaction):
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return False
+            session = snapshot.to_dict()
+            if runtime(session).get("status") == "terminated" or session.get("disabled"):
+                return False
+            if runtime(session).get("lease_id") != lease_id:
+                return False
+            now = time.time()
+            transaction.update(
+                reference,
+                {
+                    "runtime.lease_expires": now + ttl_seconds,
+                    "runtime.heartbeat_at": now,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+            )
+            return True
+
+        return await _renew(transaction)
 
     async def release_session(
         self, session_id: str, *, status: str, stop_reason: str | None, **fields: Any
@@ -316,29 +430,103 @@ class Store:
             **fields,
         )
 
-    # --- events (the message mirror) ---
+    async def create_branch(
+        self,
+        session_id: str,
+        branch_id: str,
+        *,
+        base_uuid: str | None,
+        base_seq: int,
+        claude_session_id: str | None,
+    ) -> None:
+        """Register a rewind branch and make it the active one.
 
-    async def append_event(self, session_id: str, seq: int, message: dict[str, Any]) -> None:
-        # Doc id is the zero-padded seq: writes are idempotent on retry, and
-        # Firestore's lexicographic doc ordering matches numeric order.
+        Transactional so a concurrent claim can't interleave: refuses while a
+        live lease holds the session (the runner would keep appending to the
+        old tip) and when the branch id already exists.
+        """
+        transaction = self._db.transaction()
+        reference = self._session(session_id)
+        firestore = self._firestore
+
+        @firestore.async_transactional
+        async def _create(transaction):
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise KeyError(f"session {session_id} not found")
+            session = snapshot.to_dict()
+            if lease_active(session):
+                raise RuntimeError(f"session {session_id} is running — interrupt it first")
+            if branch_id in (session.get("branches") or {}):
+                raise ValueError(f"branch {branch_id} already exists")
+            transaction.update(
+                reference,
+                {
+                    f"branches.{branch_id}": {
+                        "created_at": time.time(),
+                        "base_uuid": base_uuid,
+                        "base_seq": base_seq,
+                        "claude_session_id": claude_session_id,
+                    },
+                    "active_branch": branch_id,
+                    "tip_uuid": base_uuid,
+                    "seq_head": base_seq,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+            )
+
+        await _create(transaction)
+
+    # --- events (the transcript journal; envelopes from journal.py) ---
+
+    async def append_event(self, session_id: str, event: dict[str, Any]) -> None:
+        # Doc id is the record's uuid: idempotent on retry, and a runner
+        # resuming with a stale seq counter can never overwrite an existing
+        # record — the worst crash outcome is a fork the tree can represent.
         await (
             self._session(session_id)
             .collection("events")
-            .document(f"{seq:012d}")
-            .set({"seq": seq, "message": message, "ts": self._firestore.SERVER_TIMESTAMP})
+            .document(event["uuid"])
+            .set({**event, "ts": self._firestore.SERVER_TIMESTAMP})
         )
 
     async def list_events(
-        self, session_id: str, after: int, limit: int = 200
+        self, session_id: str, branch: str, after: int, limit: int = 200
     ) -> list[dict[str, Any]]:
+        """One branch's records past the cursor. Needs the composite
+        (branch, seq) index on events declared in infra/main.tf."""
         query = (
             self._session(session_id)
             .collection("events")
+            .where(filter=self._firestore.FieldFilter("branch", "==", branch))
             .where(filter=self._firestore.FieldFilter("seq", ">", after))
             .order_by("seq")
             .limit(limit)
         )
         return [s.to_dict() async for s in query.stream()]
+
+    async def get_event(self, session_id: str, uuid: str) -> dict[str, Any] | None:
+        snapshot = await self._session(session_id).collection("events").document(uuid).get()
+        return snapshot.to_dict() if snapshot.exists else None
+
+    async def recover_head(self, session_id: str, branch: str) -> tuple[int, str | None]:
+        """The branch's real head, read from the journal itself.
+
+        The session doc's seq_head is flushed once per turn, so after a
+        mid-turn crash it lags the journal; seeding a new run from it would
+        re-issue seqs. This is the recovery read every claimer does instead.
+        """
+        query = (
+            self._session(session_id)
+            .collection("events")
+            .where(filter=self._firestore.FieldFilter("branch", "==", branch))
+            .order_by("seq", direction="DESCENDING")
+            .limit(1)
+        )
+        async for snapshot in query.stream():
+            event = snapshot.to_dict()
+            return int(event["seq"]), event.get("uuid")
+        return 0, None
 
     # --- inbox (client -> runner) ---
 
@@ -454,14 +642,23 @@ class Store:
         ]
 
     # --- audit ---
-
-    async def record_tool_call(self, session_id: str, row: dict[str, Any]) -> None:
-        row["ts"] = self._firestore.SERVER_TIMESTAMP
-        await self._session(session_id).collection("tool_calls").add(row)
+    #
+    # Tool-call audit rows live in the journal as "tool_call" records — one
+    # transcript, one order, joinable to the surrounding messages by seq —
+    # instead of the sibling subcollection they used to occupy.
 
     async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]:
-        query = self._session(session_id).collection("tool_calls").order_by("ts")
-        return [s.to_dict() async for s in query.stream()]
+        """Audit rows across every branch, in write order. Needs the composite
+        (type, ts) index on events declared in infra/main.tf."""
+        query = (
+            self._session(session_id)
+            .collection("events")
+            .where(filter=self._firestore.FieldFilter("type", "==", "tool_call"))
+            .order_by("ts")
+        )
+        # Flattened to the audit-row shape (payload + provenance): consumers
+        # predate the journal and want tool_name/input/decision at top level.
+        return [_tool_call_row(s.to_dict()) async for s in query.stream()]
 
     # --- workspaces (shared ws/ across sessions) ---
 
