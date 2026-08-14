@@ -1,4 +1,12 @@
 terraform {
+  # State lives in GCS, not on whoever ran apply last. The bucket is versioned
+  # and deliberately unmanaged by this config — it has to outlive any single
+  # apply, and a state bucket that stores its own state is a bootstrap knot.
+  backend "gcs" {
+    bucket = "syros-505320-tfstate"
+    prefix = "terraform/state"
+  }
+
   required_providers {
     google = {
       source  = "hashicorp/google"
@@ -262,8 +270,11 @@ resource "google_secret_manager_secret_iam_member" "runner_anthropic_key" {
 # Scoped per secret, never project-wide; a container stays empty (and the
 # grant moot) until an operator stores a credential for that connector.
 resource "google_secret_manager_secret_iam_member" "runner_connectors" {
-  for_each  = google_secret_manager_secret.connectors
-  secret_id = each.value.id
+  # keyed off the static catalog, not the secret resources: deriving for_each
+  # keys from a resource makes every `terraform import` fail until those
+  # secrets are already in state, which is exactly when you cannot afford it.
+  for_each  = local.connectors
+  secret_id = google_secret_manager_secret.connectors[each.key].id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.runner.email}"
 }
@@ -406,8 +417,9 @@ resource "google_storage_bucket_iam_member" "console_bucket" {
 # console can never access a payload; credentials are written from an
 # operator's machine via `syros connectors auth|set`.
 resource "google_secret_manager_secret_iam_member" "console_connectors_viewer" {
-  for_each  = google_secret_manager_secret.connectors
-  secret_id = each.value.id
+  # static keys, per the note on runner_connectors above
+  for_each  = local.connectors
+  secret_id = google_secret_manager_secret.connectors[each.key].id
   role      = "roles/secretmanager.viewer"
   member    = "serviceAccount:${google_service_account.console.email}"
 }
