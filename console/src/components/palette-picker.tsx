@@ -8,12 +8,15 @@ import { cn } from "@/lib/utils";
 // Slack-style theme picker: each palette re-skins the CSS tokens via a
 // `data-palette` attribute on <html> (see globals.css). The choice persists
 // in localStorage and is re-applied before first paint by the inline script
-// in layout.tsx. Swatches show each palette's light accent on its page tone.
+// in layout.tsx — keep DEFAULT_PALETTE in sync with that script. "clay" is
+// the token set on bare :root, so it maps to removing the attribute.
+// Swatches show each palette's light accent on its page tone.
 export const PALETTE_KEY = "syros-palette";
+export const DEFAULT_PALETTE = "harbour-haze";
 
 const PALETTES = [
-  { id: "", label: "Clay", accent: "#c96442", page: "#faf9f5" },
   { id: "harbour-haze", label: "Harbour Haze", accent: "#5a7d94", page: "#f3f6f7" },
+  { id: "clay", label: "Clay", accent: "#c96442", page: "#faf9f5" },
   { id: "stone-path", label: "Stone Path", accent: "#7d7364", page: "#f4f3f0" },
   { id: "coastal-morning", label: "Coastal Morning", accent: "#37587a", page: "#f9f8f3" },
   { id: "ink-wash", label: "Ink Wash", accent: "#2b2b28", page: "#f7f6f2" },
@@ -21,19 +24,18 @@ const PALETTES = [
 ];
 
 function applyPalette(id: string) {
-  if (id) {
-    document.documentElement.dataset.palette = id;
-    localStorage.setItem(PALETTE_KEY, id);
-  } else {
+  if (id === "clay") {
     delete document.documentElement.dataset.palette;
-    localStorage.removeItem(PALETTE_KEY);
+  } else {
+    document.documentElement.dataset.palette = id;
   }
+  localStorage.setItem(PALETTE_KEY, id);
 }
 
 export function PalettePicker() {
   const [open, setOpen] = useState(false);
-  const [current, setCurrent] = useState("");
-  useEffect(() => setCurrent(localStorage.getItem(PALETTE_KEY) ?? ""), []);
+  const [current, setCurrent] = useState(DEFAULT_PALETTE);
+  useEffect(() => setCurrent(localStorage.getItem(PALETTE_KEY) ?? DEFAULT_PALETTE), []);
 
   return (
     <div className="relative">
