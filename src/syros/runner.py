@@ -121,6 +121,26 @@ async def _heartbeat(
             lost.set()
 
 
+async def _publish_spaces(config: env.RunnerEnv, spaces: dict[str, str], ws) -> int:
+    """Checkpoint every rw artifact space to its GCS prefix; returns file count.
+
+    Called after every turn, not just at release: a session killed mid-run (job
+    timeout, OOM, lost lease) would otherwise publish nothing, and files stay
+    invisible in the console until the session goes idle.
+    """
+    published = 0
+    for space, mode in spaces.items():
+        if mode == "rw":
+            published += await asyncio.to_thread(
+                workspace.checkpoint,
+                config.project,
+                config.bucket,
+                artifacts.space_prefix(space),
+                ws / "artifacts" / space,
+            )
+    return published
+
+
 async def run(session_id: str) -> None:
     config = env.RunnerEnv.from_env()
 
@@ -315,6 +335,7 @@ async def run(session_id: str) -> None:
         sdk_options.mcp_servers = resolve_mcp_servers(options.mcp_servers, config.project)
 
         cost = float(session.get("cost_usd") or 0.0)
+        published = 0
         claude_session_id = branch_claude or session.get("claude_session_id")
         stop_reason = "end_turn"
 
@@ -352,6 +373,8 @@ async def run(session_id: str) -> None:
                                 stop_reason = message.subtype
                         if lost.is_set():
                             break  # skip the flush: the doc belongs to the new owner
+                        if spaces:
+                            published = await _publish_spaces(config, spaces, ws)
                         writer.context["claude_session_id"] = claude_session_id
                         await store.update_session(
                             session_id,
@@ -388,16 +411,10 @@ async def run(session_id: str) -> None:
             home,
             (".claude/skills/",),
         )
-        published = 0
-        for space, mode in spaces.items():
-            if mode == "rw":
-                published += await asyncio.to_thread(
-                    workspace.checkpoint,
-                    config.project,
-                    config.bucket,
-                    artifacts.space_prefix(space),
-                    ws / "artifacts" / space,
-                )
+        # Final publish: covers anything written after the last turn's flush
+        # (a turn interrupted between publish and release, hook side effects).
+        if spaces:
+            published = await _publish_spaces(config, spaces, ws)
         if options.workspace:
             await store.release_workspace(options.workspace, session_id)
         await writer.append("lifecycle", {"event": "released", "stop_reason": stop_reason})

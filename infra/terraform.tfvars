@@ -9,6 +9,6 @@ model_backend = "anthropic"
 # Console access: public URL behind IAP (console_iap defaults to true);
 # these principals both pass IAP and hold run.invoker.
 console_invokers = [
-    "user:yoichiojima@gmail.com",
-    "user:yuri.kt35@gmail.com",
+  "user:yoichiojima@gmail.com",
+  "user:yuri.kt35@gmail.com",
 ]

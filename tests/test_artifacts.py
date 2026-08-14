@@ -154,9 +154,27 @@ def test_read_artifact(bucket):
 def test_mount_prompt_lists_spaces_with_modes():
     prompt = artifacts.mount_prompt({"team": "rw", "inputs": "ro"})
     assert "./artifacts/team/ (read-write" in prompt
-    assert "published when the session ends" in prompt
+    assert "published at the end of every turn" in prompt
     assert "./artifacts/inputs/ (read-only" in prompt
     assert "discarded" in prompt
+
+
+def test_mount_prompt_names_the_single_rw_space_as_deliverable_target():
+    prompt = artifacts.mount_prompt({"team": "rw", "inputs": "ro"})
+    assert "Save every deliverable" in prompt
+    assert "directly under ./artifacts/team/" in prompt
+
+
+def test_mount_prompt_points_at_rw_spaces_generically_when_several():
+    prompt = artifacts.mount_prompt({"team": "rw", "reports": "rw"})
+    assert "Save every deliverable" in prompt
+    assert "one of the read-write spaces above" in prompt
+    assert "directly under ./artifacts/" not in prompt
+
+
+def test_mount_prompt_skips_deliverable_instruction_without_rw_space():
+    prompt = artifacts.mount_prompt({"inputs": "ro"})
+    assert "Save every deliverable" not in prompt
 
 
 def test_mount_prompt_empty_without_spaces():

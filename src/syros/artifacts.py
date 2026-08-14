@@ -34,15 +34,29 @@ def mount_prompt(spaces: dict[str, str]) -> str | None:
     lines = ["Shared artifact spaces are mounted in your working directory:"]
     for space, mode in spaces.items():
         detail = (
-            "read-write: files written here are published when the session ends"
+            "read-write: files written here are published at the end of every turn"
             if mode == "rw"
             else "read-only: local changes are discarded"
         )
         lines.append(f"- ./artifacts/{space}/ ({detail})")
+    rw = [space for space, mode in spaces.items() if mode == "rw"]
+    if len(rw) == 1:
+        lines.append(
+            f"IMPORTANT: Save every deliverable (reports, dashboards, generated"
+            f" files) directly under ./artifacts/{rw[0]}/ — not in the working"
+            " directory root. Files anywhere else are never published and humans"
+            " will not see them."
+        )
+    elif rw:
+        lines.append(
+            "IMPORTANT: Save every deliverable (reports, dashboards, generated"
+            " files) directly into one of the read-write spaces above — not in"
+            " the working directory root. Files anywhere else are never"
+            " published and humans will not see them."
+        )
     lines.append(
         "Only the working directory persists; anything outside it (/tmp, $HOME)"
-        " is discarded when the session ends. Write deliverables into a"
-        " read-write artifact space to publish them."
+        " is discarded when the session ends."
     )
     lines.append(
         "Published files are visible to humans in the syros console and to other"
