@@ -108,8 +108,20 @@ variable "console_iap" {
   default     = true
 }
 
-variable "vpc_connector" {
-  description = "Optional Serverless VPC connector for egress lockdown; null = default egress"
-  type        = string
-  default     = null
+variable "egress_control" {
+  description = "Route the runner and scheduler jobs through a Terraform-managed VPC with default-deny egress: only allowed_egress_domains and Google APIs (via Private Google Access) are reachable. Off = default (unrestricted) egress."
+  type        = bool
+  default     = false
+}
+
+variable "allowed_egress_domains" {
+  description = "FQDNs the sandbox may reach over tcp/443 when egress_control is on. Google APIs (*.googleapis.com) are always reachable via Private Google Access and need not be listed. No wildcards — GCP FQDN firewall objects don't support them."
+  type        = list(string)
+  default = [
+    "api.anthropic.com",     # model_backend = "anthropic"
+    "statsig.anthropic.com", # SDK telemetry (harmless if unused)
+    "mcp.slack.com",         # connector: slack
+    "mcp.notion.com",        # connector: notion
+    "api.githubcopilot.com", # connector: github
+  ]
 }

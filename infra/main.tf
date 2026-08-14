@@ -33,6 +33,11 @@ resource "google_project_service" "apis" {
     "bigquery.googleapis.com",
     "cloudscheduler.googleapis.com",
     "iap.googleapis.com",
+    # for egress_control (enabled unconditionally: toggling the for_each set
+    # on a flag churns every service resource, and disable_on_destroy=false
+    # means an unused enabled API costs nothing)
+    "compute.googleapis.com",
+    "dns.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -281,21 +286,31 @@ resource "google_cloud_run_v2_job" "runner" {
         }
       }
 
+      # ALL_TRAFFIC forces every packet — Google APIs included — through the
+      # default-deny VPC in network.tf; see the egress rules there.
       dynamic "vpc_access" {
-        for_each = var.vpc_connector == null ? [] : [var.vpc_connector]
+        for_each = var.egress_control ? [1] : []
         content {
-          connector = vpc_access.value
-          egress    = "ALL_TRAFFIC"
+          egress = "ALL_TRAFFIC"
+          network_interfaces {
+            network    = google_compute_network.egress[0].id
+            subnetwork = google_compute_subnetwork.runner[0].id
+          }
         }
       }
     }
   }
 
   # The secretAccessor binding must exist before Cloud Run validates the mount,
-  # or the job update fails with a permission error on the secret.
+  # or the job update fails with a permission error on the secret. The NAT and
+  # firewall association aren't referenced from the job spec, so order them
+  # explicitly — a job attached to a VPC with no NAT or policy yet would run
+  # its first sessions with the wrong egress.
   depends_on = [
     google_project_service.apis,
     google_secret_manager_secret_iam_member.runner_anthropic_key,
+    google_compute_router_nat.egress,
+    google_compute_network_firewall_policy_association.egress,
   ]
 }
 
@@ -451,10 +466,28 @@ resource "google_cloud_run_v2_job" "scheduler" {
           value = var.job_name
         }
       }
+
+      # Same lockdown as the runner: the tick only needs Firestore and
+      # run.googleapis.com, both served by Private Google Access, so this
+      # costs nothing and keeps one trust boundary for the whole image.
+      dynamic "vpc_access" {
+        for_each = var.egress_control ? [1] : []
+        content {
+          egress = "ALL_TRAFFIC"
+          network_interfaces {
+            network    = google_compute_network.egress[0].id
+            subnetwork = google_compute_subnetwork.runner[0].id
+          }
+        }
+      }
     }
   }
 
-  depends_on = [google_project_service.apis]
+  depends_on = [
+    google_project_service.apis,
+    google_compute_router_nat.egress,
+    google_compute_network_firewall_policy_association.egress,
+  ]
 }
 
 # Cloud Scheduler can't run a Cloud Run Job directly; it POSTs the job's :run

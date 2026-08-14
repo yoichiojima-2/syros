@@ -352,6 +352,21 @@ rows back. One side effect worth knowing: the audit session's own queries land i
   query is written to the audit trail with its SQL before it executes. Per-query caps
   bound a query, not a day — use a BigQuery custom quota for a hard ceiling — and query
   results land in the transcript and in whatever the agent writes to an artifact space.
+- **Network egress** — by default the sandbox has unrestricted internet access, which
+  leaves one exfiltration path open: a prompt injection (say, in a fetched web page) can
+  ask the agent to `curl` workspace data out. `terraform apply -var egress_control=true`
+  closes it: the runner and scheduler jobs route through a Terraform-managed VPC whose
+  firewall policy denies all egress except (a) `allowed_egress_domains` — defaults cover
+  `api.anthropic.com` and the connector MCP endpoints — over tcp/443, and (b) Google APIs
+  via Private Google Access, so Vertex, Firestore, GCS, Secret Manager and
+  `*.mcp.googleapis.com` keep working with no internet path at all. Allowed domains exit
+  through Cloud NAT (the only recurring cost: cents while sessions run, nothing at scale
+  to zero). The console is deliberately not routed through the VPC — it is operator-facing,
+  IAP/IAM-gated, and talks only to Google APIs. One honest caveat: FQDN firewall rules are
+  DNS-resolution based, admitting the IPs the allowed names resolve to without inspecting
+  TLS SNI — a host sharing an allowed domain's IPs (same CDN edge) is not blocked. If you
+  need SNI-level enforcement, front the VPC with
+  [Secure Web Proxy](https://cloud.google.com/secure-web-proxy) (always-on cost) instead.
 - **Audit before execution** — a `PreToolUse` hook writes the tool-call row to
   `sessions/{sid}/tool_calls` and awaits the commit *before* the tool runs, so the gate
   is enforced in code rather than by prompting.
@@ -388,9 +403,11 @@ Next.js bundle, ship the service).
 Callers need `datastore.user`, `run.jobs.runWithOverrides` (e.g. `roles/run.developer`, or
 `roles/run.jobsExecutorWithOverrides` on the runner job — the job is always triggered with
 a container override carrying the session id, so plain `run.invoker` is not enough), and read access
-on the session bucket. Optional egress lockdown: pass `-var vpc_connector=...` to route the
-job through your VPC. `-var sandbox_bigquery=true` lets sessions use the built-in BigQuery
-tool (see [Security model](#security-model) before flipping it).
+on the session bucket. Optional egress lockdown: `-var egress_control=true` puts the sandbox
+behind a default-deny egress firewall with a domain allowlist
+(`-var 'allowed_egress_domains=[...]'` to change it — see
+[Security model](#security-model)). `-var sandbox_bigquery=true` lets sessions use the
+built-in BigQuery tool (see [Security model](#security-model) before flipping it).
 
 ### The console on Cloud Run
 
@@ -461,7 +478,8 @@ doing nothing.
 REST API (the SDK is the surface; `syros console` is a pure Firestore client, not a
 control plane — deleting it loses nothing), versioned agent registry (options travel with the session; pin by
 committing code), vaults/egress proxy (the sandbox holds no secrets; keep them
-host-side), multi-env tenancy (one project per trust boundary).
+host-side — egress *filtering* exists via `egress_control`, a proxy does not), multi-env
+tenancy (one project per trust boundary).
 
 ## Development
 
