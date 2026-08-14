@@ -5,6 +5,7 @@
 // backend surface. Files that existed before the transcript began can't be
 // replayed and simply don't appear.
 
+import { eventMessage } from "./types";
 import type { ContentBlock, TranscriptEvent } from "./types";
 
 export type PreviewKind = "html" | "markdown" | "svg" | "code";
@@ -86,7 +87,7 @@ export function deriveArtifacts(events: TranscriptEvent[]): Artifact[] {
   let order = 0;
 
   for (const event of events) {
-    const message = event.message || {};
+    const message = eventMessage(event) || {};
     if (!Array.isArray(message.content)) continue;
     for (const block of message.content) {
       if (message.kind === "assistant" && block.type === "tool_use") {

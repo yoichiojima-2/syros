@@ -5,16 +5,34 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from syros.store import RUNTIME_FIELDS
+
+
+def _set_path(doc: dict[str, Any], key: str, value: Any) -> None:
+    """Apply one dotted-path update the way Firestore's update() does."""
+    parts = key.split(".")
+    for part in parts[:-1]:
+        doc = doc.setdefault(part, {})
+    doc[parts[-1]] = value
+
+
+async def append_message(store, session_id, seq, doc, *, branch="main", parent_uuid=None):
+    """Test shorthand: journal one message document at a given seq."""
+    from syros.journal import make_event
+
+    event = make_event("message", doc, parent_uuid=parent_uuid, branch=branch, seq=seq)
+    await store.append_event(session_id, event)
+    return event
+
 
 class FakeStore:
     """Implements syros.store.StoreProtocol (asserted in tests/test_store.py)."""
 
     def __init__(self) -> None:
         self.sessions: dict[str, dict[str, Any]] = {}
-        self.events: dict[str, list[dict[str, Any]]] = {}
+        self.events: dict[str, dict[str, dict[str, Any]]] = {}  # sid -> uuid -> event
         self.inbox: dict[str, list[dict[str, Any]]] = {}
         self.approvals: dict[str, dict[str, dict[str, Any]]] = {}
-        self.tool_calls: dict[str, list[dict[str, Any]]] = {}
         self.workspaces: dict[str, dict[str, Any]] = {}
         self.deployments: dict[str, dict[str, Any]] = {}
         self.agents: dict[str, dict[str, Any]] = {}
@@ -24,15 +42,28 @@ class FakeStore:
     ):
         self.sessions[session_id] = {
             "options": options,
-            "status": "queued",
-            "stop_reason": None,
             "disabled": False,
             "cost_usd": 0.0,
-            "seq_head": 0,
-            "lease_id": None,
-            "lease_expires": 0.0,
-            "triggered_at": 0.0,
             "claude_session_id": None,
+            "branches": {
+                "main": {
+                    "created_at": time.time(),
+                    "base_uuid": None,
+                    "base_seq": 0,
+                    "claude_session_id": None,
+                }
+            },
+            "active_branch": "main",
+            "tip_uuid": None,
+            "seq_head": 0,
+            "runtime": {
+                "status": "queued",
+                "stop_reason": None,
+                "lease_id": None,
+                "lease_expires": 0.0,
+                "heartbeat_at": 0.0,
+                "triggered_at": 0.0,
+            },
             "created_by": created_by,
             "deployment": deployment,
             "trigger": trigger,
@@ -46,7 +77,12 @@ class FakeStore:
         return dict(session) if session else None
 
     async def update_session(self, session_id, **fields):
-        self.sessions[session_id].update(fields, updated_at=time.time())
+        session = self.sessions[session_id]
+        for key, value in fields.items():
+            if key in RUNTIME_FIELDS:
+                key = f"runtime.{key}"
+            _set_path(session, key, value)
+        session["updated_at"] = time.time()
 
     async def list_sessions(self, limit=20):
         rows = [{"id": k, **v} for k, v in self.sessions.items()]
@@ -64,22 +100,43 @@ class FakeStore:
         self.events.pop(session_id, None)
         self.inbox.pop(session_id, None)
         self.approvals.pop(session_id, None)
-        self.tool_calls.pop(session_id, None)
 
     async def mark_starting(self, session_id):
         session = self.sessions.get(session_id)
-        if not session or session.get("disabled") or session["status"] in ("running", "terminated"):
+        if (
+            not session
+            or session.get("disabled")
+            or session["runtime"]["status"] in ("running", "terminated")
+        ):
             return
-        session.update(status="starting", triggered_at=time.time(), updated_at=time.time())
+        session["runtime"].update(status="starting", triggered_at=time.time())
+        session["updated_at"] = time.time()
 
     async def claim_session(self, session_id, lease_id, ttl_seconds):
         session = self.sessions.get(session_id)
-        if not session or session.get("status") == "terminated" or session.get("disabled"):
+        if not session or session["runtime"]["status"] == "terminated" or session.get("disabled"):
             return None
-        if float(session.get("lease_expires") or 0) > time.time():
+        runtime = session["runtime"]
+        now = time.time()
+        if float(runtime.get("lease_expires") or 0) > now and runtime.get("lease_id") != lease_id:
             return None
-        session.update(status="running", lease_id=lease_id, lease_expires=time.time() + ttl_seconds)
+        runtime.update(
+            status="running",
+            lease_id=lease_id,
+            lease_expires=now + ttl_seconds,
+            heartbeat_at=now,
+        )
         return dict(session)
+
+    async def renew_lease(self, session_id, lease_id, ttl_seconds):
+        session = self.sessions.get(session_id)
+        if not session or session["runtime"]["status"] == "terminated" or session.get("disabled"):
+            return False
+        if session["runtime"].get("lease_id") != lease_id:
+            return False
+        now = time.time()
+        session["runtime"].update(lease_expires=now + ttl_seconds, heartbeat_at=now)
+        return True
 
     async def release_session(self, session_id, *, status, stop_reason, **fields):
         await self.update_session(
@@ -91,16 +148,50 @@ class FakeStore:
             **fields,
         )
 
-    async def append_event(self, session_id, seq, message):
-        self.events.setdefault(session_id, []).append({"seq": seq, "message": message})
+    async def create_branch(self, session_id, branch_id, *, base_uuid, base_seq, claude_session_id):
+        session = self.sessions.get(session_id)
+        if not session:
+            raise KeyError(f"session {session_id} not found")
+        if float(session["runtime"].get("lease_expires") or 0) > time.time():
+            raise RuntimeError(f"session {session_id} is running — interrupt it first")
+        if branch_id in session["branches"]:
+            raise ValueError(f"branch {branch_id} already exists")
+        session["branches"][branch_id] = {
+            "created_at": time.time(),
+            "base_uuid": base_uuid,
+            "base_seq": base_seq,
+            "claude_session_id": claude_session_id,
+        }
+        session.update(active_branch=branch_id, tip_uuid=base_uuid, seq_head=base_seq)
+        session["updated_at"] = time.time()
 
-    async def list_events(self, session_id, after, limit=200):
-        rows = [e for e in self.events.get(session_id, []) if e["seq"] > after]
+    async def append_event(self, session_id, event):
+        # Keyed by uuid, like the real store's doc id: idempotent on retry,
+        # and a stale-seq rewrite lands as a second record, never an overwrite.
+        self.events.setdefault(session_id, {})[event["uuid"]] = {**event, "ts": time.time()}
+
+    async def list_events(self, session_id, branch, after, limit=200):
+        rows = [
+            e
+            for e in self.events.get(session_id, {}).values()
+            if e.get("branch") == branch and e["seq"] > after
+        ]
         return sorted(rows, key=lambda e: e["seq"])[:limit]
+
+    async def get_event(self, session_id, uuid):
+        event = self.events.get(session_id, {}).get(uuid)
+        return dict(event) if event else None
+
+    async def recover_head(self, session_id, branch):
+        rows = [e for e in self.events.get(session_id, {}).values() if e.get("branch") == branch]
+        if not rows:
+            return 0, None
+        head = max(rows, key=lambda e: e["seq"])
+        return int(head["seq"]), head.get("uuid")
 
     async def push_inbox(self, session_id, kind, text=None):
         self.inbox.setdefault(session_id, []).append(
-            {"kind": kind, "text": text, "consumed": False}
+            {"kind": kind, "text": text, "ts": time.time(), "consumed": False}
         )
 
     async def pop_messages(self, session_id):
@@ -130,6 +221,8 @@ class FakeStore:
             "status": "pending",
             "deny_message": None,
             "decided_by": None,
+            "requested_at": time.time(),
+            "decided_at": None,
         }
 
     async def get_approval(self, session_id, call_hash):
@@ -141,6 +234,7 @@ class FakeStore:
             status="allow" if allow else "deny",
             decided_by=decided_by,
             deny_message=deny_message,
+            decided_at=time.time(),
         )
 
     async def list_pending_approvals(self, session_id):
@@ -159,11 +253,11 @@ class FakeStore:
             if a["status"] == "pending"
         ]
 
-    async def record_tool_call(self, session_id, row):
-        self.tool_calls.setdefault(session_id, []).append(dict(row))
-
     async def list_tool_calls(self, session_id):
-        return [dict(r) for r in self.tool_calls.get(session_id, [])]
+        from syros.store import _tool_call_row
+
+        rows = [e for e in self.events.get(session_id, {}).values() if e.get("type") == "tool_call"]
+        return [_tool_call_row(e) for e in sorted(rows, key=lambda e: e["ts"])]
 
     async def claim_workspace(self, name, session_id, ttl_seconds):
         doc = self.workspaces.get(name)

@@ -19,6 +19,7 @@ from typing import Any
 from claude_agent_sdk.types import HookMatcher
 
 from .env import DEFAULT_APPROVAL_TIMEOUT
+from .journal import JournalWriter
 from .store import StoreProtocol
 from .types import PermissionResult, PermissionResultAllow, PermissionResultDeny
 
@@ -52,12 +53,16 @@ class Gate:
         self,
         store: StoreProtocol,
         session_id: str,
+        journal: JournalWriter,
         *,
         approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
         poll_interval: float = 1.0,
     ) -> None:
         self._store = store
         self._session_id = session_id
+        # The runner's writer: sharing it puts audit and approval records in
+        # the same seq order as the messages they interleave with.
+        self._journal = journal
         self._approval_timeout = approval_timeout
         self._poll_interval = poll_interval
 
@@ -65,8 +70,12 @@ class Gate:
         return {"PreToolUse": [HookMatcher(matcher=None, hooks=[self._pre_tool_use])]}
 
     async def _killed(self) -> bool:
+        from .store import runtime
+
         session = await self._store.get_session(self._session_id)
-        return not session or session.get("disabled") or session.get("status") == "terminated"
+        return (
+            not session or session.get("disabled") or runtime(session).get("status") == "terminated"
+        )
 
     async def _pre_tool_use(
         self, input_data: dict[str, Any], tool_use_id: str | None, context: Any
@@ -74,9 +83,10 @@ class Gate:
         tool_name = input_data.get("tool_name", "")
         tool_input = input_data.get("tool_input") or {}
         killed = await self._killed()
-        # The audit row is committed before the tool is allowed to run.
-        await self._store.record_tool_call(
-            self._session_id,
+        # The audit record is committed to the journal before the tool is
+        # allowed to run.
+        await self._journal.append(
+            "tool_call",
             {
                 "tool_name": tool_name,
                 "input": tool_input,
@@ -100,10 +110,28 @@ class Gate:
             tool_input,
             tool_use_id=getattr(context, "tool_use_id", None),
         )
+        # The approvals subcollection stays the operational queue (the gate
+        # polls it, operators decide on it); the journal gets mirror records so
+        # the transcript shows the wait and its outcome inline.
+        await self._journal.append(
+            "approval", {"phase": "requested", "call_hash": hash_, "tool_name": tool_name}
+        )
         deadline = time.monotonic() + self._approval_timeout
         while time.monotonic() < deadline:
             approval = await self._store.get_approval(self._session_id, hash_)
             status = (approval or {}).get("status")
+            if status in ("allow", "deny"):
+                await self._journal.append(
+                    "approval",
+                    {
+                        "phase": "decided",
+                        "call_hash": hash_,
+                        "tool_name": tool_name,
+                        "status": status,
+                        "decided_by": (approval or {}).get("decided_by"),
+                        "deny_message": (approval or {}).get("deny_message"),
+                    },
+                )
             if status == "allow":
                 return PermissionResultAllow()
             if status == "deny":
@@ -117,5 +145,16 @@ class Gate:
         # as "pending" in the queue after the harness has already moved on.
         await self._store.decide_approval(
             self._session_id, hash_, allow=False, decided_by="timeout"
+        )
+        await self._journal.append(
+            "approval",
+            {
+                "phase": "decided",
+                "call_hash": hash_,
+                "tool_name": tool_name,
+                "status": "deny",
+                "decided_by": "timeout",
+                "deny_message": "approval timed out",
+            },
         )
         return PermissionResultDeny(message="approval timed out")

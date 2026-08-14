@@ -133,7 +133,9 @@ async def test_resolve_merges_stored_options():
 async def test_attach_session_snapshots_resolved_options():
     store = FakeStore()
     await make(store)
-    session_id, cursor = await attach_session(store, AgentOptions(agent="reviewer", project="p"))
+    session_id, _branch, cursor = await attach_session(
+        store, AgentOptions(agent="reviewer", project="p")
+    )
     assert cursor == 0
     session = store.sessions[session_id]
     assert session["agent"] == "reviewer"
@@ -145,7 +147,7 @@ async def test_attach_session_snapshots_resolved_options():
 
 async def test_attach_session_without_agent_records_none():
     store = FakeStore()
-    session_id, _ = await attach_session(store, AgentOptions(project="p"))
+    session_id, _branch, _ = await attach_session(store, AgentOptions(project="p"))
     assert store.sessions[session_id]["agent"] is None
 
 

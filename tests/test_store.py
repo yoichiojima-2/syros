@@ -62,15 +62,15 @@ async def test_mark_starting_skips_live_and_dead_sessions():
     store = FakeStore()
     await store.create_session("sess_1", {})
     await store.mark_starting("sess_1")
-    assert (await store.get_session("sess_1"))["status"] == "starting"
+    assert (await store.get_session("sess_1"))["runtime"]["status"] == "starting"
 
     await store.claim_session("sess_1", "lease-1", 60)
     await store.mark_starting("sess_1")
-    assert (await store.get_session("sess_1"))["status"] == "running"
+    assert (await store.get_session("sess_1"))["runtime"]["status"] == "running"
 
     await store.update_session("sess_1", status="terminated")
     await store.mark_starting("sess_1")
-    assert (await store.get_session("sess_1"))["status"] == "terminated"
+    assert (await store.get_session("sess_1"))["runtime"]["status"] == "terminated"
 
     await store.mark_starting("sess_missing")  # no such session: a no-op, not an error
 
@@ -96,6 +96,109 @@ async def test_workspace_release_only_by_holder():
     await store.release_workspace("ws", "sess_a")
     assert store.workspaces["ws"]["lease_session_id"] is None
     assert store.workspaces["ws"]["lease_expires"] == 0.0
+
+
+async def test_runtime_map_reads():
+    from syros.store import runtime
+
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    session = await store.get_session("sess_1")
+    # liveness lives under runtime; the durable half never carries it
+    assert runtime(session)["status"] == "queued"
+    assert "status" not in session
+    # workspace lease docs stay flat and still work through the same helpers
+    assert lease_active({"lease_expires": time.time() + 60}) is True
+
+
+async def test_update_session_routes_runtime_and_dotted_fields():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.update_session(
+        "sess_1",
+        status="idle",
+        cost_usd=0.5,
+        **{"branches.main.claude_session_id": "c1"},
+    )
+    session = await store.get_session("sess_1")
+    assert session["runtime"]["status"] == "idle"
+    assert session["cost_usd"] == 0.5
+    assert session["branches"]["main"]["claude_session_id"] == "c1"
+
+
+async def test_claim_is_reentrant_for_same_lease_only():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    assert await store.claim_session("sess_1", "lease-1", 60) is not None
+    assert await store.claim_session("sess_1", "lease-1", 60) is not None  # re-claim ok
+    assert await store.claim_session("sess_1", "lease-2", 60) is None  # foreign live lease
+
+
+async def test_renew_lease_heartbeat():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.claim_session("sess_1", "lease-1", 60)
+    assert await store.renew_lease("sess_1", "lease-1", 60) is True
+    # a foreign lease id means the lease was stolen: renewal must fail
+    assert await store.renew_lease("sess_1", "lease-2", 60) is False
+    # kill switch also fails the heartbeat
+    await store.update_session("sess_1", disabled=True)
+    assert await store.renew_lease("sess_1", "lease-1", 60) is False
+    assert await store.renew_lease("sess_missing", "lease-1", 60) is False
+
+
+async def test_append_event_never_overwrites_on_stale_seq():
+    from .fakes import append_message
+
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    first = await append_message(store, "sess_1", 1, {"kind": "user", "content": "a"})
+    # a crashed runner re-issuing seq 1 lands as a second record, not a rewrite
+    second = await append_message(store, "sess_1", 1, {"kind": "user", "content": "b"})
+    events = await store.list_events("sess_1", "main", after=0)
+    assert {e["uuid"] for e in events} == {first["uuid"], second["uuid"]}
+
+
+async def test_recover_head_reads_past_stale_seq_head():
+    from .fakes import append_message
+
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    # crash scenario: three records journaled, but seq_head only flushed to 1
+    for seq in (1, 2, 3):
+        await append_message(store, "sess_1", seq, {"kind": "assistant", "content": []})
+    await store.update_session("sess_1", seq_head=1)
+    seq, tip = await store.recover_head("sess_1", "main")
+    assert seq == 3
+    events = await store.list_events("sess_1", "main", after=0)
+    assert tip == events[-1]["uuid"]
+    assert await store.recover_head("sess_1", "br_x") == (0, None)
+
+
+async def test_create_branch_switches_active_and_guards():
+    import pytest
+
+    from .fakes import append_message
+
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    base = await append_message(store, "sess_1", 1, {"kind": "result"})
+    await store.create_branch(
+        "sess_1", "br_a", base_uuid=base["uuid"], base_seq=1, claude_session_id="c1"
+    )
+    session = await store.get_session("sess_1")
+    assert session["active_branch"] == "br_a"
+    assert session["seq_head"] == 1 and session["tip_uuid"] == base["uuid"]
+    assert session["branches"]["br_a"]["claude_session_id"] == "c1"
+    with pytest.raises(ValueError):
+        await store.create_branch(
+            "sess_1", "br_a", base_uuid=None, base_seq=0, claude_session_id=None
+        )
+    await store.claim_session("sess_1", "lease-1", 60)
+    with pytest.raises(RuntimeError):
+        await store.create_branch(
+            "sess_1", "br_b", base_uuid=None, base_seq=0, claude_session_id=None
+        )
 
 
 def test_fake_store_satisfies_protocol():

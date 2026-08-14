@@ -36,6 +36,7 @@ class _Backend:
         self._store = store
         self._remote: Any = None
         self._cursor = 0
+        self._branch = "main"
         self.session_id: str | None = None
 
     async def connect(self) -> None:
@@ -44,14 +45,16 @@ class _Backend:
 
         self._remote = remote
         self._store = self._store or Store(self._options.resolved_project())
-        self.session_id, self._cursor = await remote.attach_session(self._store, self._options)
+        self.session_id, self._branch, self._cursor = await remote.attach_session(
+            self._store, self._options
+        )
 
     async def query(self, prompt: str | AsyncIterable[dict[str, Any]]) -> None:
         await self._remote.send_prompt(self._store, self.session_id, self._options, prompt)
 
     async def receive_response(self) -> AsyncIterator[Message]:
         async for seq, message in self._remote.stream_response(
-            self._store, self.session_id, self._options, self._cursor
+            self._store, self.session_id, self._options, self._branch, self._cursor
         ):
             self._cursor = seq
             yield message

@@ -67,6 +67,7 @@ class RunnerEnv:
     bucket: str
     stay_alive: float
     lease_ttl: float
+    heartbeat: float
     work_dir: Path
 
     @classmethod
@@ -74,10 +75,15 @@ class RunnerEnv:
         project = find_project()
         if not project:
             raise SystemExit("runner requires $SYROS_PROJECT")
+        # The lease is short and heartbeat-renewed (default every ttl/3), so a
+        # dead runner is detected within minutes instead of masquerading as
+        # "running" for the rest of a long ttl.
+        lease_ttl = float(os.environ.get("SYROS_LEASE_TTL", "180"))
         return cls(
             project=project,
             bucket=default_bucket(None, project),
             stay_alive=float(os.environ.get("SYROS_STAY_ALIVE", "60")),
-            lease_ttl=float(os.environ.get("SYROS_LEASE_TTL", "3600")),
+            lease_ttl=lease_ttl,
+            heartbeat=float(os.environ.get("SYROS_HEARTBEAT", str(lease_ttl / 3))),
             work_dir=Path(os.environ.get("SYROS_WORK_DIR", "/work")),
         )

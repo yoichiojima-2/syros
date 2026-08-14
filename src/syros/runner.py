@@ -19,9 +19,10 @@ from claude_agent_sdk import ClaudeSDKClient
 
 from . import env
 from .gate import Gate
+from .journal import JournalWriter, build_context, git_info
 from .options import AgentOptions, build_sdk_options, model_env
-from .store import Store
-from .types import ResultMessage, SystemMessage, UserMessage, message_to_doc
+from .store import Store, runtime
+from .types import ResultMessage, SystemMessage, message_to_doc
 from . import artifacts, bigquery, connectors, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
@@ -81,22 +82,79 @@ async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -
         if messages:
             return messages
         session = await store.get_session(session_id)
-        if not session or session.get("disabled") or session.get("status") == "terminated":
+        if not session or session.get("disabled") or runtime(session).get("status") == "terminated":
             return []
         await asyncio.sleep(INBOX_POLL_SECONDS)
         waited += INBOX_POLL_SECONDS
     return []
 
 
+async def _heartbeat(
+    store: Store,
+    session_id: str,
+    lease_id: str,
+    workspace_name: str | None,
+    *,
+    ttl: float,
+    interval: float,
+    lost: asyncio.Event,
+) -> None:
+    """Background task: keep the session (and workspace) lease alive.
+
+    A failed renewal means the lease was stolen or the session was killed —
+    set the lost flag so the run stops instead of writing over the new owner.
+    Transient store errors are swallowed: the ttl leaves slack for a retry.
+    """
+    while not lost.is_set():
+        await asyncio.sleep(interval)
+        try:
+            alive = await store.renew_lease(session_id, lease_id, ttl)
+            if alive and workspace_name:
+                alive = await store.claim_workspace(workspace_name, session_id, ttl)
+        except Exception:
+            continue
+        if not alive:
+            lost.set()
+
+
 async def run(session_id: str) -> None:
     config = env.RunnerEnv.from_env()
 
     store = Store(config.project)
-    session = await store.claim_session(session_id, uuid.uuid4().hex, config.lease_ttl)
+    lease_id = uuid.uuid4().hex
+    session = await store.claim_session(session_id, lease_id, config.lease_ttl)
     if session is None:
         return  # another execution holds the lease, or the session is gone/terminated
 
     options = AgentOptions(**session["options"], project=config.project)
+
+    # Seed the journal cursor from the journal itself, never from the advisory
+    # seq_head: after a mid-turn crash the doc lags the records, and trusting
+    # it would re-issue seqs. A fresh branch has no records yet, so its base
+    # (written by create_branch) is the floor.
+    branch = session.get("active_branch") or "main"
+    branch_info = (session.get("branches") or {}).get(branch) or {}
+    seq, tip_uuid = await store.recover_head(session_id, branch)
+    if seq < int(branch_info.get("base_seq") or 0):
+        seq, tip_uuid = int(branch_info.get("base_seq") or 0), branch_info.get("base_uuid")
+
+    ws, home = config.work_dir / "ws", config.work_dir / "home"
+    writer = JournalWriter(
+        store,
+        session_id,
+        branch=branch,
+        seq=seq,
+        tip_uuid=tip_uuid,
+        context=build_context(
+            cwd=str(ws),
+            model=options.model,
+            permission_mode=options.permission_mode,
+            workspace=options.workspace,
+            lease_id=lease_id,
+            claude_session_id=session.get("claude_session_id"),
+        ),
+    )
+    await writer.append("lifecycle", {"event": "claimed", "lease_id": lease_id})
 
     if options.workspace and not await store.claim_workspace(
         options.workspace, session_id, config.lease_ttl
@@ -104,7 +162,9 @@ async def run(session_id: str) -> None:
         # Another session is live in this workspace: fail fast with an error
         # result so the waiting client terminates. The prompt stays queued in
         # the inbox and is consumed when the session is re-triggered.
-        seq = int(session.get("seq_head") or 0) + 1
+        await writer.append(
+            "lifecycle", {"event": "workspace_busy", "workspace": options.workspace}
+        )
         doc = message_to_doc(
             ResultMessage(
                 subtype="workspace_busy",
@@ -116,9 +176,13 @@ async def run(session_id: str) -> None:
                 total_cost_usd=0.0,
             )
         )
-        await store.append_event(session_id, seq, doc)
+        await writer.append("message", doc)
         await store.release_session(
-            session_id, status="idle", stop_reason="workspace_busy", seq_head=seq
+            session_id,
+            status="idle",
+            stop_reason="workspace_busy",
+            seq_head=writer.seq,
+            tip_uuid=writer.tip_uuid,
         )
         return
 
@@ -132,7 +196,7 @@ async def run(session_id: str) -> None:
                 connectors.mcp_servers_for, config.project, options.connectors
             )
         except connectors.ConnectorError as error:
-            seq = int(session.get("seq_head") or 0) + 1
+            await writer.append("lifecycle", {"event": "connector_error", "error": str(error)})
             doc = message_to_doc(
                 ResultMessage(
                     subtype="connector_error",
@@ -145,11 +209,15 @@ async def run(session_id: str) -> None:
                     result=str(error),
                 )
             )
-            await store.append_event(session_id, seq, doc)
+            await writer.append("message", doc)
             if options.workspace:
                 await store.release_workspace(options.workspace, session_id)
             await store.release_session(
-                session_id, status="idle", stop_reason="connector_error", seq_head=seq
+                session_id,
+                status="idle",
+                stop_reason="connector_error",
+                seq_head=writer.seq,
+                tip_uuid=writer.tip_uuid,
             )
             return
         options.mcp_servers = {**servers, **options.mcp_servers}
@@ -185,12 +253,23 @@ async def run(session_id: str) -> None:
     if mounts := artifacts.mount_prompt(spaces):
         options.system_prompt = "\n\n".join(filter(None, (options.system_prompt, mounts)))
 
-    gate = Gate(store, session_id, approval_timeout=env.approval_timeout())
+    # The workspace is restored now, so the context snapshot can carry its
+    # git state; read once, not per event.
+    writer.context["git"] = git_info(ws)
+
+    gate = Gate(store, session_id, writer, approval_timeout=env.approval_timeout())
+    # A freshly created rewind branch stores the SDK session of its base turn;
+    # resuming it with fork_session tells the SDK to branch its own transcript
+    # there instead of continuing the abandoned tip. Once this run flushes, the
+    # branch's id matches the session's and later claims resume normally.
+    branch_claude = branch_info.get("claude_session_id")
+    fork = bool(branch_claude) and branch_claude != session.get("claude_session_id")
     sdk_options = build_sdk_options(
         options,
         can_use_tool=gate.can_use_tool,
         cwd=str(ws),
-        resume=session.get("claude_session_id"),
+        resume=branch_claude or session.get("claude_session_id"),
+        fork_session=fork,
         env={**model_env(options), "HOME": str(home)},
         # "user" settings live in the sandboxed HOME above, so this only ever
         # loads syros-managed state — and it is what makes the mounted
@@ -200,28 +279,36 @@ async def run(session_id: str) -> None:
     sdk_options.hooks = gate.hooks()
     sdk_options.mcp_servers = resolve_mcp_servers(options.mcp_servers, config.project)
 
-    seq = int(session.get("seq_head") or 0)
     cost = float(session.get("cost_usd") or 0.0)
-    claude_session_id = session.get("claude_session_id")
+    claude_session_id = branch_claude or session.get("claude_session_id")
     stop_reason = "end_turn"
+    lost = asyncio.Event()
 
     async with ClaudeSDKClient(sdk_options) as client:
         watcher = asyncio.create_task(_watch_interrupt(store, session_id, client))
+        beat = asyncio.create_task(
+            _heartbeat(
+                store,
+                session_id,
+                lease_id,
+                options.workspace,
+                ttl=config.lease_ttl,
+                interval=config.heartbeat,
+                lost=lost,
+            )
+        )
         try:
-            while True:
+            while not lost.is_set():
                 messages = await _wait_for_messages(store, session_id, config.stay_alive)
                 if not messages:
                     break
                 # One query per prompt, so each gets its own turn (and its own
                 # result row) instead of being glued into one mega-prompt.
                 for text in messages:
-                    # Mirror the prompt to the event feed: the SDK stream echoes
-                    # tool results as user messages but never the prompt itself,
-                    # and the chat view needs it.
-                    seq += 1
-                    await store.append_event(
-                        session_id, seq, message_to_doc(UserMessage(content=text))
-                    )
+                    # The prompt is a first-class journal record: the SDK stream
+                    # echoes tool results as user messages but never the prompt
+                    # itself, and the chat view needs it.
+                    await writer.append("prompt", {"text": text, "source": "inbox"})
                     await client.query(text)
                     async for message in client.receive_response():
                         if (
@@ -231,20 +318,31 @@ async def run(session_id: str) -> None:
                             continue
                         doc = message_to_doc(message)
                         if doc is not None:
-                            seq += 1
-                            await store.append_event(session_id, seq, doc)
+                            await writer.append("message", doc)
                         if isinstance(message, ResultMessage):
                             cost += message.total_cost_usd or 0.0
                             claude_session_id = message.session_id
                             stop_reason = message.subtype
+                    writer.context["claude_session_id"] = claude_session_id
                     await store.update_session(
                         session_id,
-                        seq_head=seq,
+                        seq_head=writer.seq,
+                        tip_uuid=writer.tip_uuid,
                         cost_usd=cost,
                         claude_session_id=claude_session_id,
+                        **{f"branches.{branch}.claude_session_id": claude_session_id},
                     )
+                    if lost.is_set():
+                        break
         finally:
             watcher.cancel()
+            beat.cancel()
+
+    if lost.is_set():
+        # The lease was stolen or the session killed mid-run: another
+        # execution may own the session (and workspace) now, so write nothing
+        # — no checkpoint, no release — and let the new owner's state stand.
+        return
 
     await asyncio.to_thread(
         workspace.checkpoint,
@@ -271,11 +369,13 @@ async def run(session_id: str) -> None:
             )
     if options.workspace:
         await store.release_workspace(options.workspace, session_id)
+    await writer.append("lifecycle", {"event": "released", "stop_reason": stop_reason})
     await store.release_session(
         session_id,
         status="idle",
         stop_reason=stop_reason,
-        seq_head=seq,
+        seq_head=writer.seq,
+        tip_uuid=writer.tip_uuid,
         cost_usd=cost,
         claude_session_id=claude_session_id,
         # File count in rw artifact spaces at release: a quick "did this

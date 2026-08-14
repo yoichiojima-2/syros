@@ -58,11 +58,20 @@ Ops without a UI:
 
 ```
 syros sessions                       # recent sessions: status, cost, stop reason
-syros tail sess_...                  # follow a session's message feed
+syros tail sess_...                  # follow a session's journal (messages + audit)
+syros rewind sess_... <event_uuid>   # branch the transcript from a past event
 syros approvals sess_...             # pending approvals
 syros approvals sess_... allow <call_hash>
 syros kill sess_...                  # kill switch: denies every further tool call
 ```
+
+A session's transcript is a journal of typed records (messages, prompts, the
+tool-call audit trail, approvals, lifecycle transitions), each with its own
+uuid, a parent pointer, and a context snapshot — a tree, not just a log.
+`rewind` (or `AgentOptions(resume="sess_...", from_event="<uuid>")`) branches
+the conversation from any past turn; the old branch stays intact. Rewind is
+conversation-only: the workspace keeps its latest checkpoint, and the branch
+point snaps to the nearest turn boundary.
 
 Sharing results with other users goes through artifact spaces — named prefixes
 (`artifacts/{space}/`) in the session bucket that any user with read access on the bucket

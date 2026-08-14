@@ -58,6 +58,11 @@ class AgentOptions:
     max_turns: int | None = None
     max_budget_usd: float | None = None
     resume: str | None = None  # syros session id (sess_...)
+    # Rewind: with resume, branch the transcript from this past event (its
+    # uuid) instead of continuing the current tip. Conversation-only — the
+    # workspace keeps its latest checkpoint — and snapped to the nearest turn
+    # boundary at or before the event.
+    from_event: str | None = None
     can_use_tool: CanUseTool | None = None
 
     # --- syros ---
@@ -197,6 +202,7 @@ def build_sdk_options(
     can_use_tool: CanUseTool | None = None,
     cwd: str | None = None,
     resume: str | None = None,
+    fork_session: bool = False,
     env: dict[str, str] | None = None,
     setting_sources: list[str] | None = None,
 ) -> Any:
@@ -205,6 +211,7 @@ def build_sdk_options(
 
     return ClaudeAgentOptions(
         setting_sources=setting_sources,
+        fork_session=fork_session,
         system_prompt=options.system_prompt,
         model=options.model,
         tools=options.tools,

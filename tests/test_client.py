@@ -7,7 +7,7 @@ from syros import AgentOptions, AssistantMessage, ResultMessage, SyrosClient, Te
 from syros.errors import SyrosError
 from syros.types import message_to_doc
 
-from .fakes import FakeStore
+from .fakes import FakeStore, append_message
 
 
 @pytest.fixture(autouse=True)
@@ -38,12 +38,13 @@ def result(n):
 async def answer_turn(store, session_id, text, start_seq):
     while not await store.pop_messages(session_id):
         await asyncio.sleep(0.01)
-    await store.append_event(
+    await append_message(
+        store,
         session_id,
         start_seq + 1,
         message_to_doc(AssistantMessage(content=[TextBlock(text=text)], model="m")),
     )
-    await store.append_event(session_id, start_seq + 2, message_to_doc(result(1)))
+    await append_message(store, session_id, start_seq + 2, message_to_doc(result(1)))
     await store.update_session(session_id, seq_head=start_seq + 2)
 
 
@@ -75,7 +76,7 @@ async def test_interrupt_and_terminate():
         assert store.inbox[client.session_id][0]["kind"] == "interrupt"
         await client.terminate()
         session = await store.get_session(client.session_id)
-        assert session["status"] == "terminated"
+        assert session["runtime"]["status"] == "terminated"
         assert session["disabled"] is True
 
 

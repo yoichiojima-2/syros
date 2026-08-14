@@ -21,7 +21,7 @@ from .. import connectors as connectors_mod
 from ..names import validate_name, validate_tags
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
-from ..store import StoreProtocol, lease_active, new_session_id, start_pending
+from ..store import StoreProtocol, lease_active, new_session_id, runtime, start_pending
 from .objects import MAX_PREVIEW_BYTES, ObjectStoreProtocol
 
 # Bounds one poll() response (pages × 200 events) so a huge backlog — e.g. the
@@ -69,13 +69,14 @@ def derived_state(session: dict[str, Any]) -> str:
 
     The value set mirrors SessionState in console/src/lib/types.ts — keep in sync.
     """
-    if session.get("status") == "terminated" or session.get("disabled"):
+    status = runtime(session).get("status")
+    if status == "terminated" or session.get("disabled"):
         return "terminated"
-    if session.get("status") == "running":
+    if status == "running":
         return "running" if lease_active(session) else "stalled"
-    if session.get("status") == "starting":
+    if status == "starting":
         return "starting" if start_pending(session) else "stalled"
-    return session.get("status") or "unknown"
+    return status or "unknown"
 
 
 # States in which a session is still going, so its outcome isn't decided and
@@ -98,7 +99,7 @@ def run_outcome(session: dict[str, Any]) -> str:
         return "cancelled"
     if state in ACTIVE_STATES:
         return state
-    stop_reason = session.get("stop_reason") or ""
+    stop_reason = runtime(session).get("stop_reason") or ""
     if stop_reason.startswith("error") or stop_reason in ("workspace_busy", "connector_error"):
         return "failed"
     return "succeeded"
@@ -109,12 +110,14 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
     return to_jsonable(
         {
             "id": session.get("id"),
-            "status": session.get("status"),
+            "status": runtime(session).get("status"),
             "state": derived_state(session),
             "disabled": bool(session.get("disabled")),
-            "stop_reason": session.get("stop_reason"),
+            "stop_reason": runtime(session).get("stop_reason"),
             "cost_usd": float(session.get("cost_usd") or 0.0),
             "seq_head": int(session.get("seq_head") or 0),
+            "active_branch": session.get("active_branch") or "main",
+            "branches": sorted(session.get("branches") or {"main": {}}),
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
@@ -243,10 +246,11 @@ class ConsoleAPI:
         """One polling unit: session summary, events past the cursor, pending
         approvals (with absolute deadlines so the browser renders countdowns)."""
         session = await self._session(session_id)
+        branch = session.get("active_branch") or "main"
         events: list[dict[str, Any]] = []
         cursor = after
         for _ in range(MAX_EVENT_PAGES):
-            batch = await self._store.list_events(session_id, after=cursor)
+            batch = await self._store.list_events(session_id, branch, after=cursor)
             events.extend(batch)
             if len(batch) < 200:
                 break
@@ -303,7 +307,7 @@ class ConsoleAPI:
         if not text.strip():
             raise ValueError("empty prompt")
         session = await self._session(session_id)
-        if session.get("status") == "terminated" or session.get("disabled"):
+        if runtime(session).get("status") == "terminated" or session.get("disabled"):
             raise Conflict(f"session {session_id} is terminated")
         triggered = not lease_active(session)
         await remote.send_prompt(self._store, session_id, self._options, text)

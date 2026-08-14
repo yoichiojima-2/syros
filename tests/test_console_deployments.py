@@ -62,7 +62,7 @@ async def test_deployments_lists_with_last_run():
     store = FakeStore()
     await seed(store)
     sid = await deployments.run_now("nightly", options=AgentOptions(project="proj-1"), store=store)
-    store.sessions[sid].update(status="idle", stop_reason="success")
+    store.sessions[sid]["runtime"].update(status="idle", stop_reason="success")
 
     result = await api(store).deployments()
     (row,) = result["deployments"]
@@ -80,11 +80,11 @@ async def test_deployment_detail_runs_and_durations():
     await seed(store)
     options = AgentOptions(project="proj-1")
     done = await deployments.run_now("nightly", options=options, store=store)
-    store.sessions[done].update(status="idle", stop_reason="success")
+    store.sessions[done]["runtime"].update(status="idle", stop_reason="success")
     store.sessions[done]["created_at"] = 100.0
     store.sessions[done]["updated_at"] = 160.0
     live = await deployments.run_now("nightly", options=options, store=store)
-    store.sessions[live].update(status="running", lease_expires=time.time() + 60)
+    store.sessions[live]["runtime"].update(status="running", lease_expires=time.time() + 60)
 
     result = await api(store).deployment("nightly")
     by_id = {r["id"]: r for r in result["runs"]}

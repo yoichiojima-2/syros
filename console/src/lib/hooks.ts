@@ -374,12 +374,14 @@ export function useSessionPoll(sid: string | null): SessionPoll {
   const [events, setEvents] = useState<TranscriptEvent[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const cursorRef = useRef(0);
+  const branchRef = useRef<string | null>(null);
 
   useEffect(() => {
     setSession(null);
     setEvents([]);
     setApprovals([]);
     cursorRef.current = 0;
+    branchRef.current = null;
     if (!sid) return;
     let cancelled = false;
     const poll = async () => {
@@ -388,6 +390,17 @@ export function useSessionPoll(sid: string | null): SessionPoll {
         const data = await api<PollResponse>(`/api/sessions/${sid}/poll?after=${cursorRef.current}`);
         if (cancelled) return;
         setSession(data.session);
+        // A rewind switches the session's active branch: restart the cursor
+        // so the transcript re-fetches from the branch base instead of
+        // gluing two branches together.
+        const branch = data.session.active_branch ?? "main";
+        if (branchRef.current !== null && branchRef.current !== branch) {
+          branchRef.current = branch;
+          cursorRef.current = 0;
+          setEvents([]);
+          return;
+        }
+        branchRef.current = branch;
         if (data.events.length) {
           cursorRef.current = data.events[data.events.length - 1].seq;
           setEvents((prev) => [...prev, ...data.events]);
