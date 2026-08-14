@@ -63,6 +63,236 @@
   --info: #7ba3de;
 }
 
+/* Named palettes, selectable like Slack themes: `data-palette` on <html>
+   (set by the sidebar picker, persisted in localStorage) re-skins the same
+   tokens. Each palette defines a light and a dark reading; the default clay
+   palette above is what you get with no attribute. Interpretations of combos
+   from Figma's color-combinations library. */
+
+/* Harbour Haze — misty fog blue-grays, slate-blue accent */
+[data-palette="harbour-haze"] {
+  --background: #f3f6f7;
+  --foreground: #25313a;
+  --surface: #e5ebee;
+  --card: #fbfcfd;
+  --card-foreground: #25313a;
+  --primary: #5a7d94;
+  --primary-soft: #dfe9ef;
+  --secondary: #e2e9ec;
+  --secondary-foreground: #25313a;
+  --muted: #e2e9ec;
+  --muted-foreground: #5d6d78;
+  --faint: #95a5b0;
+  --accent: #e2e9ec;
+  --accent-foreground: #25313a;
+  --border: #d5dee3;
+  --input: #bccad2;
+  --ring: #5a7d94;
+  --chart-1: #5a7d94;
+}
+
+.dark[data-palette="harbour-haze"] {
+  --background: #131a1e;
+  --foreground: #e7edf0;
+  --surface: #0d1215;
+  --card: #1b242a;
+  --card-foreground: #e7edf0;
+  --primary: #7fa8bf;
+  --primary-foreground: #0e1d26;
+  --primary-soft: #1e3440;
+  --secondary: #25313a;
+  --secondary-foreground: #e7edf0;
+  --muted: #25313a;
+  --muted-foreground: #a2b2bb;
+  --faint: #617179;
+  --accent: #25313a;
+  --accent-foreground: #e7edf0;
+  --border: #25313a;
+  --input: #33424c;
+  --ring: #7fa8bf;
+  --chart-1: #7fa8bf;
+}
+
+/* Stone Path — warm pebble grays, taupe-stone accent */
+[data-palette="stone-path"] {
+  --background: #f4f3f0;
+  --foreground: #2e2c28;
+  --surface: #e9e7e2;
+  --card: #fbfaf8;
+  --card-foreground: #2e2c28;
+  --primary: #7d7364;
+  --primary-soft: #e6e1d7;
+  --secondary: #e7e5df;
+  --secondary-foreground: #2e2c28;
+  --muted: #e7e5df;
+  --muted-foreground: #6b675f;
+  --faint: #a19d93;
+  --accent: #e7e5df;
+  --accent-foreground: #2e2c28;
+  --border: #dcd9d1;
+  --input: #c6c2b7;
+  --ring: #7d7364;
+  --chart-1: #7d7364;
+}
+
+.dark[data-palette="stone-path"] {
+  --background: #1a1917;
+  --foreground: #eae8e5;
+  --surface: #121110;
+  --card: #232120;
+  --card-foreground: #eae8e5;
+  --primary: #b3a68f;
+  --primary-foreground: #211b10;
+  --primary-soft: #332e24;
+  --secondary: #2e2c29;
+  --secondary-foreground: #eae8e5;
+  --muted: #2e2c29;
+  --muted-foreground: #aca8a1;
+  --faint: #6b6862;
+  --accent: #2e2c29;
+  --accent-foreground: #eae8e5;
+  --border: #2e2c29;
+  --input: #3d3a36;
+  --ring: #b3a68f;
+  --chart-1: #b3a68f;
+}
+
+/* Coastal Morning — pale morning sky over sand, soft navy accent */
+[data-palette="coastal-morning"] {
+  --background: #f9f8f3;
+  --foreground: #2a3540;
+  --surface: #eef0ea;
+  --card: #fdfdfa;
+  --card-foreground: #2a3540;
+  --primary: #37587a;
+  --primary-soft: #dfe8f0;
+  --secondary: #ebede5;
+  --secondary-foreground: #2a3540;
+  --muted: #ebede5;
+  --muted-foreground: #61707c;
+  --faint: #98a6b1;
+  --accent: #ebede5;
+  --accent-foreground: #2a3540;
+  --border: #dfe2d8;
+  --input: #c8ccbe;
+  --ring: #37587a;
+  --chart-1: #37587a;
+}
+
+.dark[data-palette="coastal-morning"] {
+  --background: #15181b;
+  --foreground: #e9edf0;
+  --surface: #0e1113;
+  --card: #1e2226;
+  --card-foreground: #e9edf0;
+  --primary: #8cb0d0;
+  --primary-foreground: #122334;
+  --primary-soft: #223546;
+  --secondary: #272e34;
+  --secondary-foreground: #e9edf0;
+  --muted: #272e34;
+  --muted-foreground: #a4afb8;
+  --faint: #636e77;
+  --accent: #272e34;
+  --accent-foreground: #e9edf0;
+  --border: #272e34;
+  --input: #353e45;
+  --ring: #8cb0d0;
+  --chart-1: #8cb0d0;
+}
+
+/* Ink Wash — charcoal and ivory monochrome */
+[data-palette="ink-wash"] {
+  --background: #f7f6f2;
+  --foreground: #191916;
+  --surface: #edece7;
+  --card: #ffffff;
+  --card-foreground: #191916;
+  --primary: #2b2b28;
+  --primary-soft: #e2e1da;
+  --secondary: #e9e8e2;
+  --secondary-foreground: #191916;
+  --muted: #e9e8e2;
+  --muted-foreground: #6b6a64;
+  --faint: #a3a29a;
+  --accent: #e9e8e2;
+  --accent-foreground: #191916;
+  --border: #dedcd4;
+  --input: #c8c6bc;
+  --ring: #2b2b28;
+  --chart-1: #3d3d39;
+}
+
+.dark[data-palette="ink-wash"] {
+  --background: #171716;
+  --foreground: #ebeae8;
+  --surface: #100f0f;
+  --card: #20201f;
+  --card-foreground: #ebeae8;
+  --primary: #c9c7c0;
+  --primary-foreground: #1d1d1b;
+  --primary-soft: #33332f;
+  --secondary: #2b2b2a;
+  --secondary-foreground: #ebeae8;
+  --muted: #2b2b2a;
+  --muted-foreground: #aaa9a5;
+  --faint: #696865;
+  --accent: #2b2b2a;
+  --accent-foreground: #ebeae8;
+  --border: #2b2b2a;
+  --input: #393938;
+  --ring: #c9c7c0;
+  --chart-1: #c9c7c0;
+}
+
+/* Lotus Garden — lilac accent grounded in sage-tinted neutrals */
+[data-palette="lotus-garden"] {
+  --background: #f6f6f2;
+  --foreground: #35323c;
+  --surface: #eae9e0;
+  --card: #fcfcf9;
+  --card-foreground: #35323c;
+  --primary: #8a79ab;
+  --primary-soft: #e8e3f1;
+  --secondary: #e8e8dd;
+  --secondary-foreground: #35323c;
+  --muted: #e8e8dd;
+  --muted-foreground: #6a6d60;
+  --faint: #a0a394;
+  --accent: #e8e8dd;
+  --accent-foreground: #35323c;
+  --border: #dddcce;
+  --input: #c7c6b3;
+  --ring: #8a79ab;
+  --chart-1: #8a79ab;
+  --ok: #5f7d63;
+}
+
+.dark[data-palette="lotus-garden"] {
+  --background: #171713;
+  --foreground: #ebebe4;
+  --surface: #0f0f0c;
+  --card: #20201b;
+  --card-foreground: #ebebe4;
+  --primary: #a190c9;
+  --primary-foreground: #1b1229;
+  --primary-soft: #2e2442;
+  --secondary: #2b2b24;
+  --secondary-foreground: #ebebe4;
+  --muted: #2b2b24;
+  --muted-foreground: #abab9f;
+  --faint: #6a6a5f;
+  --accent: #2b2b24;
+  --accent-foreground: #ebebe4;
+  --border: #2b2b24;
+  --input: #3a3a30;
+  --ring: #a190c9;
+  --chart-1: #a190c9;
+  /* the light block redefines --ok and would otherwise win over .dark's
+     value here (equal specificity, later in file) — restate it readable */
+  --ok: #7fa284;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

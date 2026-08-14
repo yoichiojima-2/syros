@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useOnline } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
+import { PalettePicker } from "@/components/palette-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV = [
@@ -77,7 +78,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className={cn("size-[7px] rounded-full", online ? "bg-ok" : "bg-destructive")} />
             <span className="hidden md:inline">{online ? "connected" : "offline"}</span>
           </span>
-          <ThemeToggle />
+          <span className="flex items-center">
+            <PalettePicker />
+            <ThemeToggle />
+          </span>
         </div>
       </aside>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</main>
