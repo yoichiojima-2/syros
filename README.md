@@ -400,7 +400,10 @@ rows back. One side effect worth knowing: the audit session's own queries land i
 ```sh
 # 1. Infrastructure (Firestore, bucket, Artifact Registry, job, service accounts)
 cd infra
-terraform init
+# State lives in a versioned GCS bucket (see the backend block in main.tf).
+# Point it at your own bucket — create it once with:
+#   gcloud storage buckets create gs://YOUR_PROJECT-tfstate --versioning
+terraform init -backend-config="bucket=YOUR_PROJECT-tfstate"
 terraform apply -var project=YOUR_PROJECT \
   -var image=asia-northeast1-docker.pkg.dev/YOUR_PROJECT/syros/runner:latest
 
