@@ -298,7 +298,7 @@ def _content_type(name: str) -> str:
 
 def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict[str, bytes]):
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+        def log_message(self, format, *args):  # `format` is the stdlib signature
             pass
 
         def _call(self, coro):

@@ -471,7 +471,7 @@ async def _oauth_login(server_url: str, port: int) -> dict:
     loop = asyncio.get_running_loop()
 
     class Callback(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+        def log_message(self, format, *args):  # `format` is the stdlib signature
             pass
 
         def do_GET(self):
