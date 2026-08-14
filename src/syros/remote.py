@@ -104,7 +104,15 @@ async def branch_from_event(
 ) -> tuple[str, int]:
     """Rewind: branch the transcript from a past event, returning the new
     (branch, cursor). Conversation-only — workspace state keeps its latest
-    checkpoint."""
+    checkpoint.
+
+    Model-memory caveat: the SDK forks at the *end* of the base turn's SDK
+    session. Turns from the same runner execution share one SDK session, so a
+    rewind into the middle of the latest run removes the later turns from the
+    journal while the forked model context may still contain them. Rewinds
+    across runs (the common case: each re-trigger starts a new SDK session)
+    fork cleanly.
+    """
     if lease_active(session):
         raise SyrosError(f"session {session_id} is running — interrupt it before rewinding")
     event = await store.get_event(session_id, from_event)
@@ -114,9 +122,12 @@ async def branch_from_event(
     branch_id = journal.new_branch_id()
     base_uuid = base["uuid"] if base else None
     base_seq = int(base["seq"]) if base else 0
-    claude_session_id = ((base or {}).get("context") or {}).get("claude_session_id") or (
-        (base or {}).get("payload") or {}
-    ).get("session_id")
+    # The result payload's session_id is the SDK session that produced *this*
+    # turn; the context snapshot can lag one run behind (it is refreshed only
+    # after a turn completes), so the payload wins.
+    claude_session_id = ((base or {}).get("payload") or {}).get("session_id") or (
+        (base or {}).get("context") or {}
+    ).get("claude_session_id")
     await store.create_branch(
         session_id,
         branch_id,
@@ -155,7 +166,11 @@ async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[s
             branch, cursor = await branch_from_event(store, session_id, session, options.from_event)
             return session_id, branch, cursor
         branch = session.get("active_branch") or "main"
-        return session_id, branch, int(session.get("seq_head") or 0)
+        # Cursor from the journal itself, not the advisory seq_head: after a
+        # mid-turn crash seq_head lags, and a stale cursor would replay the
+        # crashed turn's partial messages as if they answered the new prompt.
+        head, _tip = await store.recover_head(session_id, branch)
+        return session_id, branch, head
     # An agent reference resolves here, once: the session stores the merged
     # options, so a later edit to the agent never changes this session.
     from . import agents

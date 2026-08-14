@@ -71,7 +71,10 @@ uuid, a parent pointer, and a context snapshot — a tree, not just a log.
 `rewind` (or `AgentOptions(resume="sess_...", from_event="<uuid>")`) branches
 the conversation from any past turn; the old branch stays intact. Rewind is
 conversation-only: the workspace keeps its latest checkpoint, and the branch
-point snaps to the nearest turn boundary.
+point snaps to the nearest turn boundary. One caveat: turns from a single
+runner execution share one SDK session, so rewinding into the middle of the
+latest run trims the journal but the forked model context may still remember
+the trimmed turns — rewinds across runs fork cleanly.
 
 Sharing results with other users goes through artifact spaces — named prefixes
 (`artifacts/{space}/`) in the session bucket that any user with read access on the bucket

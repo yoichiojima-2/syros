@@ -179,8 +179,10 @@ async def test_from_event_rewinds_onto_a_new_branch(no_job_trigger):
     assert session["active_branch"] == branch
     assert session["branches"][branch]["base_uuid"] == result1["uuid"]
     assert session["branches"][branch]["base_seq"] == 2
-    # the SDK session to fork from came from the base turn's context
-    assert session["branches"][branch]["claude_session_id"] == "c-turn1"
+    # the SDK session to fork from is the one that produced the base turn —
+    # the result payload's own session_id, not the context snapshot (which
+    # lags one run behind on a run's first turn)
+    assert session["branches"][branch]["claude_session_id"] == "claude-uuid"
     # the branch opens with its provenance record, chained to the base
     (created,) = await store.list_events(sid, branch, after=0)
     assert created["type"] == "lifecycle"

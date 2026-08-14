@@ -72,8 +72,11 @@ def event_message(event: dict[str, Any]) -> dict[str, Any] | None:
     """The message document an event renders as, or None for records that are
     journal-only (tool_call, approval, lifecycle).
 
-    Accepts pre-journal event docs ({"seq", "message"}) so old sessions still
-    tail — the one cheap compat path this refactor keeps.
+    Also accepts a pre-journal event doc ({"seq", "message"}) handed to it
+    directly. Note the limit: branch-filtered queries (list_events,
+    recover_head) can never return those docs — they have no branch field —
+    so sessions created before the journal are unreadable through the normal
+    paths and should simply be deleted (documented no-migration assumption).
     """
     if "message" in event:
         return event["message"]

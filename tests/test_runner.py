@@ -358,6 +358,28 @@ async def test_runner_forks_sdk_session_on_fresh_branch(env, store, fake_harness
     assert session["claude_session_id"] == "claude-uuid-1"
 
 
+async def test_runner_forks_even_when_branch_shares_current_sdk_session(env, store, fake_harness):
+    # Rewinding into the latest run: the branch's base SDK session IS the
+    # session's current one. Fork detection must key off journal state (a
+    # never-run branch), not id inequality — this is exactly the case where
+    # comparing ids says "no fork" and the abandoned tip would be resumed.
+    from .fakes import append_message
+
+    await store.create_session(SID, {})
+    base = await append_message(store, SID, 1, {"kind": "result"})
+    await store.update_session(SID, claude_session_id="c-current", seq_head=1)
+    await store.create_branch(
+        SID, "br_a", base_uuid=base["uuid"], base_seq=1, claude_session_id="c-current"
+    )
+    await store.push_inbox(SID, "message", "try again")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    assert client.options.resume == "c-current"
+    assert client.options.fork_session is True
+
+
 async def test_runner_stops_writing_when_lease_lost(env, store, monkeypatch):
     import asyncio
 
