@@ -288,6 +288,9 @@
   --input: #3a3a30;
   --ring: #a190c9;
   --chart-1: #a190c9;
+  /* the light block redefines --ok and would otherwise win over .dark's
+     value here (equal specificity, later in file) — restate it readable */
+  --ok: #7fa284;
 }
 
 @theme inline {
