@@ -86,6 +86,10 @@ resource "google_compute_network_firewall_policy" "egress" {
   count       = var.egress_control ? 1 : 0
   name        = "syros-egress"
   description = "Default-deny egress for the syros sandbox; FQDN allowlist plus Private Google Access"
+  # The only network resource with no reference to the VPC (the association
+  # points at it, not vice versa), so it would otherwise race API enablement
+  # on a fresh project's first apply.
+  depends_on = [google_project_service.apis]
 }
 
 resource "google_compute_network_firewall_policy_association" "egress" {

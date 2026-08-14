@@ -406,7 +406,9 @@ a container override carrying the session id, so plain `run.invoker` is not enou
 on the session bucket. Optional egress lockdown: `-var egress_control=true` puts the sandbox
 behind a default-deny egress firewall with a domain allowlist
 (`-var 'allowed_egress_domains=[...]'` to change it — see
-[Security model](#security-model)). `-var sandbox_bigquery=true` lets sessions use the
+[Security model](#security-model)). The old `vpc_connector` variable is gone; a tfvars
+entry for it now only warns, so deployments that used it must opt in to `egress_control`
+or their sandbox reverts to unrestricted egress. `-var sandbox_bigquery=true` lets sessions use the
 built-in BigQuery tool (see [Security model](#security-model) before flipping it).
 
 ### The console on Cloud Run
