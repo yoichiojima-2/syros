@@ -232,9 +232,11 @@ async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync)
         ("artifacts/team/", "team"),
         ("artifacts/inputs/", "inputs"),
     ]
-    # rw spaces checkpoint to their own prefix; ro spaces never checkpoint,
-    # and the ws checkpoint excludes the mounts.
+    # rw spaces checkpoint to their own prefix — once at the end of the turn
+    # and once more at release; ro spaces never checkpoint, and the ws
+    # checkpoint excludes the mounts.
     assert gcs_sync["checkpoint"] == [
+        ("artifacts/team/", "team"),
         (f"sessions/{SID}/state/ws/", "ws"),
         (f"sessions/{SID}/state/home/", "home"),
         ("artifacts/team/", "team"),

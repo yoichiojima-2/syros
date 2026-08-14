@@ -34,7 +34,7 @@ def mount_prompt(spaces: dict[str, str]) -> str | None:
     lines = ["Shared artifact spaces are mounted in your working directory:"]
     for space, mode in spaces.items():
         detail = (
-            "read-write: files written here are published when the session ends"
+            "read-write: files written here are published at the end of every turn"
             if mode == "rw"
             else "read-only: local changes are discarded"
         )

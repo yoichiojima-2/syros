@@ -154,7 +154,7 @@ def test_read_artifact(bucket):
 def test_mount_prompt_lists_spaces_with_modes():
     prompt = artifacts.mount_prompt({"team": "rw", "inputs": "ro"})
     assert "./artifacts/team/ (read-write" in prompt
-    assert "published when the session ends" in prompt
+    assert "published at the end of every turn" in prompt
     assert "./artifacts/inputs/ (read-only" in prompt
     assert "discarded" in prompt
 
