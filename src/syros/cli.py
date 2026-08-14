@@ -2,7 +2,7 @@
 
 syros sessions                          list recent sessions
 syros workspaces                        list shared workspaces and their leases
-syros tail <session_id>                 follow a session's message feed
+syros tail <session_id>                 follow a session's journal (messages + audit)
 syros rewind <session_id> <event_uuid>  branch the transcript from a past event
 syros approvals <session_id>            list pending approvals
 syros approvals <session_id> allow <call_hash>
@@ -107,13 +107,13 @@ async def _workspaces(args) -> None:
 
 
 async def _tail(args) -> None:
-    from .journal import event_message
+    from .journal import active_branch, event_message
 
     store = _store(args)
     session = await store.get_session(args.session_id)
     if session is None:
         raise SystemExit(f"no such session: {args.session_id}")
-    branch = session.get("active_branch") or "main"
+    branch = active_branch(session)
     cursor = 0
     while True:
         events = await store.list_events(args.session_id, branch, after=cursor)

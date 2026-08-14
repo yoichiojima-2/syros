@@ -39,6 +39,8 @@ import secrets
 import time
 from typing import Any, Protocol, runtime_checkable
 
+from .journal import MAIN_BRANCH
+
 
 # Firestore's hard cap on writes in one batch.
 DELETE_BATCH_SIZE = 500
@@ -72,6 +74,17 @@ def lease_active(session: dict[str, Any] | None, now: float | None = None) -> bo
         return False
     state = runtime(session)
     return float(state.get("lease_expires") or 0) > (now if now is not None else time.time())
+
+
+def is_dead(session: dict[str, Any] | None) -> bool:
+    """Whether the session may do no further work: missing, killed
+    (`disabled`), or terminated. Checked by the runner, the gate, and the
+    lease transactions — the one predicate behind the kill switch."""
+    return (
+        not session
+        or bool(session.get("disabled"))
+        or runtime(session).get("status") == "terminated"
+    )
 
 
 def start_pending(session: dict[str, Any] | None, now: float | None = None) -> bool:
@@ -230,14 +243,14 @@ class Store:
                 # branch and are advisory (display/cursor seeds) — the journal
                 # itself is the source of truth via recover_head.
                 "branches": {
-                    "main": {
+                    MAIN_BRANCH: {
                         "created_at": time.time(),
                         "base_uuid": None,
                         "base_seq": 0,
                         "claude_session_id": None,
                     }
                 },
-                "active_branch": "main",
+                "active_branch": MAIN_BRANCH,
                 "tip_uuid": None,
                 "seq_head": 0,
                 # Everything ephemeral — meaningless once the run is over.
@@ -308,6 +321,8 @@ class Store:
         reference = self._session(session_id)
         batch = self._db.batch()
         pending = 0
+        # "tool_calls" is drained only for sessions created before the journal
+        # migration folded audit rows into "events" — nothing writes it now.
         for name in ("events", "inbox", "approvals", "tool_calls"):
             async for snapshot in reference.collection(name).stream():
                 batch.delete(snapshot.reference)
@@ -369,7 +384,7 @@ class Store:
             if not snapshot.exists:
                 return None
             session = snapshot.to_dict()
-            if runtime(session).get("status") == "terminated" or session.get("disabled"):
+            if is_dead(session):
                 return None
             if lease_active(session) and runtime(session).get("lease_id") != lease_id:
                 return None
@@ -401,7 +416,7 @@ class Store:
             if not snapshot.exists:
                 return False
             session = snapshot.to_dict()
-            if runtime(session).get("status") == "terminated" or session.get("disabled"):
+            if is_dead(session):
                 return False
             if runtime(session).get("lease_id") != lease_id:
                 return False

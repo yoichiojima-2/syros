@@ -8,7 +8,8 @@ and calls can be gated on human approval.
 The idea is to add as little as possible on top of what already exists.
 `claude_agent_sdk` already provides the harness (loop, tools, permissions, sessions,
 resume), and GCP managed services cover the control plane: Firestore holds session state,
-the event stream, the audit trail, and the approval queue; Cloud Run Jobs are the sandbox;
+the journal (one transcript carrying messages, prompts, the tool-call audit
+trail, approvals, and lifecycle records), and the approval queue; Cloud Run Jobs are the sandbox;
 GCS is the workspace; IAM is auth. syros is one Python package and one Terraform module —
 no servers, no REST API, and roughly zero always-on cost.
 
@@ -113,7 +114,9 @@ syros console                        # web console at localhost:8484
 Sessions — starting new ones from a prompt-plus-options form as well as watching
 existing ones — live transcripts, approve/deny with countdown, prompts into idle sessions
 (re-triggers the runner job), interrupt, kill, and delete — one session or a checkbox
-selection at a time (running and starting sessions have to be killed first). The state
+selection at a time (running and starting sessions have to be killed first). Transcripts
+follow the session's active branch, so a rewind made from the CLI/SDK shows up live —
+the rewind action itself is CLI/SDK-only. The state
 column is liveness rather than raw status: `starting` is a triggered job that hasn't
 claimed the session yet, `running` holds a live lease, and either one whose window lapsed
 shows as `stalled` — a job that died or never came up, and deletable as such. Shared
@@ -379,9 +382,10 @@ rows back. One side effect worth knowing: the audit session's own queries land i
   TLS SNI — a host sharing an allowed domain's IPs (same CDN edge) is not blocked. If you
   need SNI-level enforcement, front the VPC with
   [Secure Web Proxy](https://cloud.google.com/secure-web-proxy) (always-on cost) instead.
-- **Audit before execution** — a `PreToolUse` hook writes the tool-call row to
-  `sessions/{sid}/tool_calls` and awaits the commit *before* the tool runs, so the gate
-  is enforced in code rather than by prompting.
+- **Audit before execution** — a `PreToolUse` hook appends a `tool_call` record to the
+  session journal (`sessions/{sid}/events`) and awaits the commit *before* the tool runs,
+  so the gate is enforced in code rather than by prompting — the audit trail sits inline
+  with the messages it interleaves.
 - **Approvals** — `permission_mode`-gated calls file a document in
   `sessions/{sid}/approvals` and block until your `can_use_tool` callback (or
   `syros approvals`) decides; timeout denies (default 300s).
@@ -418,9 +422,9 @@ a container override carrying the session id, so plain `run.invoker` is not enou
 on the session bucket. Optional egress lockdown: `-var egress_control=true` puts the sandbox
 behind a default-deny egress firewall with a domain allowlist
 (`-var 'allowed_egress_domains=[...]'` to change it — see
-[Security model](#security-model)). The old `vpc_connector` variable is gone; a tfvars
-entry for it now only warns, so deployments that used it must opt in to `egress_control`
-or their sandbox reverts to unrestricted egress. `-var sandbox_bigquery=true` lets sessions use the
+[Security model](#security-model)). The old `vpc_connector` variable is gone: passing it
+with `-var` is now an error (a leftover tfvars entry merely warns), so deployments that
+used it must opt in to `egress_control` or their sandbox reverts to unrestricted egress. `-var sandbox_bigquery=true` lets sessions use the
 built-in BigQuery tool (see [Security model](#security-model) before flipping it).
 
 ### The console on Cloud Run
@@ -464,8 +468,12 @@ of who acted.
    `starting`.
 2. The runner claims the lease, restores the workspace and `claude_agent_sdk` transcript
    from GCS, and runs the harness on Vertex with the gate hooks wired in.
-3. Every message is mirrored to `sessions/{sid}/events`; the client polls and yields them
-   as typed messages, ending at the `ResultMessage`.
+3. Every message becomes a journal record in `sessions/{sid}/events`, alongside the
+   prompt, tool-call, approval, and lifecycle records the run produces; the client polls
+   the session's active branch and yields the messages as typed objects, ending at the
+   `ResultMessage`. A background heartbeat renews the session lease (`SYROS_LEASE_TTL`,
+   default 180s, renewed every ttl/3 or `SYROS_HEARTBEAT`) — a lapsed lease is what the
+   console shows as `stalled`.
 4. On idle the runner waits `SYROS_STAY_ALIVE` (60s) for follow-ups, checkpoints state to
    GCS, and exits 0 — scale to zero. **The client is the reconciler**: a later
    `resume=` query simply re-triggers the job.
@@ -500,7 +508,7 @@ tenancy (one project per trust boundary).
 ```sh
 uv sync --group dev
 uv run pytest -q
-uvx ruff check src tests && uvx ruff format --check src tests
+uv run ruff check . && uv run ruff format --check .   # CI lints the whole repo
 ```
 
 Layout: `src/syros/` (client SDK + sandbox runner in one package), `infra/` (Terraform),

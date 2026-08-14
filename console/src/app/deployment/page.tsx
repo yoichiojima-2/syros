@@ -322,7 +322,7 @@ function RunsTable({ runs, now }: { runs: RunSummary[] | null; now: number }) {
           <TableHead>Started</TableHead>
           <TableHead className="text-right">Duration</TableHead>
           <TableHead className="text-right">Cost</TableHead>
-          <TableHead className="text-right">Events</TableHead>
+          <TableHead className="text-right">Journal</TableHead>
           <TableHead>Stop reason</TableHead>
         </TableRow>
       </TableHeader>

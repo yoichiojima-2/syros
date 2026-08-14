@@ -13,7 +13,9 @@ async def main():
             "create a syros system documentation html artifact. in detail. "
             "repo: https://github.com/yoichiojima-2/syros"
         ),
-        options=AgentOptions(agent="researcher"),
+        # Same task as syros-document.py, but run as the stored "researcher"
+        # agent instead of inline options — the persona supplies the defaults.
+        options=AgentOptions(agent="researcher", can_use_tool=approve),
     ):
         print(message)
 

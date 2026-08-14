@@ -18,6 +18,7 @@ from typing import Any
 
 from .. import agents, deployments, remote
 from .. import connectors as connectors_mod
+from ..journal import MAIN_BRANCH, active_branch
 from ..names import validate_name, validate_tags
 from ..env import DEFAULT_APPROVAL_TIMEOUT
 from ..options import AgentOptions, options_from_doc
@@ -116,8 +117,8 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "stop_reason": runtime(session).get("stop_reason"),
             "cost_usd": float(session.get("cost_usd") or 0.0),
             "seq_head": int(session.get("seq_head") or 0),
-            "active_branch": session.get("active_branch") or "main",
-            "branches": sorted(session.get("branches") or {"main": {}}),
+            "active_branch": active_branch(session),
+            "branches": sorted(session.get("branches") or {MAIN_BRANCH: {}}),
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
@@ -246,7 +247,7 @@ class ConsoleAPI:
         """One polling unit: session summary, events past the cursor, pending
         approvals (with absolute deadlines so the browser renders countdowns)."""
         session = await self._session(session_id)
-        branch = session.get("active_branch") or "main"
+        branch = active_branch(session)
         events: list[dict[str, Any]] = []
         cursor = after
         for _ in range(MAX_EVENT_PAGES):

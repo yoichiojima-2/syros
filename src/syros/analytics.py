@@ -25,7 +25,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from .journal import event_message
+from .journal import MAIN_BRANCH, event_message
 from .store import StoreProtocol, runtime
 
 
@@ -180,7 +180,7 @@ async def _all_events(
 ) -> list[dict[str, Any]]:
     session_id = session["id"]
     rows: list[dict[str, Any]] = []
-    for branch in sorted(session.get("branches") or {"main": {}}):
+    for branch in sorted(session.get("branches") or {MAIN_BRANCH: {}}):
         cursor = 0
         while True:
             events = await store.list_events(session_id, branch, after=cursor, limit=page_size)
