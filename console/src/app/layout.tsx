@@ -13,11 +13,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased">
         {/* re-apply the saved palette before first paint, like next-themes
-            does for light/dark — keep the key in sync with palette-picker */}
+            does for light/dark — keep the key and default in sync with
+            palette-picker ("clay" is the bare-:root token set) */}
         <script
           dangerouslySetInnerHTML={{
             __html:
-              'try{var p=localStorage.getItem("syros-palette");if(p)document.documentElement.dataset.palette=p}catch(e){}',
+              'try{var p=localStorage.getItem("syros-palette")||"harbour-haze";if(p!=="clay")document.documentElement.dataset.palette=p}catch(e){}',
           }}
         />
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>

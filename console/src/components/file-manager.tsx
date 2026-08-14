@@ -356,7 +356,9 @@ export function FileManager({
 
   return (
     <div
-      className={cn("relative flex min-h-0 flex-col gap-2", dragging && "rounded-lg")}
+      // shrink-0: these sit in scrollable asides — squashing (the flex
+      // default) paints the list over whatever follows instead of scrolling
+      className={cn("relative flex shrink-0 flex-col gap-2", dragging && "rounded-lg")}
       onDragEnter={(e) => {
         e.preventDefault();
         dragDepth.current += 1;
@@ -435,7 +437,7 @@ export function FileManager({
           </Button>
         </div>
       )}
-      <div className="min-h-0">
+      <div>
         {files.length === 0 ? (
           <p className="px-1 text-[12px] text-muted-foreground">empty</p>
         ) : (

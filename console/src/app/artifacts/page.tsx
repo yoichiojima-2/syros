@@ -128,7 +128,7 @@ function ArtifactsInner() {
                   >
                     <button
                       onClick={() => select(s.name, null)}
-                      className="flex min-w-0 flex-1 items-center gap-2"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     >
                       <Package className={cn("size-4", s.name === space && "text-primary")} />
                       <span className="min-w-0 flex-1 truncate font-mono">{s.name}</span>
@@ -148,7 +148,7 @@ function ArtifactsInner() {
           )}
         </div>
         {space && (
-          <div className="flex min-h-0 flex-col gap-2">
+          <div className="flex shrink-0 flex-col gap-2">
             <h2 className="px-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
               {space}
             </h2>
