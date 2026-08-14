@@ -23,7 +23,13 @@ function setOptions(options: Record<string, unknown>): [string, string][] {
     if (Array.isArray(value)) return value.length ? [[key, value.join(" ")]] : [];
     if (typeof value === "object") {
       const entries = Object.entries(value as Record<string, unknown>);
-      return entries.length ? [[key, entries.map(([k, v]) => `${k}=${v}`).join(" ")]] : [];
+      // Nested configs (mcp_servers) render by their one telling field, not
+      // as [object Object].
+      const show = (v: unknown) =>
+        typeof v === "object" && v !== null && "name" in (v as Record<string, unknown>)
+          ? String((v as Record<string, unknown>).name)
+          : String(v);
+      return entries.length ? [[key, entries.map(([k, v]) => `${k}=${show(v)}`).join(" ")]] : [];
     }
     return [[key, compact(value, 60)]];
   });

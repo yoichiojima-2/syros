@@ -359,6 +359,26 @@ async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
     assert (await api(store).poll(sid, after=0))["session"]["state"] == "starting"
 
 
+async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
+    # What the form's BigQuery toggle posts: the builtin reference plus its
+    # pre-allowed tool, passing through options_from_doc/validate unchanged.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "audit yesterday",
+            "options": {
+                "mcp_servers": {"bq": {"type": "builtin", "name": "bigquery"}},
+                "allowed_tools": ["mcp__bq__query"],
+            },
+        }
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["options"]["mcp_servers"] == {"bq": {"type": "builtin", "name": "bigquery"}}
+    assert session["options"]["allowed_tools"] == ["mcp__bq__query"]
+
+
 async def test_create_session_resolves_agent(no_job_trigger):
     store = FakeStore()
     await store.create_agent(

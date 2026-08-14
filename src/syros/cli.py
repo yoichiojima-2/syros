@@ -9,10 +9,10 @@ syros approvals <session_id> allow <call_hash>
 syros approvals <session_id> deny <call_hash> [-m reason]
 syros kill <session_id>                 flip the kill switch
 syros agents                            list stored agents (personas)
-syros agents create <name> --system-prompt "..." --allow Read --allow Bash
+syros agents create <name> --system-prompt "..." --allow Read --allow Bash [--bigquery]
 syros agents show|update|delete <name>
 syros deployments                         list deployments and their next run
-syros deployments create <name> --cron "0 9 * * *" --prompt "..." [--agent <name>]
+syros deployments create <name> --cron "0 9 * * *" --prompt "..." [--agent <name>] [--bigquery]
 syros deployments runs <name>             run history for one deployment
 syros deployments run|pause|resume|delete <name>
 syros tick                              fire every deployment that is due
@@ -170,10 +170,19 @@ async def _kill(args) -> None:
 
 def _run_options(args) -> AgentOptions:
     """The AgentOptions subset worth having on the command line."""
+    allow = list(args.allow or [])
+    mcp_servers: dict[str, dict] = {}
+    if getattr(args, "bigquery", False):
+        # The built-in BigQuery server, plus its tool pre-allowed: --bigquery
+        # is a one-flag opt-in, not a capability that then waits for approval.
+        mcp_servers["bq"] = {"type": "builtin", "name": "bigquery"}
+        if "mcp__bq__query" not in allow:
+            allow.append("mcp__bq__query")
     return AgentOptions(
         model=args.model,
         system_prompt=args.system_prompt,
-        allowed_tools=list(args.allow or []),
+        allowed_tools=allow,
+        mcp_servers=mcp_servers,
         permission_mode=args.permission_mode,
         workspace=args.workspace,
         artifacts=args.artifacts,
@@ -673,6 +682,11 @@ def main() -> None:
     agents.add_argument("--artifacts", default=None, metavar="SPACE")
     agents.add_argument("--max-turns", type=int, default=None)
     agents.add_argument("--max-budget-usd", type=float, default=None)
+    agents.add_argument(
+        "--bigquery",
+        action="store_true",
+        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
+    )
     agents.set_defaults(func=_agents)
 
     deployments = sub.add_parser("deployments")
@@ -696,6 +710,11 @@ def main() -> None:
     deployments.add_argument("--artifacts", default=None, metavar="SPACE")
     deployments.add_argument("--max-turns", type=int, default=None)
     deployments.add_argument("--max-budget-usd", type=float, default=None)
+    deployments.add_argument(
+        "--bigquery",
+        action="store_true",
+        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
+    )
     deployments.add_argument("--limit", type=int, default=50, help="runs to list")
     deployments.add_argument("--region", default=None)
     deployments.add_argument("--job", default=None)

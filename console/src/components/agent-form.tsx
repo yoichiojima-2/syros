@@ -5,7 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ChoiceField, ConnectorPicker, Field, MODELS, TOOLS } from "@/components/option-fields";
+import {
+  BIGQUERY_SERVER,
+  BIGQUERY_TOOL,
+  BigQueryToggle,
+  ChoiceField,
+  ConnectorPicker,
+  Field,
+  MODELS,
+  TOOLS,
+} from "@/components/option-fields";
 import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -36,12 +45,19 @@ export function AgentForm({
   const [artifacts, setArtifacts] = useState(
     typeof stored.artifacts === "string" ? stored.artifacts : "",
   );
+  const storedBigquery = Boolean(
+    (stored.mcp_servers as Record<string, unknown> | undefined)?.bq,
+  );
   const [tools, setTools] = useState<string[]>(
     ((stored.allowed_tools as string[]) ?? []).filter((tool) => TOOLS.includes(tool)),
   );
   const [extraTools, setExtraTools] = useState(
-    ((stored.allowed_tools as string[]) ?? []).filter((tool) => !TOOLS.includes(tool)).join(", "),
+    ((stored.allowed_tools as string[]) ?? [])
+      // The auto-allowed BigQuery tool rides the toggle, not the free-text row.
+      .filter((tool) => !TOOLS.includes(tool) && !(storedBigquery && tool === BIGQUERY_TOOL))
+      .join(", "),
   );
+  const [bigquery, setBigquery] = useState(storedBigquery);
   const [connectors, setConnectors] = useState<string[]>((stored.connectors as string[]) ?? []);
   const [budget, setBudget] = useState(
     stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
@@ -69,6 +85,10 @@ export function AgentForm({
         .map((tool) => tool.trim())
         .filter((tool) => tool && !tools.includes(tool)),
     ];
+    if (bigquery) {
+      options.mcp_servers = { bq: BIGQUERY_SERVER };
+      if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
+    }
     if (allowed.length) options.allowed_tools = allowed;
     if (connectors.length) options.connectors = connectors;
     if (budget.trim()) options.max_budget_usd = Number(budget);
@@ -209,6 +229,9 @@ export function AgentForm({
           </Field>
           <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
             <ConnectorPicker value={connectors} onChange={setConnectors} />
+          </Field>
+          <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
+            <BigQueryToggle on={bigquery} onChange={setBigquery} />
           </Field>
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">

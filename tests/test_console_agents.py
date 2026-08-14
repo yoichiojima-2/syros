@@ -57,6 +57,22 @@ async def test_create_agent():
     assert store.agents["writer"]["options"]["max_turns"] == 5
 
 
+async def test_create_agent_carries_builtin_bigquery_server():
+    store = FakeStore()
+    await api(store).create_agent(
+        {
+            "name": "auditor",
+            "options": {
+                "mcp_servers": {"bq": {"type": "builtin", "name": "bigquery"}},
+                "allowed_tools": ["mcp__bq__query"],
+            },
+        }
+    )
+    options = store.agents["auditor"]["options"]
+    assert options["mcp_servers"] == {"bq": {"type": "builtin", "name": "bigquery"}}
+    assert options["allowed_tools"] == ["mcp__bq__query"]
+
+
 async def test_create_agent_conflict_and_unknown_option():
     store = FakeStore()
     await seed(store)

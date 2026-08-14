@@ -5,7 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ChoiceField, ConnectorPicker, Field, MODELS, TOOLS } from "@/components/option-fields";
+import {
+  BIGQUERY_SERVER,
+  BIGQUERY_TOOL,
+  BigQueryToggle,
+  ChoiceField,
+  ConnectorPicker,
+  Field,
+  MODELS,
+  TOOLS,
+} from "@/components/option-fields";
 import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -51,6 +60,7 @@ export function DeploymentForm({
   const [tools, setTools] = useState<string[]>([]);
   const [extraTools, setExtraTools] = useState("");
   const [connectors, setConnectors] = useState<string[]>([]);
+  const [bigquery, setBigquery] = useState(false);
   const [budget, setBudget] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -72,6 +82,10 @@ export function DeploymentForm({
         .map((tool) => tool.trim())
         .filter((tool) => tool && !tools.includes(tool)),
     ];
+    if (bigquery) {
+      options.mcp_servers = { bq: BIGQUERY_SERVER };
+      if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
+    }
     if (allowed.length) options.allowed_tools = allowed;
     if (connectors.length) options.connectors = connectors;
     if (budget.trim()) options.max_budget_usd = Number(budget);
@@ -234,6 +248,9 @@ export function DeploymentForm({
           </Field>
           <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
             <ConnectorPicker value={connectors} onChange={setConnectors} />
+          </Field>
+          <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
+            <BigQueryToggle on={bigquery} onChange={setBigquery} />
           </Field>
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
