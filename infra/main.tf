@@ -371,6 +371,18 @@ resource "google_cloud_run_v2_job" "runner" {
     google_compute_router_nat.egress,
     google_compute_network_firewall_policy_association.egress,
   ]
+
+  # Releases (`make deploy`, the Release workflow) pin the image by digest via
+  # `gcloud run jobs update`; var.image is only the bootstrap tag. Ignore that
+  # drift — and the client stamp gcloud leaves — so a post-release apply
+  # doesn't roll the pin back to :latest.
+  lifecycle {
+    ignore_changes = [
+      template[0].template[0].containers[0].image,
+      client,
+      client_version,
+    ]
+  }
 }
 
 # --- the console: same image, IAM-protected Cloud Run service ---
@@ -620,4 +632,13 @@ resource "google_cloud_run_v2_service" "console" {
   }
 
   depends_on = [google_project_service.apis]
+
+  # Digest-pinned by releases, same as the runner job above.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
+  }
 }
