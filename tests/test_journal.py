@@ -27,7 +27,7 @@ def test_make_event_rejects_unknown_type():
         make_event("nonsense", {}, parent_uuid=None, branch="main", seq=1)
 
 
-def test_event_message_renders_messages_prompts_and_compat_docs():
+def test_event_message_renders_messages_and_prompts_only():
     message = make_event(
         "message", {"kind": "assistant", "content": []}, parent_uuid=None, branch="main", seq=1
     )
@@ -39,11 +39,9 @@ def test_event_message_renders_messages_prompts_and_compat_docs():
     for type_ in ("tool_call", "approval", "lifecycle"):
         record = make_event(type_, {}, parent_uuid=None, branch="main", seq=3)
         assert event_message(record) is None
-    # pre-journal docs still render
-    assert event_message({"seq": 1, "message": {"kind": "user", "content": "old"}}) == {
-        "kind": "user",
-        "content": "old",
-    }
+    # pre-journal docs ({"seq", "message"}) are not rendered: branch-filtered
+    # queries can never return them (documented no-migration assumption)
+    assert event_message({"seq": 1, "message": {"kind": "user", "content": "old"}}) is None
 
 
 def test_build_context_snapshot():

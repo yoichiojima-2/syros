@@ -88,7 +88,7 @@ export function SessionTable({
           {!compact && <TableHead>Model</TableHead>}
           {!compact && <TableHead>Workspace</TableHead>}
           <TableHead className="text-right">Cost</TableHead>
-          {!compact && <TableHead className="text-right">Events</TableHead>}
+          {!compact && <TableHead className="text-right">Journal</TableHead>}
           <TableHead className="text-right">Updated</TableHead>
           {onDelete && <TableHead className="w-8" />}
         </TableRow>

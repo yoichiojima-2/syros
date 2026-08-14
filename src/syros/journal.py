@@ -45,6 +45,12 @@ def new_branch_id() -> str:
     return f"br_{secrets.token_hex(6)}"
 
 
+def active_branch(session: dict[str, Any]) -> str:
+    """The branch a session currently reads and writes; pre-branch session
+    docs (no active_branch field) live on main."""
+    return session.get("active_branch") or MAIN_BRANCH
+
+
 def make_event(
     type: str,
     payload: dict[str, Any],
@@ -72,14 +78,12 @@ def event_message(event: dict[str, Any]) -> dict[str, Any] | None:
     """The message document an event renders as, or None for records that are
     journal-only (tool_call, approval, lifecycle).
 
-    Also accepts a pre-journal event doc ({"seq", "message"}) handed to it
-    directly. Note the limit: branch-filtered queries (list_events,
-    recover_head) can never return those docs — they have no branch field —
-    so sessions created before the journal are unreadable through the normal
-    paths and should simply be deleted (documented no-migration assumption).
+    Pre-journal event docs ({"seq", "message"}) are not handled: they have no
+    branch field, so branch-filtered queries (list_events, recover_head) can
+    never return them — sessions created before the journal are unreadable
+    through the normal paths and should simply be deleted (documented
+    no-migration assumption).
     """
-    if "message" in event:
-        return event["message"]
     if event.get("type") == "message":
         return event["payload"]
     if event.get("type") == "prompt":

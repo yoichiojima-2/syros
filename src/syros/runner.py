@@ -1,9 +1,10 @@
 """Sandbox entrypoint: `python -m syros.runner <session_id>`.
 
-Claims the session, restores state from GCS, runs the claude_agent_sdk harness
-on the deployment's model backend with the governance gate wired in, mirrors
-every message to the Firestore event feed, then checkpoints and exits 0
-(scale to zero).
+Claims the session lease, restores state from GCS, runs the claude_agent_sdk
+harness on the deployment's model backend with the governance gate wired in,
+appends typed journal records (messages, prompts, lifecycle — the gate adds
+tool_call/approval on the same writer) to the session's active branch, then
+checkpoints and exits 0 (scale to zero).
 """
 
 from __future__ import annotations
@@ -19,9 +20,9 @@ from claude_agent_sdk import ClaudeSDKClient
 
 from . import env
 from .gate import Gate
-from .journal import JournalWriter, build_context, git_info
+from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, git_info
 from .options import AgentOptions, build_sdk_options, model_env
-from .store import Store, runtime
+from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
 from . import artifacts, bigquery, connectors, workspace
 
@@ -82,7 +83,7 @@ async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -
         if messages:
             return messages
         session = await store.get_session(session_id)
-        if not session or session.get("disabled") or runtime(session).get("status") == "terminated":
+        if is_dead(session):
             return []
         await asyncio.sleep(INBOX_POLL_SECONDS)
         waited += INBOX_POLL_SECONDS
@@ -135,7 +136,7 @@ async def run(session_id: str) -> None:
     # seq_head: after a mid-turn crash the doc lags the records, and trusting
     # it would re-issue seqs. A fresh branch has no records yet, so its base
     # (written by create_branch) is the floor.
-    branch = session.get("active_branch") or "main"
+    branch = active_branch(session)
     branch_info = (session.get("branches") or {}).get(branch) or {}
     seq, tip_uuid = await store.recover_head(session_id, branch)
     base_seq = int(branch_info.get("base_seq") or 0)
@@ -144,7 +145,7 @@ async def run(session_id: str) -> None:
     # A rewind branch that has never run holds nothing past its branch_created
     # record; that is the one claim that must fork the SDK session instead of
     # resuming it (see build_sdk_options below).
-    fresh_branch = branch != "main" and seq <= base_seq + 1
+    fresh_branch = branch != MAIN_BRANCH and seq <= base_seq + 1
 
     ws, home = config.work_dir / "ws", config.work_dir / "home"
     writer = JournalWriter(

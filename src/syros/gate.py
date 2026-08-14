@@ -20,7 +20,7 @@ from claude_agent_sdk.types import HookMatcher
 
 from .env import DEFAULT_APPROVAL_TIMEOUT
 from .journal import JournalWriter
-from .store import StoreProtocol
+from .store import StoreProtocol, is_dead
 from .types import PermissionResult, PermissionResultAllow, PermissionResultDeny
 
 
@@ -70,12 +70,7 @@ class Gate:
         return {"PreToolUse": [HookMatcher(matcher=None, hooks=[self._pre_tool_use])]}
 
     async def _killed(self) -> bool:
-        from .store import runtime
-
-        session = await self._store.get_session(self._session_id)
-        return (
-            not session or session.get("disabled") or runtime(session).get("status") == "terminated"
-        )
+        return is_dead(await self._store.get_session(self._session_id))
 
     async def _pre_tool_use(
         self, input_data: dict[str, Any], tool_use_id: str | None, context: Any

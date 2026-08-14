@@ -85,7 +85,7 @@ async def test_query_streams_until_result(no_job_trigger):
     assert no_job_trigger == [("proj-1", "asia-northeast1", "syros-runner", session_id)]
 
 
-async def test_resume_starts_after_seq_head(no_job_trigger):
+async def test_resume_seeds_cursor_from_journal_head(no_job_trigger):
     store = FakeStore()
     session_id = "sess_existing"
     await store.create_session(session_id, {})

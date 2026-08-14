@@ -129,7 +129,7 @@ export default function DashboardPage() {
           accent={!!active}
         />
         <StatCard
-          label="Transcript events"
+          label="Journal records"
           value={events === undefined ? null : events.toLocaleString()}
           sub={scope}
         />

@@ -2,7 +2,7 @@
 
 The types are claude_agent_sdk's own — re-exported, not redefined — so
 `isinstance` checks and pattern matching work exactly as they do against the
-SDK, even though every message was deserialized from a session's event feed.
+SDK, even though every message was deserialized from a session's journal.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def message_to_doc(message: Message) -> dict[str, Any] | None:
 
     Non-dataclass extras (StreamEvent and friends) and unknown subclasses fall
     back to their base message kind; anything else returns None and is simply
-    not mirrored to the event feed.
+    not written to the journal.
     """
     for kind, cls in _MESSAGE_TYPES.items():
         if isinstance(message, cls):

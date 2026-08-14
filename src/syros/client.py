@@ -6,6 +6,7 @@ from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
 from .errors import SyrosError
+from .journal import MAIN_BRANCH
 from .options import AgentOptions
 from .types import Message
 
@@ -36,7 +37,7 @@ class _Backend:
         self._store = store
         self._remote: Any = None
         self._cursor = 0
-        self._branch = "main"
+        self._branch = MAIN_BRANCH
         self.session_id: str | None = None
 
     async def connect(self) -> None:

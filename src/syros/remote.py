@@ -14,6 +14,7 @@ from typing import Any
 
 from . import journal
 from .errors import SessionTerminated, SyrosError
+from .journal import MAIN_BRANCH, active_branch
 from .store import Store, StoreProtocol, lease_active, new_session_id, runtime
 from .options import AgentOptions
 from .types import Message, PermissionResultAllow, ResultMessage, doc_to_message
@@ -96,7 +97,7 @@ async def _turn_base(
             return current
         parent = current.get("parent_uuid")
         current = await store.get_event(session_id, parent) if parent else None
-    return current
+    return None
 
 
 async def branch_from_event(
@@ -165,7 +166,7 @@ async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[s
         if options.from_event:
             branch, cursor = await branch_from_event(store, session_id, session, options.from_event)
             return session_id, branch, cursor
-        branch = session.get("active_branch") or "main"
+        branch = active_branch(session)
         # Cursor from the journal itself, not the advisory seq_head: after a
         # mid-turn crash seq_head lags, and a stale cursor would replay the
         # crashed turn's partial messages as if they answered the new prompt.
@@ -178,7 +179,7 @@ async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[s
     options = await agents.resolve(store, options)
     session_id = new_session_id()
     await store.create_session(session_id, options.serialize(), agent=options.agent)
-    return session_id, "main", 0
+    return session_id, MAIN_BRANCH, 0
 
 
 async def send_prompt(

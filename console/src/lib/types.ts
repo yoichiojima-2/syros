@@ -155,13 +155,11 @@ export interface TranscriptEvent {
   ts?: number | null;
   context?: Record<string, unknown>;
   payload?: Record<string, unknown>;
-  message?: TranscriptMessage; // pre-journal event docs only
 }
 
 /** The message a record renders as, or null for journal-only records
  *  (tool_call, approval, lifecycle) — mirrors journal.event_message. */
 export function eventMessage(event: TranscriptEvent): TranscriptMessage | null {
-  if (event.message) return event.message;
   if (event.type === "message") return (event.payload || {}) as TranscriptMessage;
   if (event.type === "prompt")
     return { kind: "user", content: String((event.payload as { text?: string })?.text ?? "") };
