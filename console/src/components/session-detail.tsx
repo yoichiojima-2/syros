@@ -146,7 +146,7 @@ export function SessionDetail({ sid }: { sid: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2.5 border-b border-border bg-surface px-5 py-3">
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-surface px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3">
         <span className="min-w-0 max-w-full truncate font-mono text-[13px]" title={sid}>
           {sid}
         </span>
@@ -188,24 +188,35 @@ export function SessionDetail({ sid }: { sid: string }) {
         )}
         <span className="flex-1" />
         {artifacts.length > 0 && (
-          <Button variant="outline" size="sm" onClick={() => setPanelOpen((open) => !open)}>
-            <PanelRight /> Artifacts ({artifacts.length})
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPanelOpen((open) => !open)}
+            title={`Artifacts (${artifacts.length})`}
+          >
+            <PanelRight /> <span className="hidden sm:inline">Artifacts ({artifacts.length})</span>
           </Button>
         )}
-        <Button variant="outline" size="sm" onClick={interrupt} disabled={!session || dead}>
-          <CircleStop /> Interrupt
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={interrupt}
+          disabled={!session || dead}
+          title="Interrupt"
+        >
+          <CircleStop /> <span className="hidden sm:inline">Interrupt</span>
         </Button>
-        <Button variant="destructive" size="sm" onClick={kill} disabled={!session || dead}>
-          <OctagonX /> Kill
+        <Button variant="destructive" size="sm" onClick={kill} disabled={!session || dead} title="Kill">
+          <OctagonX /> <span className="hidden sm:inline">Kill</span>
         </Button>
         <Button
           variant="destructive"
           size="sm"
           onClick={remove}
           disabled={!session || session.state === "running"}
-          title={session?.state === "running" ? "Kill the session before deleting it" : undefined}
+          title={session?.state === "running" ? "Kill the session before deleting it" : "Delete"}
         >
-          <Trash2 /> Delete
+          <Trash2 /> <span className="hidden sm:inline">Delete</span>
         </Button>
       </div>
 
