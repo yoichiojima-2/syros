@@ -273,14 +273,17 @@ AgentOptions(
 )
 ```
 
-which is what makes an unattended audit a schedule rather than a person:
+The console has the same switch — a **BigQuery** toggle on the new-session, agent, and
+deployment forms — and the CLI has `--bigquery`; both set the reference above and
+pre-allow `mcp__bq__query`, which is what makes an unattended audit a deployment rather
+than a person:
 
 ```
-syros schedules create nightly-audit --cron "0 9 * * *" --tz Asia/Tokyo \
+syros deployments create nightly-audit --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "Query the syros BigQuery tables: yesterday's spend by model, any
             denied or killed tool calls, approvals that timed out. Write
             findings.md to the audit artifact space." \
-  --model claude-sonnet-5 --artifacts audit
+  --model claude-sonnet-5 --artifacts audit --bigquery
 ```
 
 Two things to know. The sandbox reads BigQuery only where the deployment allows it —

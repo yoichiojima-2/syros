@@ -22,6 +22,13 @@ export const TOOLS = [
   "Task",
 ];
 
+// The built-in BigQuery MCP server: a session asks for it by reference and the
+// sandbox swaps in the live server. Toggling it on also pre-allows its tool —
+// the toggle is a one-click opt-in, not a capability that then waits for
+// approval. Queries still need the deployment's IAM opt-in (sandbox_bigquery).
+export const BIGQUERY_SERVER = { type: "builtin", name: "bigquery" };
+export const BIGQUERY_TOOL = "mcp__bq__query";
+
 const CUSTOM = " custom"; // sentinel no real name can collide with
 
 /** A select over known choices, with an escape hatch to type anything else.
@@ -130,6 +137,38 @@ export function ConnectorPicker({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/** One pill for the built-in BigQuery tool, styled like the connector chips.
+ *  On means the form submits mcp_servers={bq: BIGQUERY_SERVER} and pre-allows
+ *  BIGQUERY_TOOL. Read access itself is the deployment's call: without
+ *  `sandbox_bigquery = true` in Terraform every query returns a permission
+ *  error, which is why the hint rides on the pill. */
+export function BigQueryToggle({
+  on,
+  onChange,
+}: {
+  on: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        aria-pressed={on}
+        title="Read-only SQL over the project's BigQuery — needs sandbox_bigquery = true in the deployment"
+        onClick={() => onChange(!on)}
+        className={cn(
+          "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+          on
+            ? "border-transparent bg-primary-soft text-foreground"
+            : "border-border text-muted-foreground hover:bg-secondary",
+        )}
+      >
+        bigquery
+      </button>
     </div>
   );
 }
