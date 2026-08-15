@@ -269,10 +269,10 @@ async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_syn
     assert session["published"] == 2
 
 
-async def test_runner_tells_claude_code_about_mounts_without_losing_the_preset(
+async def test_runner_tells_the_default_agent_about_mounts_without_losing_the_preset(
     env, store, fake_harness, gcs_sync
 ):
-    """A stock-Claude-Code session keeps its preset: the mount notice rides its
+    """A default-prompt session keeps its preset: the mount notice rides its
     `append`, rather than becoming a string that replaces the preset."""
     await store.create_session(
         SID,

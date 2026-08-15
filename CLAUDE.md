@@ -17,10 +17,10 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
 
 - `AgentOptions` (`options.py`) is the serializable subset of ClaudeAgentOptions;
   new serialized fields must be added to `_SERIALIZED_FIELDS` or `options_from_doc`
-  rejects them. `system_prompt` is a plain string *or* the `claude_code` preset
-  dict (`claude_code_prompt()`, the "run stock Claude Code" option) — anything the
-  platform adds to it goes through `append_system_prompt`, so a preset stays a
-  preset instead of flattening into a string that replaces it. Options resolve at session creation (`agents.resolve`), layered by
+  rejects them. `system_prompt` is a plain string *or* the default-agent preset
+  dict (`default_prompt()`; `claude_code` is claude_agent_sdk's name for it on
+  the wire) — anything the platform adds to it goes through `append_system_prompt`,
+  so a preset stays a preset instead of flattening into a string that replaces it. Options resolve at session creation (`agents.resolve`), layered by
   proximity: explicit/task ← workflow ← agent ← workspace ← `settings/global` ←
   model `"sonnet"` floor; the merged result is snapshotted onto the session.
 - Workflows (`workflows.py`, `workflows/{name}` + its `runs/{run_id}` subcollection)

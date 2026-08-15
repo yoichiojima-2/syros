@@ -163,33 +163,33 @@ syros agents show|update|delete reviewer
 The console has an Agents view with the same create/edit/delete surface, and sessions
 show which agent they ran as. Workflow tasks can reference an agent too (below).
 
-### Stock Claude Code
+### The default agent
 
 Not every run wants a persona. Left unset, `system_prompt` gives a run no system prompt
-at all — the SDK's default, a bare assistant. `claude_code_prompt()` asks for Claude
-Code's own system prompt instead: the coding agent as it ships, with nothing stored in
+at all — `claude_agent_sdk`'s default, a bare assistant. `default_prompt()` asks for the
+harness's own system prompt instead: the stock agent as it ships, with nothing stored in
 front of it.
 
 ```python
-from syros import query, AgentOptions, claude_code_prompt
+from syros import query, AgentOptions, default_prompt
 
 async for message in query(
     prompt="collect today's news",
     options=AgentOptions(
-        system_prompt=claude_code_prompt(),   # or claude_code_prompt("Be terse.")
+        system_prompt=default_prompt(),   # or default_prompt("Be terse.")
         allowed_tools=["Read", "Write", "Bash", "WebSearch"],
     ),
 ):
     ...
 ```
 
-The instructions passed to `claude_code_prompt()` are *appended* to Claude Code's prompt
-rather than replacing it, so an agent can layer on it too. On the command line any
-run-option flag set takes `--claude-code`, which turns `--system-prompt` into that
-appended text. In the console, **New session** has a **Claude Code** tab beside **Agent**
-and **Custom**, and the agent/workspace/settings option forms have a `claude code` toggle
-on their system-prompt field. Tool calls are gated as always — unlisted tools still pause
-for approval.
+The instructions passed to `default_prompt()` are *appended* to that prompt rather than
+replacing it, so an agent can layer on it too. On the command line any run-option flag
+set takes `--default-prompt`, which turns `--system-prompt` into that appended text. In
+the console, **New session** has a **Default** tab beside **Agent** and **Custom**, and
+the agent/workspace/settings/workflow forms have a `default prompt` toggle on their
+system-prompt field. Tool calls are gated as always — unlisted tools still pause for
+approval.
 
 ## Workflows
 
@@ -553,7 +553,7 @@ doing nothing.
 | claude_agent_sdk option | syros |
 |---|---|
 | `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness) |
-| `system_prompt` presets | the `claude_code` preset only — `claude_code_prompt()`, optionally with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
+| `system_prompt` presets | the default-agent preset only (`claude_code` on the wire) — `default_prompt()`, optionally with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
 | `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |

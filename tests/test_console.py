@@ -402,9 +402,9 @@ async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
     assert session["options"]["allowed_tools"] == ["mcp__bq__query"]
 
 
-async def test_create_session_runs_stock_claude_code(no_job_trigger):
-    # What the form's "Claude Code" tab posts: no agent, no persona — the
-    # preset that gives the run Claude Code's own system prompt.
+async def test_create_session_runs_the_default_agent(no_job_trigger):
+    # What the form's "Default" tab posts: no agent, no persona — the preset
+    # that gives the run the harness's own system prompt.
     store = FakeStore()
 
     result = await api(store).create_session(

@@ -5,7 +5,7 @@ from syros.options import (
     AgentOptions,
     append_system_prompt,
     build_sdk_options,
-    claude_code_prompt,
+    default_prompt,
     model_env,
     options_from_doc,
 )
@@ -147,9 +147,9 @@ def test_build_sdk_options_maps_fields():
     assert sdk.setting_sources == ["user"]
 
 
-def test_claude_code_prompt_rides_options_and_survives_the_wire():
-    """The stock-Claude-Code prompt is an ordinary serialized option."""
-    options = AgentOptions(project="p", system_prompt=claude_code_prompt())
+def test_default_prompt_rides_options_and_survives_the_wire():
+    """The default-agent prompt is an ordinary serialized option."""
+    options = AgentOptions(project="p", system_prompt=default_prompt())
     options.validate()
     doc = options.serialize()
     assert doc["system_prompt"] == {"type": "preset", "preset": "claude_code"}
@@ -157,12 +157,12 @@ def test_claude_code_prompt_rides_options_and_survives_the_wire():
     assert build_sdk_options(restored).system_prompt == doc["system_prompt"]
 
 
-def test_claude_code_prompt_with_append():
-    options = AgentOptions(project="p", system_prompt=claude_code_prompt("Be terse."))
+def test_default_prompt_with_append():
+    options = AgentOptions(project="p", system_prompt=default_prompt("Be terse."))
     options.validate()
     assert options.system_prompt["append"] == "Be terse."
     # No instructions means no key at all, rather than an empty append.
-    assert "append" not in claude_code_prompt("")
+    assert "append" not in default_prompt("")
 
 
 def test_rejects_unknown_system_prompt_preset():
@@ -176,27 +176,25 @@ def test_rejects_unknown_system_prompt_preset():
             AgentOptions(project="p", system_prompt=prompt).validate()
 
 
-def test_rejects_malformed_claude_code_preset():
+def test_rejects_malformed_default_prompt_preset():
     with pytest.raises(OptionsError, match="unknown key"):
-        AgentOptions(
-            project="p", system_prompt={**claude_code_prompt(), "exclude": True}
-        ).validate()
+        AgentOptions(project="p", system_prompt={**default_prompt(), "exclude": True}).validate()
     with pytest.raises(OptionsError, match="append"):
-        AgentOptions(project="p", system_prompt={**claude_code_prompt(), "append": 1}).validate()
+        AgentOptions(project="p", system_prompt={**default_prompt(), "append": 1}).validate()
 
 
 def test_append_system_prompt_keeps_the_preset_a_preset():
     """Platform-owned additions must never flatten the preset into a string —
-    that would silently replace Claude Code's prompt instead of adding to it."""
+    that would silently replace the default prompt instead of adding to it."""
     assert append_system_prompt("persona", "mounts") == "persona\n\nmounts"
     assert append_system_prompt(None, "mounts") == "mounts"
     assert append_system_prompt("persona", "") == "persona"
-    assert append_system_prompt(claude_code_prompt(), "mounts") == {
+    assert append_system_prompt(default_prompt(), "mounts") == {
         "type": "preset",
         "preset": "claude_code",
         "append": "mounts",
     }
-    assert append_system_prompt(claude_code_prompt("be terse"), "mounts")["append"] == (
+    assert append_system_prompt(default_prompt("be terse"), "mounts")["append"] == (
         "be terse\n\nmounts"
     )
 

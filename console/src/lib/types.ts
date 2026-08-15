@@ -272,27 +272,28 @@ export interface WorkspaceFilesResponse {
   files: StoredFile[];
 }
 
-/** A serialized AgentOptions `system_prompt` asking for Claude Code's own system
- *  prompt instead of a hand-written persona — mirrors claude_code_prompt() in
- *  src/syros/options.py, the only preset the server accepts. A plain string
- *  replaces the prompt; this keeps it and adds `append` after it. */
-export interface ClaudeCodePrompt {
+/** A serialized AgentOptions `system_prompt` asking for the harness's own
+ *  default system prompt instead of a hand-written persona — mirrors
+ *  default_prompt() in src/syros/options.py, the only preset the server
+ *  accepts ("claude_code" is claude_agent_sdk's name for it on the wire). A
+ *  plain string replaces the prompt; this keeps it and adds `append` after it. */
+export interface DefaultPrompt {
   type: "preset";
   preset: "claude_code";
   append?: string;
 }
 
-export function claudeCodePrompt(append?: string): ClaudeCodePrompt {
-  const prompt: ClaudeCodePrompt = { type: "preset", preset: "claude_code" };
+export function defaultPrompt(append?: string): DefaultPrompt {
+  const prompt: DefaultPrompt = { type: "preset", preset: "claude_code" };
   if (append?.trim()) prompt.append = append;
   return prompt;
 }
 
-export function isClaudeCodePrompt(value: unknown): value is ClaudeCodePrompt {
+export function isDefaultPrompt(value: unknown): value is DefaultPrompt {
   return (
     typeof value === "object" &&
     value !== null &&
-    (value as ClaudeCodePrompt).preset === "claude_code"
+    (value as DefaultPrompt).preset === "claude_code"
   );
 }
 

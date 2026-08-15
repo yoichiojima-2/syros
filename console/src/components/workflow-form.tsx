@@ -9,7 +9,7 @@ import {
   BigQueryToggle,
   buildOptionsPayload,
   ChoiceField,
-  ClaudeCodeToggle,
+  DefaultPromptToggle,
   ConnectorPicker,
   Field,
   MODELS,
@@ -240,8 +240,8 @@ export function WorkflowForm({
               />
             </Field>
           </div>
-          <Field label="System prompt" hint="run tasks as Claude Code itself, with no stored persona">
-            <ClaudeCodeToggle on={draft.claudeCode} onChange={draft.setClaudeCode} />
+          <Field label="System prompt" hint="run tasks as the default agent, with no stored persona">
+            <DefaultPromptToggle on={draft.defaults} onChange={draft.setDefaults} />
           </Field>
           <Field label="Allowed tools" hint="click to toggle; defaults for every task">
             <ToolPicker draft={draft} />

@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useConnectors } from "@/lib/hooks";
-import { type ClaudeCodePrompt, claudeCodePrompt, isClaudeCodePrompt } from "@/lib/types";
+import { type DefaultPrompt, defaultPrompt, isDefaultPrompt } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // The models people actually pick from; anything else goes through "custom".
@@ -182,14 +182,14 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   const storedBigquery = Boolean(
     (stored.mcp_servers as Record<string, unknown> | undefined)?.bq,
   );
-  // The system prompt is either a hand-written string or Claude Code's own
+  // The system prompt is either a hand-written persona or the harness's own
   // prompt with instructions appended, so the toggle and the text are one
   // field split in two: with the toggle on, the text is what gets appended.
-  const storedClaudeCode = isClaudeCodePrompt(stored.system_prompt);
-  const [claudeCode, setClaudeCode] = useState(storedClaudeCode);
+  const storedDefault = isDefaultPrompt(stored.system_prompt);
+  const [defaults, setDefaults] = useState(storedDefault);
   const [systemPrompt, setSystemPrompt] = useState(
-    (storedClaudeCode
-      ? (stored.system_prompt as ClaudeCodePrompt).append
+    (storedDefault
+      ? (stored.system_prompt as DefaultPrompt).append
       : (stored.system_prompt as string)) ?? "",
   );
   const [model, setModel] = useState((stored.model as string) ?? "");
@@ -214,7 +214,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   );
   const [maxTurns, setMaxTurns] = useState(stored.max_turns == null ? "" : String(stored.max_turns));
   return {
-    claudeCode, setClaudeCode,
+    defaults, setDefaults,
     systemPrompt, setSystemPrompt,
     model, setModel,
     permissionMode, setPermissionMode,
@@ -246,7 +246,7 @@ export function allowedTools(draft: OptionsDraft): string[] {
  *  payload: an empty string is "unset", not "". */
 export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown> {
   const options: Record<string, unknown> = {};
-  if (draft.claudeCode) options.system_prompt = claudeCodePrompt(draft.systemPrompt);
+  if (draft.defaults) options.system_prompt = defaultPrompt(draft.systemPrompt);
   else if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
   if (draft.model.trim()) options.model = draft.model.trim();
   if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
@@ -264,27 +264,27 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   return options;
 }
 
-/** The system-prompt field: a persona, or Claude Code's own prompt.
+/** The system-prompt field: a persona, or the default agent's own prompt.
  *
- *  Unset, a run has no system prompt at all — the SDK's default, a bare
- *  assistant. The toggle is how you ask for stock Claude Code instead, and the
- *  textarea then holds instructions appended after its prompt rather than a
- *  replacement for it. */
+ *  Empty and toggled off, a run has no system prompt at all — a bare
+ *  assistant. The toggle is how you ask for the harness's default prompt
+ *  instead, and the textarea then holds instructions appended after it rather
+ *  than a replacement for it. */
 export function SystemPromptField({ draft }: { draft: OptionsDraft }) {
-  const { claudeCode, setClaudeCode, systemPrompt, setSystemPrompt } = draft;
+  const { defaults, setDefaults, systemPrompt, setSystemPrompt } = draft;
   return (
     <Field
       label="System prompt"
-      hint={claudeCode ? "appended to Claude Code's own prompt" : "replaces it entirely"}
+      hint={defaults ? "appended to the default prompt" : "replaces it entirely"}
     >
       <div className="space-y-1.5">
-        <ClaudeCodeToggle on={claudeCode} onChange={setClaudeCode} />
+        <DefaultPromptToggle on={defaults} onChange={setDefaults} />
         <Textarea
           value={systemPrompt}
           onChange={(e) => setSystemPrompt(e.target.value)}
           rows={3}
           placeholder={
-            claudeCode ? "Prefer small commits. (optional)" : "You are a careful data analyst."
+            defaults ? "Prefer small commits. (optional)" : "You are a careful data analyst."
           }
           className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
         />
@@ -293,8 +293,8 @@ export function SystemPromptField({ draft }: { draft: OptionsDraft }) {
   );
 }
 
-/** One pill for "run as Claude Code", styled like the connector chips. */
-export function ClaudeCodeToggle({
+/** One pill for "run the default agent", styled like the connector chips. */
+export function DefaultPromptToggle({
   on,
   onChange,
 }: {
@@ -305,7 +305,7 @@ export function ClaudeCodeToggle({
     <button
       type="button"
       aria-pressed={on}
-      title="Use Claude Code's own system prompt — the stock coding agent, no persona of its own"
+      title="Run with the harness's default system prompt — the stock agent, no persona of its own"
       onClick={() => onChange(!on)}
       className={cn(
         "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
@@ -314,7 +314,7 @@ export function ClaudeCodeToggle({
           : "border-border text-muted-foreground hover:bg-secondary",
       )}
     >
-      claude code
+      default prompt
     </button>
   );
 }

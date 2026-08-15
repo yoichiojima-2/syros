@@ -18,19 +18,19 @@ import {
 } from "@/components/option-fields";
 import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
-import { claudeCodePrompt, isClaudeCodePrompt } from "@/lib/types";
+import { defaultPrompt, isDefaultPrompt } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Mode = "agent" | "claude-code" | "custom";
+type Mode = "agent" | "default" | "custom";
 
 const TABS: [Mode, string][] = [
   ["agent", "Agent"],
-  ["claude-code", "Claude Code"],
+  ["default", "Default"],
   ["custom", "Custom"],
 ];
 
 /** New-session form: a prompt plus one of three ways to configure the run — a
- *  stored agent, stock Claude Code, or hand-picked options. The tabs are
+ *  stored agent, the default agent, or hand-picked options. The tabs are
  *  exclusive because the backend merge treats any explicitly-set field as a
  *  whole-value override of the agent's (a single tool chip would silently
  *  replace the agent's entire allowlist), so the agent tab sends the agent's
@@ -54,10 +54,10 @@ export function SessionForm({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // With no stored agents the agent tab is a dead end, so land on Claude Code.
+  // With no stored agents the agent tab is a dead end, so land on Default.
   const noAgents = agents !== null && agents.length === 0;
   useEffect(() => {
-    if (noAgents) setMode("claude-code");
+    if (noAgents) setMode("default");
   }, [noAgents]);
 
   const selectedAgent = (agents ?? []).find((a) => a.name === agent) ?? null;
@@ -71,14 +71,14 @@ export function SessionForm({
     setError("");
     // On the agent tab the run options stay with the agent; only the budget
     // rides along, since it's a per-run cap rather than part of the persona.
-    // The Claude Code tab sends only the fields it renders — a half-filled
-    // custom tab left behind in the same draft must not leak into it.
+    // The Default tab sends only the fields it renders — a half-filled custom
+    // tab left behind in the same draft must not leak into it.
     const options: Record<string, unknown> = {};
     if (mode === "custom") {
       Object.assign(options, buildOptionsPayload(draft));
     } else {
-      if (mode === "claude-code") {
-        options.system_prompt = claudeCodePrompt(draft.systemPrompt);
+      if (mode === "default") {
+        options.system_prompt = defaultPrompt(draft.systemPrompt);
         if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
         const allowed = allowedTools(draft);
         if (allowed.length) options.allowed_tools = allowed;
@@ -168,11 +168,11 @@ export function SessionForm({
               </div>
               {selectedAgent && <AgentOptionsSummary options={selectedAgent.options} />}
             </>
-          ) : mode === "claude-code" ? (
+          ) : mode === "default" ? (
             <>
               <p className="text-[12px] leading-relaxed text-muted-foreground">
-                Runs Claude Code itself — its own system prompt, no stored persona. Everything
-                below is optional.
+                Runs the default agent — the harness&apos;s own system prompt, no stored
+                persona. Everything below is optional.
               </p>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Field label="Workspace" hint="shared directory">
@@ -194,7 +194,7 @@ export function SessionForm({
                   />
                 </Field>
               </div>
-              <Field label="Extra instructions" hint="appended to Claude Code's own prompt">
+              <Field label="Extra instructions" hint="appended to the default prompt">
                 <Textarea
                   value={draft.systemPrompt}
                   onChange={(e) => draft.setSystemPrompt(e.target.value)}
@@ -286,9 +286,9 @@ function AgentOptionsSummary({ options }: { options: Record<string, unknown> }) 
     const value = options[key];
     return Array.isArray(value) && value.length ? (value as string[]) : null;
   };
-  // A preset prompt is Claude Code's own, so what's worth showing is the fact
+  // A preset prompt is the harness's own, so what's worth showing is the fact
   // of it plus whatever the agent appended.
-  const preset = isClaudeCodePrompt(options.system_prompt);
+  const preset = isDefaultPrompt(options.system_prompt);
   const systemPrompt = preset
     ? (options.system_prompt as { append?: string }).append || null
     : str("system_prompt");
@@ -296,7 +296,7 @@ function AgentOptionsSummary({ options }: { options: Record<string, unknown> }) 
   const push = (label: string, value: string | null) => {
     if (value) rows.push([label, value]);
   };
-  if (preset) push("system prompt", "Claude Code's own");
+  if (preset) push("system prompt", "the default prompt");
   push("model", str("model"));
   push("permission mode", str("permission_mode"));
   push("workspace", str("workspace"));

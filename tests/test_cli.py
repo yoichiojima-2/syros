@@ -19,7 +19,7 @@ def args(**overrides):
         max_turns=None,
         max_budget_usd=None,
         bigquery=False,
-        claude_code=False,
+        default_prompt=False,
         connector=None,
     )
     base.update(overrides)
@@ -49,15 +49,15 @@ def test_run_options_validate_with_bigquery():
     options.validate()  # the flag emits exactly what validate() accepts
 
 
-def test_claude_code_flag_asks_for_the_preset():
-    options = _run_options(args(claude_code=True))
+def test_default_prompt_flag_asks_for_the_preset():
+    options = _run_options(args(default_prompt=True))
     assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
     options.project = "p"
     options.validate()  # the flag emits exactly what validate() accepts
 
 
-def test_claude_code_flag_appends_the_system_prompt_instead_of_replacing():
-    options = _run_options(args(claude_code=True, system_prompt="Be terse."))
+def test_default_prompt_flag_appends_the_system_prompt_instead_of_replacing():
+    options = _run_options(args(default_prompt=True, system_prompt="Be terse."))
     assert options.system_prompt["append"] == "Be terse."
 
 

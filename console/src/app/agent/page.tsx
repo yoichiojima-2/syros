@@ -12,7 +12,7 @@ import { AgentForm } from "@/components/agent-form";
 import { useAction, useAgent, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { compact, relTime } from "@/lib/format";
-import { isClaudeCodePrompt } from "@/lib/types";
+import { isDefaultPrompt } from "@/lib/types";
 import type { AgentSummary } from "@/lib/types";
 
 // One stored agent: what it is and the options every referencing run inherits.
@@ -36,18 +36,18 @@ function setOptions(options: Record<string, unknown>): [string, string][] {
   });
 }
 
-/** The agent's system prompt: a persona it was given, Claude Code's own prompt,
- *  or both — the preset carries its additions in `append`. */
+/** The agent's system prompt: a persona it was given, the default prompt, or
+ *  both — the preset carries its additions in `append`. */
 function SystemPrompt({ options }: { options: Record<string, unknown> }) {
   const value = options.system_prompt;
-  const preset = isClaudeCodePrompt(value);
+  const preset = isDefaultPrompt(value);
   const text = preset ? (value.append ?? "") : typeof value === "string" ? value : "";
   if (!preset && !text) return null;
   return (
     <div className="space-y-2">
       {preset && (
         <p className="text-[12px] text-muted-foreground">
-          Runs with Claude Code&apos;s own system prompt{text && ", plus:"}
+          Runs with the harness&apos;s default system prompt{text && ", plus:"}
         </p>
       )}
       {text && (

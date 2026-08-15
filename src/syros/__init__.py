@@ -6,7 +6,7 @@ Same API shape as claude_agent_sdk; every run is sandboxed in your GCP project.
 from .agents import AgentError
 from .client import SyrosClient, query
 from .errors import OptionsError, SessionTerminated, SyrosError
-from .options import AgentOptions, claude_code_prompt
+from .options import AgentOptions, default_prompt
 from .types import (
     AssistantMessage,
     ContentBlock,
@@ -45,6 +45,6 @@ __all__ = [
     "ToolResultBlock",
     "ToolUseBlock",
     "UserMessage",
-    "claude_code_prompt",
+    "default_prompt",
     "query",
 ]
