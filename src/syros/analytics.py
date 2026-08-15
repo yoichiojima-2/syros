@@ -15,6 +15,13 @@ and loads five flat tables into one BigQuery dataset:
 Each run replaces the tables (WRITE_TRUNCATE), so the export is idempotent
 and needs no watermark state. It runs with the caller's identity — the
 sandbox's service account gains nothing.
+
+The snapshot mirrors Firestore, so deleting a session there deletes it from
+the next export too. The `run_log` table is the exception: an append-only
+audit trail the runner streams one row into at every session release
+(`append_run_log`). It is not in FIELDS, so the truncate-export never
+touches it, and its rows outlive session deletion — cost analysis and audit
+read from it even after the control plane is cleaned up.
 """
 
 from __future__ import annotations
@@ -146,6 +153,34 @@ AGENT_FIELDS: list[Field] = [
     ("options", "JSON", "NULLABLE", lambda a: _json(a.get("options") or {})),
 ]
 
+# The audit trail: one row per run, appended at release, never truncated.
+# Deliberately NOT in FIELDS below — the snapshot export replaces its tables
+# wholesale, and this one must only ever grow. The Terraform table schema
+# (infra/main.tf, google_bigquery_table.run_log) mirrors this list; extend
+# both together.
+RUN_LOG_TABLE = "run_log"
+
+RUN_LOG_FIELDS: list[Field] = [
+    ("session_id", "STRING", "REQUIRED", lambda r: r["session_id"]),
+    ("released_at", "TIMESTAMP", "NULLABLE", _ts("released_at")),
+    ("stop_reason", "STRING", "NULLABLE", _get("stop_reason")),
+    # Cost of this run alone, and the session's cumulative total after it.
+    ("run_cost_usd", "FLOAT64", "NULLABLE", _get("run_cost_usd")),
+    ("cost_usd", "FLOAT64", "NULLABLE", _get("cost_usd")),
+    ("seq_head", "INT64", "NULLABLE", _get("seq_head")),
+    ("model", "STRING", "NULLABLE", lambda r: (r.get("options") or {}).get("model")),
+    ("workspace", "STRING", "NULLABLE", _opt_workspace),
+    ("created_by", "STRING", "NULLABLE", _get("created_by")),
+    ("workflow", "STRING", "NULLABLE", _get("workflow")),
+    ("run_id", "STRING", "NULLABLE", _get("run_id")),
+    ("task", "STRING", "NULLABLE", _get("task")),
+    ("agent", "STRING", "NULLABLE", _get("agent")),
+    ("trigger", "STRING", "NULLABLE", _get("trigger")),
+]
+
+RUN_LOG_SCHEMA: list[tuple[str, str, str]] = [(n, t, m) for n, t, m, _ in RUN_LOG_FIELDS]
+
+
 FIELDS: dict[str, list[Field]] = {
     "sessions": SESSION_FIELDS,
     "events": EVENT_FIELDS,
@@ -181,6 +216,51 @@ def approval_row(session_id: str, approval: dict[str, Any]) -> dict[str, Any]:
 
 def agent_row(agent: dict[str, Any]) -> dict[str, Any]:
     return _row(AGENT_FIELDS, agent)
+
+
+def run_log_row(
+    session_id: str,
+    session: dict[str, Any],
+    *,
+    stop_reason: str,
+    run_cost_usd: float,
+    cost_usd: float,
+    seq_head: int,
+    released_at: float,
+) -> dict[str, Any]:
+    """The audit row for one released run: the session's provenance fields
+    plus this run's outcome, passed explicitly because the caller (the
+    runner) holds fresher values than its claimed-at session snapshot."""
+    return _row(
+        RUN_LOG_FIELDS,
+        {
+            **session,
+            "session_id": session_id,
+            "stop_reason": stop_reason,
+            "run_cost_usd": run_cost_usd,
+            "cost_usd": cost_usd,
+            "seq_head": seq_head,
+            "released_at": released_at,
+        },
+    )
+
+
+def append_run_log(project: str, row: dict[str, Any], *, dataset: str = "syros") -> None:
+    """Stream one audit row into run_log. A streaming insert, not a load job:
+    it needs only table-level dataEditor (no jobUser), and the row id makes a
+    runner retry after a mid-release crash a dedupe hint instead of a
+    duplicate. Callers treat failure as non-fatal — a BigQuery outage must
+    never fail a run that already finished its work."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project)
+    errors = client.insert_rows_json(
+        f"{project}.{dataset}.{RUN_LOG_TABLE}",
+        [row],
+        row_ids=[f"{row['session_id']}:{row['seq_head']}"],
+    )
+    if errors:
+        raise RuntimeError(f"run_log insert failed: {errors}")
 
 
 async def _all_events(

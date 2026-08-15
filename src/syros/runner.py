@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -24,7 +25,7 @@ from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, g
 from .options import AgentOptions, build_sdk_options, model_env, options_from_doc
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import artifacts, bigquery, connectors, titles, workflows, workspace
+from . import analytics, artifacts, bigquery, connectors, titles, workflows, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -367,7 +368,8 @@ async def run(session_id: str) -> None:
         sdk_options.hooks = gate.hooks()
         sdk_options.mcp_servers = resolve_mcp_servers(options.mcp_servers, config.project)
 
-        cost = float(session.get("cost_usd") or 0.0)
+        starting_cost = float(session.get("cost_usd") or 0.0)
+        cost = starting_cost
         published = 0
         run_prompts: list[str] = []
         result_text: str | None = None
@@ -491,6 +493,24 @@ async def run(session_id: str) -> None:
             # title/summary — never nested under runtime.
             **({"result": result_text[: workflows.RESULT_LIMIT]} if result_text else {}),
         )
+        # Audit trail: stream this run's row into BigQuery. Append-only and
+        # independent of Firestore, so cost analysis survives session deletion.
+        # Never fatal — the session already released.
+        try:
+            row = analytics.run_log_row(
+                session_id,
+                session,
+                stop_reason=stop_reason,
+                run_cost_usd=cost - starting_cost,
+                cost_usd=cost,
+                seq_head=writer.seq,
+                released_at=time.time(),
+            )
+            await asyncio.to_thread(
+                analytics.append_run_log, config.project, row, dataset=env.dataset()
+            )
+        except Exception as error:
+            print(f"run log append failed for {session_id}: {error}", file=sys.stderr)
         await _advance_workflow(store, config, session_id)
     finally:
         beat.cancel()

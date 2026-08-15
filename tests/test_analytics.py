@@ -127,3 +127,48 @@ async def test_json_payloads_survive_exotic_leaves():
     when = datetime.datetime(2026, 8, 12, tzinfo=datetime.timezone.utc)
     row = tool_call_row("s", {"input": {"deadline": when, "args": ["ls"]}})
     assert row["input"] == {"deadline": str(when), "args": ["ls"]}
+
+
+def test_run_log_row_matches_declared_schema():
+    from syros.analytics import RUN_LOG_SCHEMA, run_log_row
+
+    row = run_log_row(
+        "sess_a",
+        {
+            "options": {"model": "m", "workspace": "shared"},
+            "created_by": "alice",
+            "workflow": "nightly",
+            "run_id": "r1",
+            "task": "review",
+            "agent": "reviewer",
+            "trigger": "cron",
+        },
+        stop_reason="success",
+        run_cost_usd=0.25,
+        cost_usd=1.25,
+        seq_head=6,
+        released_at=1700000000.0,
+    )
+    assert set(row) == {name for name, _, _ in RUN_LOG_SCHEMA}
+    assert row["session_id"] == "sess_a"
+    assert row["model"] == "m"
+    assert row["workspace"] == "shared"
+    assert row["run_cost_usd"] == 0.25
+    assert row["cost_usd"] == 1.25
+    assert row["workflow"] == "nightly"
+    assert row["released_at"] == "2023-11-14T22:13:20+00:00"
+
+
+def test_run_log_row_reads_legacy_team_as_workspace():
+    from syros.analytics import run_log_row
+
+    row = run_log_row(
+        "sess_old",
+        {"options": {"team": "legacy"}},
+        stop_reason="success",
+        run_cost_usd=0.0,
+        cost_usd=0.0,
+        seq_head=1,
+        released_at=1700000000.0,
+    )
+    assert row["workspace"] == "legacy"

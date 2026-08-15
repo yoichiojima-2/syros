@@ -163,6 +163,35 @@ resource "google_bigquery_dataset" "analytics" {
   depends_on                 = [google_project_service.apis]
 }
 
+# The audit trail: append-only per-run rows streamed by the runner at session
+# release. Unlike the snapshot tables (which `syros export` truncates and
+# rewrites), rows here outlive session deletion in Firestore — that is the
+# point. Schema mirrors RUN_LOG_FIELDS in src/syros/analytics.py; extend both
+# together. deletion_protection stays on: an audit log should not vanish on a
+# terraform destroy.
+resource "google_bigquery_table" "run_log" {
+  dataset_id          = google_bigquery_dataset.analytics.dataset_id
+  table_id            = "run_log"
+  description         = "Append-only per-run audit log, streamed by the sandbox runner at release"
+  deletion_protection = true
+  schema = jsonencode([
+    { name = "session_id", type = "STRING", mode = "REQUIRED" },
+    { name = "released_at", type = "TIMESTAMP", mode = "NULLABLE" },
+    { name = "stop_reason", type = "STRING", mode = "NULLABLE" },
+    { name = "run_cost_usd", type = "FLOAT64", mode = "NULLABLE" },
+    { name = "cost_usd", type = "FLOAT64", mode = "NULLABLE" },
+    { name = "seq_head", type = "INT64", mode = "NULLABLE" },
+    { name = "model", type = "STRING", mode = "NULLABLE" },
+    { name = "workspace", type = "STRING", mode = "NULLABLE" },
+    { name = "created_by", type = "STRING", mode = "NULLABLE" },
+    { name = "workflow", type = "STRING", mode = "NULLABLE" },
+    { name = "run_id", type = "STRING", mode = "NULLABLE" },
+    { name = "task", type = "STRING", mode = "NULLABLE" },
+    { name = "agent", type = "STRING", mode = "NULLABLE" },
+    { name = "trigger", type = "STRING", mode = "NULLABLE" },
+  ])
+}
+
 resource "google_artifact_registry_repository" "syros" {
   repository_id = "syros"
   location      = var.region
@@ -230,6 +259,17 @@ resource "google_cloud_run_v2_job_iam_member" "runner_runs_job" {
   location = var.region
   role     = "roles/run.jobsExecutorWithOverrides"
   member   = "serviceAccount:${google_service_account.runner.email}"
+}
+
+# Audit logging, not an agent capability: unconditional (unlike the
+# sandbox_bigquery grants below) and scoped to the one run_log table, so the
+# runner can stream its release rows but still can't read or rewrite any
+# snapshot table. Streaming inserts need no jobUser role.
+resource "google_bigquery_table_iam_member" "runner_run_log" {
+  dataset_id = google_bigquery_dataset.analytics.dataset_id
+  table_id   = google_bigquery_table.run_log.table_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${google_service_account.runner.email}"
 }
 
 # Granted only when the deployment opts sessions into BigQuery (the built-in
