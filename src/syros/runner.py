@@ -21,7 +21,13 @@ from claude_agent_sdk import ClaudeSDKClient
 from . import env
 from .gate import Gate
 from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, git_info
-from .options import AgentOptions, build_sdk_options, model_env, options_from_doc
+from .options import (
+    AgentOptions,
+    append_system_prompt,
+    build_sdk_options,
+    model_env,
+    options_from_doc,
+)
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
 from . import artifacts, bigquery, connectors, titles, workflows, workspace
@@ -334,7 +340,7 @@ async def run(session_id: str) -> None:
         # The mounts are invisible to the agent otherwise — without this a session
         # can succeed while writing its output somewhere that never persists.
         if mounts := artifacts.mount_prompt(spaces):
-            options.system_prompt = "\n\n".join(filter(None, (options.system_prompt, mounts)))
+            options.system_prompt = append_system_prompt(options.system_prompt, mounts)
 
         # The workspace is restored now, so the context snapshot can carry its
         # git state; read once, not per event.

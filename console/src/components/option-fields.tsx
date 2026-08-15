@@ -3,7 +3,9 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useConnectors } from "@/lib/hooks";
+import { type ClaudeCodePrompt, claudeCodePrompt, isClaudeCodePrompt } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // The models people actually pick from; anything else goes through "custom".
@@ -180,7 +182,16 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   const storedBigquery = Boolean(
     (stored.mcp_servers as Record<string, unknown> | undefined)?.bq,
   );
-  const [systemPrompt, setSystemPrompt] = useState((stored.system_prompt as string) ?? "");
+  // The system prompt is either a hand-written string or Claude Code's own
+  // prompt with instructions appended, so the toggle and the text are one
+  // field split in two: with the toggle on, the text is what gets appended.
+  const storedClaudeCode = isClaudeCodePrompt(stored.system_prompt);
+  const [claudeCode, setClaudeCode] = useState(storedClaudeCode);
+  const [systemPrompt, setSystemPrompt] = useState(
+    (storedClaudeCode
+      ? (stored.system_prompt as ClaudeCodePrompt).append
+      : (stored.system_prompt as string)) ?? "",
+  );
   const [model, setModel] = useState((stored.model as string) ?? "");
   const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
   const [workspace, setWorkspace] = useState(((stored.workspace ?? stored.team) as string) ?? "");
@@ -203,6 +214,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   );
   const [maxTurns, setMaxTurns] = useState(stored.max_turns == null ? "" : String(stored.max_turns));
   return {
+    claudeCode, setClaudeCode,
     systemPrompt, setSystemPrompt,
     model, setModel,
     permissionMode, setPermissionMode,
@@ -219,22 +231,28 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
 
 export type OptionsDraft = ReturnType<typeof useOptionsDraft>;
 
-/** The serialized dict a draft submits. Only what was filled in rides the
- *  payload: an empty string is "unset", not "". */
-export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown> {
-  const options: Record<string, unknown> = {};
-  if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
-  if (draft.model.trim()) options.model = draft.model.trim();
-  if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
-  if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
-  if (draft.artifacts.trim()) options.artifacts = draft.artifacts.trim();
-  const allowed = [
+/** The tool allowlist a draft submits: the chips plus the free-text row. */
+export function allowedTools(draft: OptionsDraft): string[] {
+  return [
     ...draft.tools,
     ...draft.extraTools
       .split(",")
       .map((tool) => tool.trim())
       .filter((tool) => tool && !draft.tools.includes(tool)),
   ];
+}
+
+/** The serialized dict a draft submits. Only what was filled in rides the
+ *  payload: an empty string is "unset", not "". */
+export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown> {
+  const options: Record<string, unknown> = {};
+  if (draft.claudeCode) options.system_prompt = claudeCodePrompt(draft.systemPrompt);
+  else if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
+  if (draft.model.trim()) options.model = draft.model.trim();
+  if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
+  if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
+  if (draft.artifacts.trim()) options.artifacts = draft.artifacts.trim();
+  const allowed = allowedTools(draft);
   if (draft.bigquery) {
     options.mcp_servers = { bq: BIGQUERY_SERVER };
     if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
@@ -244,6 +262,61 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
   if (draft.maxTurns.trim()) options.max_turns = Number(draft.maxTurns);
   return options;
+}
+
+/** The system-prompt field: a persona, or Claude Code's own prompt.
+ *
+ *  Unset, a run has no system prompt at all — the SDK's default, a bare
+ *  assistant. The toggle is how you ask for stock Claude Code instead, and the
+ *  textarea then holds instructions appended after its prompt rather than a
+ *  replacement for it. */
+export function SystemPromptField({ draft }: { draft: OptionsDraft }) {
+  const { claudeCode, setClaudeCode, systemPrompt, setSystemPrompt } = draft;
+  return (
+    <Field
+      label="System prompt"
+      hint={claudeCode ? "appended to Claude Code's own prompt" : "replaces it entirely"}
+    >
+      <div className="space-y-1.5">
+        <ClaudeCodeToggle on={claudeCode} onChange={setClaudeCode} />
+        <Textarea
+          value={systemPrompt}
+          onChange={(e) => setSystemPrompt(e.target.value)}
+          rows={3}
+          placeholder={
+            claudeCode ? "Prefer small commits. (optional)" : "You are a careful data analyst."
+          }
+          className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
+        />
+      </div>
+    </Field>
+  );
+}
+
+/** One pill for "run as Claude Code", styled like the connector chips. */
+export function ClaudeCodeToggle({
+  on,
+  onChange,
+}: {
+  on: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      title="Use Claude Code's own system prompt — the stock coding agent, no persona of its own"
+      onClick={() => onChange(!on)}
+      className={cn(
+        "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+        on
+          ? "border-transparent bg-primary-soft text-foreground"
+          : "border-border text-muted-foreground hover:bg-secondary",
+      )}
+    >
+      claude code
+    </button>
+  );
 }
 
 /** Toggle-chip row over the common tools plus a free-text row for the rest —

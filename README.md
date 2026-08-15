@@ -163,6 +163,34 @@ syros agents show|update|delete reviewer
 The console has an Agents view with the same create/edit/delete surface, and sessions
 show which agent they ran as. Workflow tasks can reference an agent too (below).
 
+### Stock Claude Code
+
+Not every run wants a persona. Left unset, `system_prompt` gives a run no system prompt
+at all — the SDK's default, a bare assistant. `claude_code_prompt()` asks for Claude
+Code's own system prompt instead: the coding agent as it ships, with nothing stored in
+front of it.
+
+```python
+from syros import query, AgentOptions, claude_code_prompt
+
+async for message in query(
+    prompt="collect today's news",
+    options=AgentOptions(
+        system_prompt=claude_code_prompt(),   # or claude_code_prompt("Be terse.")
+        allowed_tools=["Read", "Write", "Bash", "WebSearch"],
+    ),
+):
+    ...
+```
+
+The instructions passed to `claude_code_prompt()` are *appended* to Claude Code's prompt
+rather than replacing it, so an agent can layer on it too. On the command line any
+run-option flag set takes `--claude-code`, which turns `--system-prompt` into that
+appended text. In the console, **New session** has a **Claude Code** tab beside **Agent**
+and **Custom**, and the agent/workspace/settings option forms have a `claude code` toggle
+on their system-prompt field. Tool calls are gated as always — unlisted tools still pause
+for approval.
+
 ## Workflows
 
 A workflow is a named chain of one-shot tasks — each task a prompt, an optional agent
@@ -525,13 +553,14 @@ doing nothing.
 | claude_agent_sdk option | syros |
 |---|---|
 | `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness) |
+| `system_prompt` presets | the `claude_code` preset only — `claude_code_prompt()`, optionally with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
 | `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
 | `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`), the workspace's skills, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
-| `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
+| `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
 ## Workspaces and global settings
 

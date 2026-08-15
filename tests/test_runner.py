@@ -269,6 +269,29 @@ async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_syn
     assert session["published"] == 2
 
 
+async def test_runner_tells_claude_code_about_mounts_without_losing_the_preset(
+    env, store, fake_harness, gcs_sync
+):
+    """A stock-Claude-Code session keeps its preset: the mount notice rides its
+    `append`, rather than becoming a string that replaces the preset."""
+    await store.create_session(
+        SID,
+        {
+            "system_prompt": {"type": "preset", "preset": "claude_code", "append": "Be terse."},
+            "artifacts": "workspace",
+        },
+    )
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    prompt = client.options.system_prompt
+    assert prompt["preset"] == "claude_code"
+    assert prompt["append"].startswith("Be terse.\n\n")
+    assert "./artifacts/workspace/ (read-write" in prompt["append"]
+
+
 async def test_runner_mount_prompt_stands_alone_without_system_prompt(
     env, store, fake_harness, gcs_sync
 ):

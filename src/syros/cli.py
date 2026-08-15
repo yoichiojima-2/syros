@@ -16,6 +16,7 @@ syros approvals <session_id> deny <call_hash> [-m reason]
 syros kill <session_id>                 flip the kill switch
 syros agents                            list stored agents (personas)
 syros agents create <name> --system-prompt "..." --allow Read --allow Bash [--bigquery]
+                                        --claude-code runs Claude Code's own prompt instead
 syros agents show|update|delete <name>
 syros deployments                         list deployments and their next run
 syros deployments create <name> --cron "0 9 * * *" --prompt "..." [--agent <name>] [--bigquery]
@@ -51,7 +52,7 @@ import os
 
 from . import env
 from .errors import SyrosError
-from .options import AgentOptions
+from .options import AgentOptions, claude_code_prompt
 from .store import Store
 from .types import doc_to_message
 
@@ -262,10 +263,17 @@ def _run_options(args) -> AgentOptions:
             allow.append("mcp__bq__query")
     flags = getattr(args, "connector", None) or []
     connectors = [name for flag in flags for name in flag.split(",") if name]
+    # --claude-code keeps Claude Code's own prompt and treats --system-prompt as
+    # the addition to it, rather than the replacement it is on its own.
+    system_prompt = (
+        claude_code_prompt(args.system_prompt)
+        if getattr(args, "claude_code", False)
+        else args.system_prompt
+    )
     return AgentOptions(
         connectors=connectors or None,
         model=args.model,
-        system_prompt=args.system_prompt,
+        system_prompt=system_prompt,
         allowed_tools=allow,
         mcp_servers=mcp_servers,
         permission_mode=args.permission_mode,
@@ -799,6 +807,11 @@ def _run_option_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--model", default=None)
     parser.add_argument("--system-prompt", default=None)
+    parser.add_argument(
+        "--claude-code",
+        action="store_true",
+        help="run with Claude Code's own system prompt (--system-prompt is appended to it)",
+    )
     parser.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
     parser.add_argument("--permission-mode", default=None)
     parser.add_argument("--workspace", "--team", dest="workspace", default=None)

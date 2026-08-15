@@ -9,6 +9,7 @@ import {
   BigQueryToggle,
   buildOptionsPayload,
   ChoiceField,
+  ClaudeCodeToggle,
   ConnectorPicker,
   Field,
   MODELS,
@@ -239,6 +240,9 @@ export function WorkflowForm({
               />
             </Field>
           </div>
+          <Field label="System prompt" hint="run tasks as Claude Code itself, with no stored persona">
+            <ClaudeCodeToggle on={draft.claudeCode} onChange={draft.setClaudeCode} />
+          </Field>
           <Field label="Allowed tools" hint="click to toggle; defaults for every task">
             <ToolPicker draft={draft} />
           </Field>

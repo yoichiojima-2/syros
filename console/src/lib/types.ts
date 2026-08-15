@@ -272,6 +272,30 @@ export interface WorkspaceFilesResponse {
   files: StoredFile[];
 }
 
+/** A serialized AgentOptions `system_prompt` asking for Claude Code's own system
+ *  prompt instead of a hand-written persona — mirrors claude_code_prompt() in
+ *  src/syros/options.py, the only preset the server accepts. A plain string
+ *  replaces the prompt; this keeps it and adds `append` after it. */
+export interface ClaudeCodePrompt {
+  type: "preset";
+  preset: "claude_code";
+  append?: string;
+}
+
+export function claudeCodePrompt(append?: string): ClaudeCodePrompt {
+  const prompt: ClaudeCodePrompt = { type: "preset", preset: "claude_code" };
+  if (append?.trim()) prompt.append = append;
+  return prompt;
+}
+
+export function isClaudeCodePrompt(value: unknown): value is ClaudeCodePrompt {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as ClaudeCodePrompt).preset === "claude_code"
+  );
+}
+
 /** Global option defaults (serialized AgentOptions) every workspace and session inherits. */
 export interface SettingsResponse {
   now: number;

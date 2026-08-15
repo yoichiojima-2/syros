@@ -402,6 +402,33 @@ async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
     assert session["options"]["allowed_tools"] == ["mcp__bq__query"]
 
 
+async def test_create_session_runs_stock_claude_code(no_job_trigger):
+    # What the form's "Claude Code" tab posts: no agent, no persona — the
+    # preset that gives the run Claude Code's own system prompt.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "collect today's news",
+            "agent": None,
+            "options": {"system_prompt": {"type": "preset", "preset": "claude_code"}},
+        }
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["agent"] is None
+    assert session["options"]["system_prompt"] == {"type": "preset", "preset": "claude_code"}
+
+
+async def test_create_session_rejects_an_unknown_preset(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(SyrosError, match="preset"):
+        await api(store).create_session(
+            {"prompt": "go", "options": {"system_prompt": {"type": "file", "path": "/p.md"}}}
+        )
+    assert store.sessions == {}
+
+
 async def test_create_session_resolves_agent(no_job_trigger):
     store = FakeStore()
     await store.create_agent(
