@@ -21,6 +21,13 @@ brings in everything it references.
 
     presets/
         {kind}/{name}   -> the object created in Firestore or GCS
+
+A preset's files live under `data/` at exactly the bucket prefix they install
+to (`layout.py`), so `data/` reads as a picture of a populated installation and
+a preset's `files` is the destination, not a second thing to keep in sync —
+`tests/test_presets.py` pins that. It also keeps the two scopes from nesting by
+accident: a workspace's files come from `workspaces/{name}/ws`, so the walk
+that collects them cannot reach the skills beside them.
 """
 
 from __future__ import annotations
@@ -92,6 +99,9 @@ def _walk(root: Any, prefix: str = "") -> list[tuple[str, bytes]]:
 def files(source: str) -> list[tuple[str, bytes]]:
     """The files a preset ships, read from the installed package.
 
+    `source` is the bucket prefix the files install to, which is also where
+    they sit under `data/` — see the module docstring.
+
     `importlib.resources` rather than `__file__` so this works from the Cloud
     Run image and a wheel as well as a checkout — the same idiom the console
     uses to load its static bundle.
@@ -116,7 +126,7 @@ CATALOG: tuple[Preset, ...] = (
         spec={
             "name": "research",
             "options": {"model": "claude-sonnet-5", "max_budget_usd": 5.0},
-            "files": "workspaces/research",
+            "files": "workspaces/research/ws",
         },
     ),
     Preset(
@@ -140,7 +150,7 @@ CATALOG: tuple[Preset, ...] = (
         spec={
             "name": "brief",
             "workspace": "research",
-            "files": "workspace-skills/research/brief",
+            "files": "workspaces/research/skills/brief",
         },
     ),
     Preset(

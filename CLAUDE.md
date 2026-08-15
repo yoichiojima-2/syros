@@ -53,9 +53,13 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
   order is by kind (`KINDS`): workflows last, because `workflows._validate_tasks`
   resolves each task's agent against the store at definition time. Package data
   ships because hatchling includes everything git-tracked under `src/syros/`; read
-  it with `importlib.resources`, never `__file__`. Adding a preset means adding a
-  `CATALOG` entry — `tests/test_presets.py` validates every options dict, task
-  list, and cross-reference, so a broken one fails there rather than on install.
+  it with `importlib.resources`, never `__file__`. A preset's files sit under
+  `data/` at exactly the bucket prefix they install to, so `files` is the
+  destination and not a second thing to keep in sync — that is also what stops a
+  workspace's recursive file walk from sweeping in the skills beside it. Adding a
+  preset means adding a `CATALOG` entry — `tests/test_presets.py` validates every
+  options dict, task list, and cross-reference, so a broken one fails there
+  rather than on install.
 - Session `title`/`summary` are durable session fields written by the runner at
   idle via one haiku call (`titles.py`); failures fall back to first-prompt-line.
   Do not add them to `RUNTIME_FIELDS` in `store.py` — that nests under `runtime.`.
