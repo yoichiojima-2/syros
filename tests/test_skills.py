@@ -278,3 +278,29 @@ def test_sync_official_skips_non_regular_members(capture_writes):
     summary = skills.sync_official("p", "b", max_bytes=1024, fetch=lambda: buffer.getvalue())
     assert summary["files"] == 1
     assert [f for _, f, _ in capture_writes] == ["SKILL.md"]
+
+
+def test_parse_description_reads_frontmatter():
+    body = b"---\nname: pdf\ndescription: Merge, split, and OCR PDF files\n---\n# pdf\n"
+    assert skills.parse_description(body) == "Merge, split, and OCR PDF files"
+
+
+def test_parse_description_handles_quotes_and_folded_blocks():
+    assert skills.parse_description(b'---\ndescription: "Quoted: with a colon"\n---\n') == (
+        "Quoted: with a colon"
+    )
+    folded = b"---\nname: x\ndescription: >-\n  first half\n  second half\nother: 1\n---\n"
+    assert skills.parse_description(folded) == "first half second half"
+
+
+def test_parse_description_survives_a_truncated_read():
+    """The console reads only the head of SKILL.md, so the closing --- may be gone."""
+    head = b"---\nname: canvas-design\ndescription: Create beautiful visual art\nlicense: on"
+    assert skills.parse_description(head) == "Create beautiful visual art"
+
+
+def test_parse_description_absent_or_nested():
+    assert skills.parse_description(b"# no frontmatter\ndescription: nope\n") is None
+    assert skills.parse_description(b"---\nname: pdf\n---\n") is None
+    # indented: belongs to some nested key, not the skill itself
+    assert skills.parse_description(b"---\ntool:\n  description: inner\n---\n") is None

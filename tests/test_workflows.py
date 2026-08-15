@@ -104,6 +104,58 @@ async def test_create_rejects_bad_name_prompt_and_cron():
         await make(store, name="y", cron="not cron")
 
 
+async def test_update_replaces_definition_and_rebases_slot():
+    store = FakeStore()
+    await make(store, created_by="me")
+    store.workflows["nightly"].update(run_count=3, skip_count=1)
+    now = time.time()
+    workflow = await workflows.update(
+        "nightly",
+        [{"id": "a", "prompt": "one"}, {"id": "b", "prompt": "two"}],
+        cron_expression="0 6 * * *",
+        timezone="Asia/Tokyo",
+        options=OPTS,
+        store=store,
+        now=now,
+    )
+    stored = store.workflows["nightly"]
+    assert [t["id"] for t in stored["tasks"]] == ["a", "b"]
+    assert stored["tasks"][1]["depends_on"] == ["a"]
+    assert stored["schedule"] == {"cron": "0 6 * * *", "timezone": "Asia/Tokyo"}
+    assert stored["next_run_at"] == next_after("0 6 * * *", now, "Asia/Tokyo")
+    assert stored["last_error"] is None
+    # Counters, ownership, and pause state survive an edit.
+    assert stored["run_count"] == 3 and stored["skip_count"] == 1
+    assert stored["created_by"] == "me" and stored["enabled"] is True
+    assert workflow["next_run_at"] == stored["next_run_at"]
+
+
+async def test_update_without_cron_goes_manual_only():
+    store = FakeStore()
+    await make(store)
+    await workflows.update("nightly", [{"id": "main", "prompt": "x"}], options=OPTS, store=store)
+    stored = store.workflows["nightly"]
+    assert stored["schedule"] is None and stored["next_run_at"] == 0.0
+
+
+async def test_update_rejects_bad_input_and_unknown_workflow():
+    store = FakeStore()
+    await make(store)
+    with pytest.raises(WorkflowError):  # invalid tasks leave the doc untouched
+        await workflows.update("nightly", [], options=OPTS, store=store)
+    with pytest.raises(Exception):  # bad cron
+        await workflows.update(
+            "nightly",
+            [{"id": "main", "prompt": "x"}],
+            cron_expression="nope",
+            options=OPTS,
+            store=store,
+        )
+    assert store.workflows["nightly"]["tasks"][0]["prompt"] == "do the thing"
+    with pytest.raises(WorkflowError):
+        await workflows.update("ghost", [{"id": "main", "prompt": "x"}], options=OPTS, store=store)
+
+
 async def test_task_validation():
     store = FakeStore()
     ok = {"id": "a", "prompt": "x"}

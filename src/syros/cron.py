@@ -1,9 +1,10 @@
 """Standard 5-field cron: parse an expression, answer "when does it next fire".
 
-Deployments need exactly that and nothing more, so it is 150 lines here rather
-than a dependency in the sandbox image. Syntax is the familiar one —
-`minute hour day-of-month month day-of-week`, with `*`, `a-b`, `*/n`, `a-b/n`,
-comma lists, three-letter month/day names, and the `@daily` family of aliases.
+Workflow schedules need exactly that and nothing more, so it is a couple of
+hundred lines here rather than a dependency in the sandbox image. Syntax is the
+familiar one — `minute hour day-of-month month day-of-week`, with `*`, `a-b`,
+`*/n`, `a-b/n`, comma lists, three-letter month/day names, and the `@daily`
+family of aliases.
 
 Cron's day rule is inherited too: when *both* day-of-month and day-of-week are
 restricted the day matches if *either* does (so `0 0 1 * MON` is "the 1st and

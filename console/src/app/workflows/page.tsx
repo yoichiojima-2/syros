@@ -66,8 +66,7 @@ export default function WorkflowsPage() {
             </div>
           ) : workflows.length === 0 ? (
             <p className="p-10 text-center text-[13px] text-muted-foreground">
-              No workflows yet — a workflow chains one-shot tasks, each run as a fresh session,
-              on a cron or on demand.
+              No workflows yet.
               <br />
               Create one above, or with{" "}
               <code className="font-mono text-xs">
