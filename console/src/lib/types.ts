@@ -316,9 +316,12 @@ export interface SkillSummary {
   file_count: number;
   total_size: number;
   updated: number | null;
-  /** Where this catalog skill is installed: "global" (the settings default)
-   *  and/or workspace names. Empty means nothing mounts it. */
+  /** Workspaces that install this catalog skill. */
   installed_in: string[];
+  /** On the global default (settings/global), i.e. installed everywhere a
+   *  nearer layer doesn't install its own set. Separate from installed_in
+   *  because "global" is also a legal workspace name. */
+  installed_globally: boolean;
 }
 
 export interface SkillsResponse {

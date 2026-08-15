@@ -933,7 +933,14 @@ async def test_skills_stats_and_files():
 
     result = await console.skills()
     assert result["skills"] == [
-        {"name": "pdf", "file_count": 2, "total_size": 7, "updated": None, "installed_in": []}
+        {
+            "name": "pdf",
+            "file_count": 2,
+            "total_size": 7,
+            "updated": None,
+            "installed_in": [],
+            "installed_globally": False,
+        }
     ]
 
     listing = await console.skill_files("pdf")
@@ -947,13 +954,16 @@ async def test_skills_report_where_they_are_installed():
     store = FakeStore()
     await store.update_settings({"options": {"skills": ["pdf"]}})
     await store.create_workspace("research", {"options": {"skills": ["pdf", "xlsx"]}})
+    # "global" is a legal workspace name, so the global default cannot be a
+    # marker inside the workspace list — the console acts on these values
+    await store.create_workspace("global", {"options": {"skills": ["xlsx"]}})
     objects = FakeObjects(skills={"pdf": {"SKILL.md": b"p"}, "xlsx": {"SKILL.md": b"x"}})
 
     rows = (await api(store, objects=objects).skills())["skills"]
 
-    assert {row["name"]: row["installed_in"] for row in rows} == {
-        "pdf": ["global", "research"],
-        "xlsx": ["research"],
+    assert {row["name"]: (row["installed_in"], row["installed_globally"]) for row in rows} == {
+        "pdf": (["research"], True),
+        "xlsx": (["global", "research"], False),
     }
 
 

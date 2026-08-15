@@ -15,6 +15,7 @@ contract as workspace.py / artifacts.py).
 
 from __future__ import annotations
 
+import asyncio
 import io
 import mimetypes
 import tarfile
@@ -275,6 +276,32 @@ def promote_legacy(project: str, bucket_name: str) -> dict[str, Any]:
         blob.delete()
         files += 1
     return {"promoted": moves, "files": files}
+
+
+async def migrate(store: StoreProtocol, project: str, bucket_name: str) -> dict[str, Any]:
+    """The one-time upgrade to the catalog, content and installs together.
+
+    Every session has to keep mounting what it mounted before, so the order
+    matters: the catalog is read *first* (at that point it holds exactly the
+    skills that were global, since workspace ones lived elsewhere), those go on
+    settings/global, and a workspace that owned skills installs them on top of
+    that same global set — an install list replaces the layer below it, so
+    promoted names alone would silently drop the globals that workspace had.
+
+    Re-running is a no-op: promote_legacy finds nothing left to move, and an
+    already-populated global install list is left alone rather than re-seeded.
+    """
+    was_global = await asyncio.to_thread(catalog, project, bucket_name)
+    summary = await asyncio.to_thread(promote_legacy, project, bucket_name)
+    installs: dict[str, list[str]] = {}
+    for workspace, promoted in sorted(summary["promoted"].items()):
+        installs[workspace] = await install(
+            store, was_global + sorted(promoted.values()), workspace=workspace
+        )
+    seeded = None
+    if was_global and not await installed(store):
+        seeded = await install(store, was_global)
+    return {**summary, "installed": installs, "seeded_global": seeded}
 
 
 def _free_name(skill: str, workspace: str, taken: set[str]) -> str:

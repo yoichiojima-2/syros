@@ -585,25 +585,19 @@ async def _skills(args) -> None:
         print("\n".join(names) or "(nothing installed)")
         return
     if args.action == "migrate":
-        # A one-time upgrade to the catalog, and it has to leave every session
-        # mounting what it mounted before: the skills that were global then are
-        # installed globally now (read first — after promotion the catalog also
-        # holds workspace skills, which were never global), and each promoted
-        # workspace skill is installed on the workspace it came from.
-        store = _store(args)
-        was_global = await asyncio.to_thread(skills.catalog, project, bucket)
-        summary = await asyncio.to_thread(skills.promote_legacy, project, bucket)
+        summary = await skills.migrate(_store(args), project, bucket)
         for workspace_name, promoted in sorted(summary["promoted"].items()):
-            await skills.install(store, sorted(promoted.values()), workspace=workspace_name)
             for old, new in sorted(promoted.items()):
                 moved = f" (was {old})" if old != new else ""
-                print(f"{workspace_name}: installed {new}{moved}")
+                print(f"{workspace_name}: promoted {new}{moved}")
+            print(f"{workspace_name} now mounts: {', '.join(summary['installed'][workspace_name])}")
         print(f"promoted {summary['files']} file(s) into the catalog")
-        if await skills.installed(store):
+        if summary["seeded_global"] is not None:
+            print(
+                f"installed globally, as before the catalog: {', '.join(summary['seeded_global'])}"
+            )
+        else:
             print("global install list already set — left alone")
-        elif was_global:
-            await skills.install(store, was_global)
-            print(f"installed globally, as before the catalog: {', '.join(was_global)}")
         return
 
     # The catalog, with where each skill is installed — a skill nobody installs
@@ -612,7 +606,7 @@ async def _skills(args) -> None:
     store = _store(args)
     installs: dict[str, list[str]] = {}
     for name in await skills.installed(store):
-        installs.setdefault(name, []).append("global")
+        installs.setdefault(name, []).append("everywhere")  # never a workspace name
     for doc in sorted(await store.list_workspaces(), key=lambda d: d["name"]):
         for name in ((doc.get("options") or {}).get("skills")) or []:
             installs.setdefault(name, []).append(doc["name"])

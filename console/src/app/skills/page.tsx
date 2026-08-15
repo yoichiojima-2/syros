@@ -127,7 +127,7 @@ function SkillRow({
 }) {
   const [flash, run] = useAction();
   const Chevron = expanded ? ChevronDown : ChevronRight;
-  const global = skill.installed_in.includes("global");
+  const global = skill.installed_globally;
 
   // The one install worth a shortcut: everywhere, i.e. the global settings
   // default. Per-workspace and per-agent installs are a field on those forms,
@@ -162,10 +162,15 @@ function SkillRow({
           </Link>
         </TableCell>
         <TableCell className="py-1.5">
-          {skill.installed_in.length === 0 ? (
+          {!skill.installed_globally && skill.installed_in.length === 0 ? (
             <span className="text-[11px] text-faint">not installed</span>
           ) : (
             <span className="flex flex-wrap gap-1">
+              {skill.installed_globally && (
+                <span className="rounded-full bg-primary-soft px-2 py-0.5 font-mono text-[10px]">
+                  everywhere
+                </span>
+              )}
               {skill.installed_in.map((where) => (
                 <span
                   key={where}

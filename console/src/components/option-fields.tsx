@@ -247,6 +247,12 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   const [bigquery, setBigquery] = useState(storedBigquery);
   const [connectors, setConnectors] = useState<string[]>((stored.connectors as string[]) ?? []);
   const [skills, setSkills] = useState<string[]>((stored.skills as string[]) ?? []);
+  // An empty install list is a real, storable choice ("mount nothing", as
+  // `syros skills uninstall` leaves behind) and distinct from an absent one
+  // ("inherit the layer below"). A form that dropped an empty list on save
+  // would silently turn the first into the second, so a target that already
+  // stores a list keeps submitting one even when every chip is off.
+  const skillsStored = Array.isArray(stored.skills);
   const [budget, setBudget] = useState(
     stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
   );
@@ -261,7 +267,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
     extraTools, setExtraTools,
     bigquery, setBigquery,
     connectors, setConnectors,
-    skills, setSkills,
+    skills, setSkills, skillsStored,
     budget, setBudget,
     maxTurns, setMaxTurns,
   };
@@ -291,7 +297,7 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   }
   if (allowed.length) options.allowed_tools = allowed;
   if (draft.connectors.length) options.connectors = draft.connectors;
-  if (draft.skills.length) options.skills = draft.skills;
+  if (draft.skills.length || draft.skillsStored) options.skills = draft.skills;
   if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
   if (draft.maxTurns.trim()) options.max_turns = Number(draft.maxTurns);
   return options;

@@ -814,24 +814,33 @@ class ConsoleAPI:
     # catalog itself, plus the installed-in listing those forms read back.
 
     async def skills(self) -> dict[str, Any]:
-        """The catalog, each skill tagged with where it is installed: "global"
-        for the settings default, plus every workspace that installs it."""
+        """The catalog, each skill tagged with where it is installed: the
+        workspaces that install it, and whether it is on the global default.
+
+        The global flag is its own field rather than a marker in the workspace
+        list — "global" is a legal workspace name, and the console acts on
+        these values (the install toggle picks a target from them).
+        """
         stats = await self._bucket_objects().skill_stats()
-        installs = await self._skill_installs()
+        workspaces_by_skill, globally = await self._skill_installs()
         rows = [
-            {"name": name, **stat, "installed_in": installs.get(name, [])}
+            {
+                "name": name,
+                **stat,
+                "installed_in": workspaces_by_skill.get(name, []),
+                "installed_globally": name in globally,
+            }
             for name, stat in sorted(stats.items())
         ]
         return {"now": time.time(), "skills": to_jsonable(rows)}
 
-    async def _skill_installs(self) -> dict[str, list[str]]:
+    async def _skill_installs(self) -> tuple[dict[str, list[str]], set[str]]:
+        """(workspace names by skill, skills on the global default)."""
         installs: dict[str, list[str]] = {}
-        for name in await skills_mod.installed(self._store):
-            installs.setdefault(name, []).append("global")
         for doc in sorted(await self._store.list_workspaces(), key=lambda d: d["name"] or ""):
             for name in ((doc.get("options") or {}).get("skills")) or []:
                 installs.setdefault(name, []).append(doc["name"])
-        return installs
+        return installs, set(await skills_mod.installed(self._store))
 
     async def skill_files(self, name: str) -> dict[str, Any]:
         files = await self._bucket_objects().skill_files(name)

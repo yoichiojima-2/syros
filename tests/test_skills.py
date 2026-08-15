@@ -207,3 +207,32 @@ def test_promote_legacy_moves_workspace_skills_into_the_catalog(bucket):
 def test_catalog_lists_skill_directories(bucket):
     bucket({"skills/pdf/SKILL.md": b"p", "skills/xlsx/SKILL.md": b"x", "skills/loose.md": b"?"})
     assert skills.catalog("p", "b") == ["pdf", "xlsx"]
+
+
+async def test_migrate_keeps_every_session_mounting_what_it_did(bucket):
+    """The upgrade has to be behaviour-preserving: a workspace that owned
+    skills mounted them *and* the globals, and an install list replaces the
+    layer below, so the promoted names alone would drop the globals."""
+    fake = bucket(
+        {
+            "skills/pdf/SKILL.md": b"global pdf",
+            "skills/xlsx/SKILL.md": b"global xlsx",
+            "team-skills/research/notes/SKILL.md": b"notes",
+        }
+    )
+    store = FakeStore()
+
+    summary = await skills.migrate(store, "p", "b")
+
+    assert summary["seeded_global"] == ["pdf", "xlsx"]
+    assert await skills.installed(store) == ["pdf", "xlsx"]
+    # the workspace keeps the globals it used to mount, plus what it owned
+    assert summary["installed"] == {"research": ["pdf", "xlsx", "notes"]}
+    assert await skills.installed(store, workspace="research") == ["pdf", "xlsx", "notes"]
+    assert fake.objects["skills/notes/SKILL.md"] == b"notes"
+
+    # re-running changes nothing: nothing left to promote, installs left alone
+    await skills.uninstall(store, ["xlsx"])
+    again = await skills.migrate(store, "p", "b")
+    assert again["files"] == 0 and again["seeded_global"] is None
+    assert await skills.installed(store) == ["pdf"]
