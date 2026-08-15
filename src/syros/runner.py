@@ -21,10 +21,10 @@ from claude_agent_sdk import ClaudeSDKClient
 from . import env
 from .gate import Gate
 from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, git_info
-from .options import build_sdk_options, model_env, options_from_doc
+from .options import AgentOptions, build_sdk_options, model_env, options_from_doc
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import artifacts, bigquery, connectors, titles, workspace
+from . import artifacts, bigquery, connectors, titles, workflows, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -68,6 +68,20 @@ async def _watch_interrupt(store: Store, session_id: str, client: ClaudeSDKClien
         except Exception:
             pass
         await asyncio.sleep(INTERRUPT_POLL_SECONDS)
+
+
+async def _advance_workflow(store: Store, config: env.RunnerEnv, session_id: str) -> None:
+    """After a workflow task session releases, move its run forward: record
+    the outcome and launch the tasks that became ready. Never fatal — the
+    reconciling tick repairs anything this missed, so a Firestore blip here
+    must not fail a session that already finished its work."""
+    try:
+        session = await store.get_session(session_id)
+        if not session or not session.get("workflow"):
+            return
+        await workflows.advance(store, AgentOptions(project=config.project), session)
+    except Exception as error:
+        print(f"workflow advance failed for {session_id}: {error}", file=sys.stderr)
 
 
 async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -> list[str]:
@@ -236,6 +250,7 @@ async def run(session_id: str) -> None:
                 seq_head=writer.seq,
                 tip_uuid=writer.tip_uuid,
             )
+            await _advance_workflow(store, config, session_id)
             return
         if options.workspace:
             leased_workspace["name"] = options.workspace  # heartbeat renews it from here on
@@ -273,6 +288,7 @@ async def run(session_id: str) -> None:
                     seq_head=writer.seq,
                     tip_uuid=writer.tip_uuid,
                 )
+                await _advance_workflow(store, config, session_id)
                 return
             options.mcp_servers = {**servers, **options.mcp_servers}
 
@@ -470,7 +486,12 @@ async def run(session_id: str) -> None:
             # File count in rw artifact spaces at release: a quick "did this
             # session actually leave anything behind" signal for `syros sessions`.
             **({"published": published} if spaces else {}),
+            # The final result text, capped: what a downstream workflow task's
+            # {{tasks.<id>.result}} interpolates. A durable field like
+            # title/summary — never nested under runtime.
+            **({"result": result_text[: workflows.RESULT_LIMIT]} if result_text else {}),
         )
+        await _advance_workflow(store, config, session_id)
     finally:
         beat.cancel()
 

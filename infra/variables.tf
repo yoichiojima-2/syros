@@ -86,7 +86,7 @@ variable "scheduler_job_name" {
 }
 
 variable "tick_schedule" {
-  description = "How often Cloud Scheduler runs `syros tick`. This is the effective granularity of every syros deployment: a deployment fires at the first tick at or after its cron time."
+  description = "How often Cloud Scheduler runs `syros tick`. This is the effective granularity of every syros workflow schedule: a workflow fires at the first tick at or after its cron time."
   type        = string
   default     = "* * * * *"
 }

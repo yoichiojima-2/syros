@@ -120,7 +120,7 @@ function AgentInner() {
           <CardHeader>
             <CardTitle>Configuration</CardTitle>
             <CardDescription>
-              The defaults every session or deployment referencing this agent inherits — explicitly
+              The defaults every session or workflow task referencing this agent inherits — explicitly
               set options on the caller's side override per field
             </CardDescription>
           </CardHeader>

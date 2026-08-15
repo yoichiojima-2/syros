@@ -26,7 +26,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: ChartColumn },
   { href: "/sessions", label: "Sessions", icon: ListTree },
   { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/deployments", label: "Deployments", icon: CalendarClock },
+  { href: "/workflows", label: "Workflows", icon: CalendarClock },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/workspaces", label: "Workspaces", icon: Users },
   { href: "/skills", label: "Skills", icon: Sparkles },
@@ -53,7 +53,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             icons, and the row scrolls sideways on the narrowest screens */}
         <nav className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto md:flex-none md:flex-col md:gap-0.5 md:overflow-visible">
           {NAV.map(({ href, label, icon: Icon }) => {
-            // detail pages are singular (/session, /deployment, /workspace) and
+            // detail pages are singular (/session, /workflow, /workspace) and
             // keep their list's nav entry lit
             const active = pathname === href || href === `${pathname}s`;
             return (

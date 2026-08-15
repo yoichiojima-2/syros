@@ -73,23 +73,23 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             sid, call_hash, allow=bool(body.get("allow")), message=body.get("message")
         ),
     ),
-    ("GET", ("api", "deployments"), lambda api, body, query: api.deployments()),
-    ("POST", ("api", "deployments"), lambda api, body, query: api.create_deployment(body)),
-    ("GET", ("api", "deployments", None), lambda api, body, query, name: api.deployment(name)),
+    ("GET", ("api", "workflows"), lambda api, body, query: api.workflows()),
+    ("POST", ("api", "workflows"), lambda api, body, query: api.create_workflow(body)),
+    ("GET", ("api", "workflows", None), lambda api, body, query, name: api.workflow(name)),
     (
         "POST",
-        ("api", "deployments", None, "enabled"),
-        lambda api, body, query, name: api.set_deployment_enabled(name, bool(body.get("enabled"))),
+        ("api", "workflows", None, "enabled"),
+        lambda api, body, query, name: api.set_workflow_enabled(name, bool(body.get("enabled"))),
     ),
     (
         "POST",
-        ("api", "deployments", None, "run"),
-        lambda api, body, query, name: api.run_deployment(name),
+        ("api", "workflows", None, "run"),
+        lambda api, body, query, name: api.run_workflow(name),
     ),
     (
         "POST",
-        ("api", "deployments", None, "delete"),
-        lambda api, body, query, name: api.delete_deployment(name),
+        ("api", "workflows", None, "delete"),
+        lambda api, body, query, name: api.delete_workflow(name),
     ),
     ("GET", ("api", "agents"), lambda api, body, query: api.agents()),
     ("POST", ("api", "agents"), lambda api, body, query: api.create_agent(body)),
@@ -373,7 +373,7 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
                 self._json({"error": str(exc)}, 413)
             except (ValueError, TypeError, SyrosError) as exc:
                 # SyrosError covers the whole validation family — a rejected
-                # option, an unparsable cron, a deployment that isn't there.
+                # option, an unparsable cron, a workflow that isn't there.
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:
                 self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)

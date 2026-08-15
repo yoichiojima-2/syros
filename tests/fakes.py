@@ -36,12 +36,23 @@ class FakeStore:
         self.workspaces: dict[str, dict[str, Any]] = {}
         self.legacy_teams: dict[str, dict[str, Any]] = {}  # pre-rename teams/ docs
         self.settings: dict[str, Any] | None = None
-        self.deployments: dict[str, dict[str, Any]] = {}
+        self.workflows: dict[str, dict[str, Any]] = {}
+        self.runs: dict[str, dict[str, dict[str, Any]]] = {}  # workflow -> run_id -> doc
         self.agents: dict[str, dict[str, Any]] = {}
 
     async def create_session(
-        self, session_id, options, created_by=None, deployment=None, trigger="api", agent=None
+        self,
+        session_id,
+        options,
+        created_by=None,
+        workflow=None,
+        run_id=None,
+        task=None,
+        trigger="api",
+        agent=None,
     ):
+        if session_id in self.sessions:
+            raise ValueError(f"session {session_id} exists")
         self.sessions[session_id] = {
             "options": options,
             "disabled": False,
@@ -67,7 +78,9 @@ class FakeStore:
                 "triggered_at": 0.0,
             },
             "created_by": created_by,
-            "deployment": deployment,
+            "workflow": workflow,
+            "run_id": run_id,
+            "task": task,
             "trigger": trigger,
             "agent": agent,
             "created_at": time.time(),
@@ -89,13 +102,6 @@ class FakeStore:
     async def list_sessions(self, limit=20):
         rows = [{"id": k, **v} for k, v in self.sessions.items()]
         return rows if limit is None else rows[:limit]
-
-    async def list_deployment_sessions(self, deployment, limit=50):
-        rows = [
-            {"id": k, **v} for k, v in self.sessions.items() if v.get("deployment") == deployment
-        ]
-        rows.sort(key=lambda s: s.get("created_at") or 0, reverse=True)
-        return rows[:limit]
 
     async def delete_session(self, session_id):
         self.sessions.pop(session_id, None)
@@ -311,31 +317,58 @@ class FakeStore:
     async def update_settings(self, doc):
         self.settings = dict(doc)
 
-    async def create_deployment(self, name, doc):
-        if name in self.deployments:
-            raise ValueError(f"deployment {name} exists")
-        self.deployments[name] = {**doc, "created_at": time.time(), "updated_at": time.time()}
+    async def create_workflow(self, name, doc):
+        if name in self.workflows:
+            raise ValueError(f"workflow {name} exists")
+        self.workflows[name] = {**doc, "created_at": time.time(), "updated_at": time.time()}
 
-    async def get_deployment(self, name):
-        deployment = self.deployments.get(name)
-        return {"name": name, **deployment} if deployment else None
+    async def get_workflow(self, name):
+        workflow = self.workflows.get(name)
+        return {"name": name, **workflow} if workflow else None
 
-    async def update_deployment(self, name, **fields):
-        self.deployments[name].update(fields, updated_at=time.time())
+    async def update_workflow(self, name, **fields):
+        self.workflows[name].update(fields, updated_at=time.time())
 
-    async def list_deployments(self):
-        return [{"name": k, **v} for k, v in self.deployments.items()]
+    async def list_workflows(self):
+        return [{"name": k, **v} for k, v in self.workflows.items()]
 
-    async def delete_deployment(self, name):
-        self.deployments.pop(name, None)
+    async def delete_workflow(self, name):
+        self.workflows.pop(name, None)
+        self.runs.pop(name, None)
+
+    async def create_run(self, workflow, run_id, doc):
+        runs = self.runs.setdefault(workflow, {})
+        if run_id in runs:
+            raise ValueError(f"run {run_id} exists")
+        runs[run_id] = {**doc, "created_at": time.time(), "updated_at": time.time()}
+
+    async def get_run(self, workflow, run_id):
+        run = self.runs.get(workflow, {}).get(run_id)
+        return {"id": run_id, **run} if run else None
+
+    async def list_runs(self, workflow, limit=50):
+        rows = [{"id": k, **v} for k, v in self.runs.get(workflow, {}).items()]
+        rows.sort(key=lambda r: r.get("started_at") or 0, reverse=True)
+        return rows[:limit]
+
+    async def transition_run(self, workflow, run_id, mutate):
+        runs = self.runs.get(workflow, {})
+        current = runs.get(run_id)
+        if current is None:
+            return None
+        doc = mutate(dict(current))
+        if doc is None:
+            return None
+        runs[run_id] = {**doc, "updated_at": time.time()}
+        return {"id": run_id, **runs[run_id]}
 
     async def claim_slot(self, name, due, following):
-        deployment = self.deployments.get(name)
-        if not deployment or not deployment.get("enabled"):
+        workflow = self.workflows.get(name)
+        if not workflow or not workflow.get("enabled"):
             return False
-        if float(deployment.get("next_run_at") or 0) != due:
+        if float(workflow.get("next_run_at") or 0) != due:
             return False
-        deployment["next_run_at"] = following
+        workflow["next_run_at"] = following
         return True
 
     async def create_agent(self, name, doc):

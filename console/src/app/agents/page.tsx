@@ -65,7 +65,7 @@ export default function AgentsPage() {
           ) : agents.length === 0 ? (
             <p className="p-10 text-center text-[13px] text-muted-foreground">
               No agents yet — an agent is a stored run configuration (persona) that sessions and
-              deployments reference by name.
+              workflow tasks reference by name.
               <br />
               Create one above, or with{" "}
               <code className="font-mono text-xs">

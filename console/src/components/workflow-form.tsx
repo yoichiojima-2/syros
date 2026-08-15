@@ -21,12 +21,18 @@ import { cn } from "@/lib/utils";
 
 // The presets cover what people actually schedule; anything else is typed in.
 const PRESETS: { label: string; cron: string }[] = [
+  { label: "Manual only", cron: "" },
   { label: "Hourly", cron: "0 * * * *" },
   { label: "Daily 9am", cron: "0 9 * * *" },
   { label: "Weekdays 9am", cron: "0 9 * * MON-FRI" },
   { label: "Monday 8am", cron: "0 8 * * MON" },
   { label: "Every 15m", cron: "*/15 * * * *" },
 ];
+
+const TASKS_PLACEHOLDER = `[
+  { "id": "research", "prompt": "find the numbers" },
+  { "id": "report", "prompt": "write it up from: {{tasks.research.result}}" }
+]`;
 
 function browserZone(): string {
   try {
@@ -36,10 +42,12 @@ function browserZone(): string {
   }
 }
 
-/** New-deployment form. Run options mirror the AgentOptions subset a session
- *  stores, and are posted as that same serialized dict — the server rejects
- *  anything it doesn't recognize rather than dropping it. */
-export function DeploymentForm({
+/** New-workflow form. The simple mode is one prompt (a one-task workflow, the
+ *  old "deployment"); the chain mode takes the tasks array as JSON. Options
+ *  mirror the AgentOptions subset a session stores and become the workflow's
+ *  defaults, posted as that same serialized dict — the server rejects anything
+ *  it doesn't recognize rather than dropping it. */
+export function WorkflowForm({
   onCreated,
   onCancel,
 }: {
@@ -54,7 +62,9 @@ export function DeploymentForm({
   const [agent, setAgent] = useState("");
   const [cron, setCron] = useState("0 9 * * *");
   const [timezone, setTimezone] = useState(browserZone());
+  const [chain, setChain] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [tasksJson, setTasksJson] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -64,12 +74,16 @@ export function DeploymentForm({
     setBusy(true);
     setError("");
     try {
-      await post("/api/deployments", {
+      let tasks: unknown = null;
+      if (chain) {
+        tasks = JSON.parse(tasksJson); // surfaced as a form error if invalid
+        if (!Array.isArray(tasks)) throw new Error("tasks must be a JSON array");
+      }
+      await post("/api/workflows", {
         name: name.trim(),
-        cron: cron.trim(),
+        cron: cron.trim() || null,
         timezone: timezone.trim(),
-        prompt,
-        agent: agent.trim() || null,
+        ...(chain ? { tasks } : { prompt, agent: agent.trim() || null }),
         options: buildOptionsPayload(draft),
       });
       onCreated(name.trim());
@@ -83,9 +97,10 @@ export function DeploymentForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New deployment</CardTitle>
+        <CardTitle>New workflow</CardTitle>
         <CardDescription>
-          Every firing starts a fresh session with these options and this prompt.
+          A named chain of one-shot tasks — every firing runs each task as a fresh session. One
+          task and a cron is the classic scheduled prompt.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -100,12 +115,12 @@ export function DeploymentForm({
                 required
               />
             </Field>
-            <Field label="Cron" hint="minute hour day month weekday">
+            <Field label="Cron" hint="empty = manual-only">
               <Input
                 value={cron}
                 onChange={(e) => setCron(e.target.value)}
                 className="font-mono"
-                required
+                placeholder="manual only"
               />
             </Field>
             <Field label="Timezone" hint="IANA name">
@@ -120,7 +135,7 @@ export function DeploymentForm({
           <div className="flex flex-wrap gap-1.5">
             {PRESETS.map((preset) => (
               <button
-                key={preset.cron}
+                key={preset.label}
                 type="button"
                 onClick={() => setCron(preset.cron)}
                 className={cn(
@@ -134,25 +149,60 @@ export function DeploymentForm({
               </button>
             ))}
           </div>
-          <Field label="Prompt">
-            <Textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={3}
-              required
-              placeholder="Profile the CSVs in the workspace and write report.md"
-              className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
-            />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <Field label="Agent" hint="stored defaults">
-              <ChoiceField
-                value={agent}
-                onChange={setAgent}
-                choices={(agents ?? []).map((a) => a.name)}
-                noneLabel="none"
+          <div className="flex gap-1.5">
+            {[false, true].map((mode) => (
+              <button
+                key={String(mode)}
+                type="button"
+                onClick={() => setChain(mode)}
+                className={cn(
+                  "rounded-full border px-2.5 py-0.5 text-[11px] transition-colors",
+                  chain === mode
+                    ? "border-transparent bg-primary-soft text-foreground"
+                    : "border-border text-muted-foreground hover:bg-secondary",
+                )}
+              >
+                {mode ? "Task chain (JSON)" : "Single task"}
+              </button>
+            ))}
+          </div>
+          {chain ? (
+            <Field
+              label="Tasks"
+              hint="id, prompt, agent?, options?, depends_on? — omitted depends_on chains to the previous task"
+            >
+              <Textarea
+                value={tasksJson}
+                onChange={(e) => setTasksJson(e.target.value)}
+                rows={8}
+                required
+                placeholder={TASKS_PLACEHOLDER}
+                className="rounded-lg border border-input bg-card px-3 py-2 font-mono text-[12px]"
               />
             </Field>
+          ) : (
+            <Field label="Prompt">
+              <Textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={3}
+                required
+                placeholder="Profile the CSVs in the workspace and write report.md"
+                className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
+              />
+            </Field>
+          )}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            {!chain && (
+              <Field label="Agent" hint="stored persona">
+                <ChoiceField
+                  value={agent}
+                  onChange={setAgent}
+                  choices={(agents ?? []).map((a) => a.name)}
+                  noneLabel="none"
+                />
+              </Field>
+            )}
             <Field label="Model">
               <ChoiceField
                 value={draft.model}
@@ -189,7 +239,7 @@ export function DeploymentForm({
               />
             </Field>
           </div>
-          <Field label="Allowed tools" hint="click to toggle">
+          <Field label="Allowed tools" hint="click to toggle; defaults for every task">
             <ToolPicker draft={draft} />
           </Field>
           <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
@@ -201,7 +251,7 @@ export function DeploymentForm({
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
             <Button type="submit" size="sm" disabled={busy}>
-              {busy ? "Creating…" : "Create deployment"}
+              {busy ? "Creating…" : "Create workflow"}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
               Cancel

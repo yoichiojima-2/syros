@@ -12,10 +12,10 @@ import type {
   ConnectorsResponse,
   ConnectorSummary,
   PollResponse,
-  RunSummary,
-  DeploymentResponse,
-  DeploymentSummary,
-  DeploymentsResponse,
+  WorkflowResponse,
+  WorkflowRun,
+  WorkflowSummary,
+  WorkflowsResponse,
   SessionsResponse,
   SessionSummary,
   SkillFilesResponse,
@@ -85,35 +85,35 @@ export function useSessions(intervalMs = 4000): SessionSummary[] | null {
   return sessions;
 }
 
-export function useDeployments(intervalMs = 5000): {
-  deployments: DeploymentSummary[] | null;
+export function useWorkflows(intervalMs = 5000): {
+  workflows: WorkflowSummary[] | null;
   refresh: () => void;
 } {
-  const [deployments, setDeployments] = useState<DeploymentSummary[] | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[] | null>(null);
   const [nonce, setNonce] = useState(0);
   usePolling(
     () => {
-      api<DeploymentsResponse>("/api/deployments")
-        .then((data) => setDeployments(data.deployments))
+      api<WorkflowsResponse>("/api/workflows")
+        .then((data) => setWorkflows(data.workflows))
         .catch(() => {});
     },
     intervalMs,
     [nonce],
   );
-  return { deployments, refresh: () => setNonce((n) => n + 1) };
+  return { workflows, refresh: () => setNonce((n) => n + 1) };
 }
 
-/** One deployment and its run history — the run-status view's feed. */
-export function useDeployment(
+/** One workflow and its run history — the run-status view's feed. */
+export function useWorkflow(
   name: string | null,
   intervalMs = 4000,
 ): {
-  deployment: DeploymentSummary | null;
-  runs: RunSummary[] | null;
+  workflow: WorkflowSummary | null;
+  runs: WorkflowRun[] | null;
   missing: boolean;
   refresh: () => void;
 } {
-  const [data, setData] = useState<DeploymentResponse | null>(null);
+  const [data, setData] = useState<WorkflowResponse | null>(null);
   const [missing, setMissing] = useState(false);
   const [nonce, setNonce] = useState(0);
   useEffect(() => {
@@ -123,13 +123,13 @@ export function useDeployment(
     let cancelled = false;
     const poll = () => {
       if (document.hidden) return;
-      api<DeploymentResponse>(`/api/deployments/${encodeURIComponent(name)}`)
+      api<WorkflowResponse>(`/api/workflows/${encodeURIComponent(name)}`)
         .then((next) => {
           if (cancelled) return;
           setData(next);
           setMissing(false);
         })
-        // A deleted deployment 404s; say so rather than spinning on a skeleton.
+        // A deleted workflow 404s; say so rather than spinning on a skeleton.
         .catch((err: Error) => {
           if (!cancelled && /not found/i.test(err.message)) setMissing(true);
         });
@@ -142,7 +142,7 @@ export function useDeployment(
     };
   }, [name, intervalMs, nonce]);
   return {
-    deployment: data?.deployment ?? null,
+    workflow: data?.workflow ?? null,
     runs: data?.runs ?? null,
     missing,
     refresh: () => setNonce((n) => n + 1),

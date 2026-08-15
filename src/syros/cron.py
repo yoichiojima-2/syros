@@ -9,8 +9,8 @@ Cron's day rule is inherited too: when *both* day-of-month and day-of-week are
 restricted the day matches if *either* does (so `0 0 1 * MON` is "the 1st and
 every Monday", not "Mondays that fall on the 1st").
 
-Firing times are wall-clock in the deployment's IANA timezone, so a `0 9 * * *`
-deployment stays at 9am across a DST shift.
+Firing times are wall-clock in the schedule's IANA timezone, so a `0 9 * * *`
+workflow stays at 9am across a DST shift.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ ALIASES = {
 
 
 class CronError(SyrosError):
-    """A cron expression or timezone that cannot be used as a deployment."""
+    """A cron expression or timezone that cannot be used as a schedule."""
 
 
 @dataclass(frozen=True)
@@ -167,7 +167,7 @@ def next_after(expression: str, after: float, timezone: str = "UTC") -> float:
                 ).replace(tzinfo=tz)
                 # The comparison is on the instant, not the wall clock: a DST
                 # jump can make a later wall-clock time an earlier instant, and
-                # a deployment must never fire backwards.
+                # a schedule must never fire backwards.
                 if fire.timestamp() > after:
                     return fire.timestamp()
     raise CronError(f"{expression!r} has no firing time in the next {MAX_LOOKAHEAD_DAYS} days")

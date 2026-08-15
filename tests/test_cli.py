@@ -1,4 +1,4 @@
-"""CLI option assembly — the flags that become AgentOptions for agents/deployments."""
+"""CLI option assembly — the flags that become AgentOptions for agents/workflows."""
 
 from types import SimpleNamespace
 

@@ -154,11 +154,15 @@ workflows/{name}/runs/{run_id}
     started_at, finished_at
     spec: [...]                     the workflow's tasks array captured at launch —
                                     advancement never re-reads the (editable) workflow
+    options: {...}                  the workflow-level defaults, captured likewise
     tasks: {                        per-task state, the advancement transaction target
-      research: { status: "pending"|"running"|"succeeded"|"failed"|"skipped",
-                  session_id, result, started_at, finished_at },
-      ...
-    }
+      research: { status: "pending"|"launching"|"running"
+                          |"succeeded"|"failed"|"skipped",
+                  session_id, result, error, started_at, finished_at },
+      ...                           "launching" = claimed (session id pre-assigned
+    }                               in the transaction) but not yet started; the
+                                    reconcile pass restarts ones stuck past the
+                                    start grace under the same session id
 
 sessions/{id}                       gains provenance fields (replacing `deployment`)
     workflow: name | null

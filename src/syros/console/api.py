@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .. import agents, deployments, remote, workspaces
+from .. import agents, remote, workflows, workspaces
 from .. import connectors as connectors_mod
 from ..journal import MAIN_BRANCH, active_branch
 from ..names import validate_name, validate_tags
@@ -126,8 +126,10 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "title": session.get("title"),
             "summary": session.get("summary"),
             "created_by": session.get("created_by"),
-            # Run provenance, for sessions a deployment created
-            "deployment": session.get("deployment"),
+            # Run provenance, for sessions a workflow task created
+            "workflow": session.get("workflow"),
+            "run_id": session.get("run_id"),
+            "task": session.get("task"),
             "trigger": session.get("trigger") or "api",
             # Which stored agent the options were resolved from, if any
             "agent": session.get("agent"),
@@ -225,7 +227,7 @@ class ConsoleAPI:
         document, queue the prompt, trigger the job — so a console-started
         session is an ordinary session and nothing downstream knows the console
         exists. Run options arrive as the serialized dict a session stores, like
-        create_deployment, so an option the console doesn't know is rejected by
+        create_workflow, so an option the console doesn't know is rejected by
         options_from_doc rather than silently dropped.
         """
         prompt = str(body.get("prompt") or "")
@@ -234,7 +236,7 @@ class ConsoleAPI:
         run_options = options_from_doc(dict(body.get("options") or {}))
         # An agent reference resolves now, once — stored options as defaults,
         # the form's explicit fields as overrides — and the merged result is
-        # snapshotted onto the session, exactly as a deployment firing does.
+        # snapshotted onto the session, exactly as a workflow task firing does.
         agent_name = (str(body["agent"]).strip() or None) if body.get("agent") else None
         run_options.agent = agent_name
         run_options = await agents.resolve(self._store, run_options)
@@ -381,101 +383,136 @@ class ConsoleAPI:
             ],
         }
 
-    # --- deployments ---
+    # --- workflows ---
 
-    async def _deployment_row(self, deployment: dict[str, Any]) -> dict[str, Any]:
-        """A deployment plus the run it last started, for the deployments list."""
-        session_id = deployment.get("last_session_id")
-        session = await self._store.get_session(session_id) if session_id else None
-        if session is not None:
-            session["id"] = session_id
+    @staticmethod
+    def _run_row(run: dict[str, Any]) -> dict[str, Any]:
+        """One workflow run: orchestration state, task-by-task. Results are
+        clipped to a preview — the full text lives in each task's session."""
+        tasks = {}
+        for task_id, state in (run.get("tasks") or {}).items():
+            result = state.get("result")
+            tasks[task_id] = {
+                "status": state.get("status"),
+                "session_id": state.get("session_id"),
+                "error": state.get("error"),
+                "started_at": state.get("started_at"),
+                "finished_at": state.get("finished_at"),
+                "result_preview": (result or "")[:200] or None,
+            }
         return to_jsonable(
             {
-                "name": deployment.get("name"),
-                "cron": deployment.get("cron"),
-                "timezone": deployment.get("timezone") or deployments.DEFAULT_TIMEZONE,
-                "prompt": deployment.get("prompt") or "",
-                "agent": deployment.get("agent"),
-                "options": deployment.get("options") or {},
-                "enabled": bool(deployment.get("enabled")),
-                "next_run_at": float(deployment.get("next_run_at") or 0.0) or None,
-                "last_run_at": deployment.get("last_run_at"),
-                "last_skipped_at": deployment.get("last_skipped_at"),
-                "last_error": deployment.get("last_error"),
-                "runs": int(deployment.get("runs") or 0),
-                "skips": int(deployment.get("skips") or 0),
-                "created_by": deployment.get("created_by"),
-                "created_at": deployment.get("created_at"),
-                "last_run": _run(session) if session else None,
+                "id": run.get("id"),
+                "status": run.get("status"),
+                "trigger": run.get("trigger"),
+                "started_at": run.get("started_at"),
+                "finished_at": run.get("finished_at"),
+                "spec": run.get("spec") or [],
+                "tasks": tasks,
             }
         )
 
-    async def deployments(self) -> dict[str, Any]:
-        rows = await deployments.list_all(store=self._store)
+    async def _workflow_row(self, workflow: dict[str, Any]) -> dict[str, Any]:
+        """A workflow plus the run it last started, for the workflows list."""
+        run_id = workflow.get("last_run_id")
+        last_run = await self._store.get_run(workflow["name"], run_id) if run_id else None
+        schedule = workflow.get("schedule") or {}
+        return to_jsonable(
+            {
+                "name": workflow.get("name"),
+                "tasks": workflow.get("tasks") or [],
+                "options": workflow.get("options") or {},
+                "cron": schedule.get("cron"),
+                "timezone": schedule.get("timezone") or workflows.DEFAULT_TIMEZONE,
+                "enabled": bool(workflow.get("enabled")),
+                "next_run_at": float(workflow.get("next_run_at") or 0.0) or None,
+                "last_run_at": workflow.get("last_run_at"),
+                "last_skipped_at": workflow.get("last_skipped_at"),
+                "last_error": workflow.get("last_error"),
+                "run_count": int(workflow.get("run_count") or 0),
+                "skip_count": int(workflow.get("skip_count") or 0),
+                "created_by": workflow.get("created_by"),
+                "created_at": workflow.get("created_at"),
+                "last_run": self._run_row(last_run) if last_run else None,
+            }
+        )
+
+    async def workflows(self) -> dict[str, Any]:
+        rows = await workflows.list_all(store=self._store)
         return {
             "now": time.time(),
-            "deployments": await asyncio.gather(*(self._deployment_row(s) for s in rows)),
+            "workflows": await asyncio.gather(*(self._workflow_row(s) for s in rows)),
         }
 
-    async def _require_deployment(self, name: str) -> dict[str, Any]:
-        deployment = await self._store.get_deployment(name)
-        if deployment is None:
-            raise NotFound(f"deployment {name} not found")
-        return deployment
+    async def _require_workflow(self, name: str) -> dict[str, Any]:
+        workflow = await self._store.get_workflow(name)
+        if workflow is None:
+            raise NotFound(f"workflow {name} not found")
+        return workflow
 
-    async def deployment(self, name: str, limit: int = 50) -> dict[str, Any]:
-        """One deployment and its run history — the run-status view's payload."""
-        deployment = await self._require_deployment(name)
-        runs = await deployments.runs(name, limit=limit, store=self._store)
+    async def workflow(self, name: str, limit: int = 50) -> dict[str, Any]:
+        """One workflow and its run history — the run-status view's payload."""
+        workflow = await self._require_workflow(name)
+        runs = await workflows.runs(name, limit=limit, store=self._store)
         return {
             "now": time.time(),
-            "deployment": await self._deployment_row(deployment),
-            "runs": [_run(r) for r in runs],
+            "workflow": await self._workflow_row(workflow),
+            "runs": [self._run_row(r) for r in runs],
         }
 
-    async def create_deployment(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Define a deployment from the console's form.
+    async def create_workflow(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Define a workflow from the console's form.
 
         Run options arrive as the same serialized dict a session stores, so the
         console never has to track which options the sandbox honours — options
         it doesn't know about are the SDK's problem, and unknown ones are
-        rejected by options_from_doc rather than silently dropped.
+        rejected by options_from_doc rather than silently dropped. The form
+        sends either `tasks` (a chain) or `prompt`/`agent` (one task).
         """
         name = str(body.get("name") or "").strip()
-        if await self._store.get_deployment(name) is not None:
-            raise Conflict(f"deployment {name} already exists")
-        run_options = options_from_doc(dict(body.get("options") or {}))
-        run_options.project = run_options.project or self._options.project
-        deployment = await deployments.create(
+        if await self._store.get_workflow(name) is not None:
+            raise Conflict(f"workflow {name} already exists")
+        defaults = options_from_doc(dict(body.get("options") or {}))
+        defaults.project = defaults.project or self._options.project
+        tasks = body.get("tasks") or None
+        single = (
+            {}
+            if tasks
+            else {
+                "prompt": str(body.get("prompt") or ""),
+                "agent": (str(body["agent"]).strip() or None) if body.get("agent") else None,
+            }
+        )
+        workflow = await workflows.create(
             name,
-            str(body.get("cron") or ""),
-            str(body.get("prompt") or ""),
-            run_options,
+            tasks,
+            **single,
+            defaults=defaults,
             options=self._options,
-            agent=(str(body["agent"]).strip() or None) if body.get("agent") else None,
-            timezone=str(body.get("timezone") or deployments.DEFAULT_TIMEZONE),
+            cron_expression=(str(body["cron"]).strip() or None) if body.get("cron") else None,
+            timezone=str(body.get("timezone") or workflows.DEFAULT_TIMEZONE),
             enabled=bool(body.get("enabled", True)),
             created_by=_decided_by(),
             store=self._store,
         )
-        return {"now": time.time(), "deployment": await self._deployment_row(deployment)}
+        return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
 
-    async def set_deployment_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
-        await self._require_deployment(name)
-        await deployments.set_enabled(name, enabled, store=self._store)
+    async def set_workflow_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        await self._require_workflow(name)
+        await workflows.set_enabled(name, enabled, store=self._store)
         return {"now": time.time(), "ok": True, "enabled": enabled}
 
-    async def run_deployment(self, name: str) -> dict[str, Any]:
-        """Fire a deployment off-cycle. Its own clock is untouched."""
-        await self._require_deployment(name)
-        session_id = await deployments.run_now(
+    async def run_workflow(self, name: str) -> dict[str, Any]:
+        """Fire a workflow off-cycle. Its own clock is untouched."""
+        await self._require_workflow(name)
+        run_id = await workflows.run_now(
             name, options=self._options, store=self._store, created_by=_decided_by()
         )
-        return {"now": time.time(), "ok": True, "session_id": session_id}
+        return {"now": time.time(), "ok": True, "run_id": run_id}
 
-    async def delete_deployment(self, name: str) -> dict[str, Any]:
-        await self._require_deployment(name)
-        await deployments.delete(name, store=self._store)
+    async def delete_workflow(self, name: str) -> dict[str, Any]:
+        await self._require_workflow(name)
+        await workflows.delete(name, store=self._store)
         return {"now": time.time(), "ok": True}
 
     # --- agents (stored run configurations) ---

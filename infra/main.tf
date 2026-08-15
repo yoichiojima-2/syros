@@ -74,22 +74,6 @@ resource "google_firestore_backup_schedule" "weekly" {
   }
 }
 
-# a deployment's run history filters sessions by deployment and orders by
-# created_at; equality + order-by on different fields needs a composite index
-resource "google_firestore_index" "sessions_by_deployment" {
-  database   = google_firestore_database.default.name
-  collection = "sessions"
-
-  fields {
-    field_path = "deployment"
-    order      = "ASCENDING"
-  }
-  fields {
-    field_path = "created_at"
-    order      = "DESCENDING"
-  }
-}
-
 # the console's global approvals queue queries approvals across all sessions;
 # collection-group queries need an explicit collection-group-scoped index
 resource "google_firestore_field" "approvals_status" {
@@ -237,6 +221,17 @@ resource "google_storage_bucket_iam_member" "runner_bucket" {
   member = "serviceAccount:${google_service_account.runner.email}"
 }
 
+# Workflow chaining: when a task session finishes, its runner launches the
+# next task's session by triggering a fresh execution of this same job (with
+# the session id as a container override, hence runWithOverrides). Scoped to
+# the one job — the runner can start more of itself, nothing else.
+resource "google_cloud_run_v2_job_iam_member" "runner_runs_job" {
+  name     = google_cloud_run_v2_job.runner.name
+  location = var.region
+  role     = "roles/run.jobsExecutorWithOverrides"
+  member   = "serviceAccount:${google_service_account.runner.email}"
+}
+
 # Granted only when the deployment opts sessions into BigQuery (the built-in
 # `bigquery` MCP server), so the default runner identity still can't read a
 # single table. Project-level on purpose: the point is auditing *and* ad-hoc
@@ -307,6 +302,16 @@ resource "google_cloud_run_v2_job" "runner" {
         env {
           name  = "SYROS_BUCKET"
           value = google_storage_bucket.sessions.name
+        }
+        # Where the runner finds itself: workflow advancement triggers the
+        # next task's execution of this same job from inside the sandbox.
+        env {
+          name  = "SYROS_REGION"
+          value = var.region
+        }
+        env {
+          name  = "SYROS_JOB"
+          value = var.job_name
         }
         env {
           name  = "CLOUD_ML_REGION"
@@ -479,13 +484,14 @@ resource "google_iap_web_cloud_run_service_iam_member" "console_accessors" {
 }
 
 # --- the scheduler: Cloud Scheduler fires `syros tick` on a fixed cadence ---
-# The tick reads deployments/ from Firestore, fires whatever is due (create
-# session, queue prompt, trigger the runner job) and exits. It is idempotent —
-# a slot is consumed by a Firestore transaction — so overlap and retry are safe.
+# The tick reads workflows/ from Firestore, repairs active runs, fires whatever
+# is due (create the run, launch its root tasks, trigger the runner job) and
+# exits. It is idempotent — a slot is consumed by a Firestore transaction — so
+# overlap and retry are safe.
 
 resource "google_service_account" "scheduler" {
   account_id   = "syros-scheduler"
-  display_name = "syros deployment tick"
+  display_name = "syros workflow tick"
 }
 
 resource "google_project_iam_member" "scheduler_firestore" {
@@ -576,7 +582,7 @@ resource "google_cloud_scheduler_job" "tick" {
   name        = "syros-tick"
   region      = var.region
   schedule    = var.tick_schedule
-  description = "Fire due syros deployments (the tick cadence bounds deployment granularity)"
+  description = "Advance and fire due syros workflows (the tick cadence bounds schedule granularity)"
 
   http_target {
     http_method = "POST"

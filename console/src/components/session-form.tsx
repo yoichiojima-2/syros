@@ -18,7 +18,7 @@ import {
 import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 
-/** New-session form: a prompt plus the same run options a deployment carries.
+/** New-session form: a prompt plus the same run options a workflow task carries.
  *  Starting one here is what a client's query() does — the session is ordinary,
  *  and the transcript takes over from the moment the job is triggered. */
 export function SessionForm({

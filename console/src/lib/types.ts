@@ -36,8 +36,10 @@ export interface SessionSummary {
   title: string | null; // model-written session title, when one has landed
   summary: string | null; // model-written one-liner of where the session stands
   created_by: string | null; // who started it, when recorded
-  deployment: string | null; // the deployment that started it, if any
-  trigger: string; // "api" | "console" | "deployment" | "manual"
+  workflow: string | null; // the workflow whose task started it, if any
+  run_id: string | null; // that workflow's run
+  task: string | null; // the task id within the run
+  trigger: string; // "api" | "console" | "schedule" | "manual"
   agent: string | null; // the stored agent its options were resolved from, if any
 }
 
@@ -53,40 +55,79 @@ export type RunOutcome =
   | "failed"
   | "cancelled";
 
-/** A session seen as one run of a deployment. duration_s is null while it runs. */
+/** A session seen as one run of something. duration_s is null while it runs. */
 export interface RunSummary extends SessionSummary {
   outcome: RunOutcome;
   duration_s: number | null;
 }
 
-export interface DeploymentSummary {
-  name: string;
-  cron: string;
-  timezone: string;
+/** One task in a workflow's definition — mirrors workflows.normalize_tasks. */
+export interface WorkflowTaskSpec {
+  id: string;
   prompt: string;
-  agent: string | null; // stored agent whose options are the run defaults
-  options: Record<string, unknown>;
+  agent: string | null; // stored agent (persona) the task runs as
+  options: Record<string, unknown>; // per-task AgentOptions overrides
+  depends_on: string[];
+}
+
+export type WorkflowTaskStatus =
+  | "pending"
+  | "launching"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped";
+
+/** One task's state within a run — mirrors ConsoleAPI._run_row. */
+export interface WorkflowTaskState {
+  status: WorkflowTaskStatus;
+  session_id: string | null;
+  error: string | null;
+  started_at: number | null;
+  finished_at: number | null;
+  result_preview: string | null; // clipped; the full text lives in the session
+}
+
+export type WorkflowRunStatus = "running" | "succeeded" | "failed";
+
+/** One firing of a workflow: orchestration state, task by task. */
+export interface WorkflowRun {
+  id: string;
+  status: WorkflowRunStatus;
+  trigger: string; // "schedule" | "manual"
+  started_at: number | null;
+  finished_at: number | null;
+  spec: WorkflowTaskSpec[]; // the task list captured at launch
+  tasks: Record<string, WorkflowTaskState>;
+}
+
+export interface WorkflowSummary {
+  name: string;
+  tasks: WorkflowTaskSpec[];
+  options: Record<string, unknown>; // workflow-level option defaults
+  cron: string | null; // null = manual-only
+  timezone: string;
   enabled: boolean;
   next_run_at: number | null;
   last_run_at: number | null;
   last_skipped_at: number | null;
   last_error: string | null;
-  runs: number;
-  skips: number;
+  run_count: number;
+  skip_count: number;
   created_by: string | null;
   created_at: number | null;
-  last_run: RunSummary | null;
+  last_run: WorkflowRun | null;
 }
 
-export interface DeploymentsResponse {
+export interface WorkflowsResponse {
   now: number;
-  deployments: DeploymentSummary[];
+  workflows: WorkflowSummary[];
 }
 
-export interface DeploymentResponse {
+export interface WorkflowResponse {
   now: number;
-  deployment: DeploymentSummary;
-  runs: RunSummary[];
+  workflow: WorkflowSummary;
+  runs: WorkflowRun[];
 }
 
 /** A stored, named run configuration (persona) — agents/{name} in Firestore. */
