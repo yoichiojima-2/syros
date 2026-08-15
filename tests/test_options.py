@@ -218,3 +218,12 @@ def test_connectors_mcp_server_collision_rejected():
     )
     with pytest.raises(OptionsError):
         options.validate()
+
+
+def test_options_from_doc_maps_legacy_workspace_to_team():
+    # Pre-teams session docs stored "workspace"; resume must keep working.
+    restored = options_from_doc({"workspace": "shared"})
+    assert restored.team == "shared"
+    original = {"workspace": "shared"}
+    options_from_doc(original)
+    assert original == {"workspace": "shared"}  # caller's dict untouched

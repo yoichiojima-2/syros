@@ -11,6 +11,7 @@ import asyncio
 from typing import Any, Protocol, runtime_checkable
 
 from .. import artifacts, skills, workspace
+from ..names import validate_name
 
 # One artifact preview per request; anything bigger is a download, not a view.
 # Doubles as the ceiling on a workspace file the console will open for editing.
@@ -172,7 +173,7 @@ class GcsObjects:
         )
 
     async def skill_stats(self, team: str | None = None) -> dict[str, dict[str, Any]]:
-        root = f"team-skills/{team}/" if team else "skills/"
+        root = f"team-skills/{validate_name('team', team)}/" if team else "skills/"
         return await asyncio.to_thread(lambda: _stats(self._list(root), root))
 
     async def skill_files(self, name: str, team: str | None = None) -> list[dict[str, Any]]:

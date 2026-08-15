@@ -21,7 +21,7 @@ from claude_agent_sdk import ClaudeSDKClient
 from . import env
 from .gate import Gate
 from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, git_info
-from .options import AgentOptions, build_sdk_options, model_env
+from .options import build_sdk_options, model_env, options_from_doc
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
 from . import artifacts, bigquery, connectors, titles, workspace
@@ -150,7 +150,10 @@ async def run(session_id: str) -> None:
     if session is None:
         return  # another execution holds the lease, or the session is gone/terminated
 
-    options = AgentOptions(**session["options"], project=config.project)
+    # Through options_from_doc, not the raw constructor: pre-teams session docs
+    # store "workspace", which only the deserializer knows how to map to team.
+    options = options_from_doc(dict(session["options"]))
+    options.project = config.project
 
     # Seed the journal cursor from the journal itself, never from the advisory
     # seq_head: after a mid-turn crash the doc lags the records, and trusting
