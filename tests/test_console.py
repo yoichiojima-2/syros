@@ -21,7 +21,7 @@ from syros.console.api import (
 from syros.errors import OptionsError, SyrosError
 from syros.names import validate_file
 from syros.options import AgentOptions
-from syros.skills import skill_prefix
+from syros.skills import parse_description, skill_prefix
 from syros.workspace import workspace_prefix
 
 from .fakes import FakeStore, append_message
@@ -185,9 +185,22 @@ class FakeObjects:
             return self.skills
         return self.workspace_skills.setdefault(workspace, {})
 
+    @staticmethod
+    def _skill_stat(files):
+        stat = FakeObjects._stats(files)
+        described = parse_description(files.get("SKILL.md", b""))
+        return {**stat, "description": described} if described else stat
+
     async def skill_stats(self, workspace=None):
         pool = self._skill_pool(workspace)
-        return {name: self._stats(files) for name, files in pool.items()}
+        return {name: self._skill_stat(files) for name, files in pool.items()}
+
+    async def workspace_skill_stats(self):
+        return {
+            owner: {name: self._skill_stat(files) for name, files in pool.items()}
+            for owner, pool in self.workspace_skills.items()
+            if pool
+        }
 
     async def skill_files(self, name, workspace=None):
         files = self._skill_pool(workspace).get(name, {})
@@ -400,6 +413,51 @@ async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
     session = store.sessions[result["session_id"]]
     assert session["options"]["mcp_servers"] == {"bq": {"type": "builtin", "name": "bigquery"}}
     assert session["options"]["allowed_tools"] == ["mcp__bq__query"]
+
+
+async def test_create_session_runs_the_default_agent(no_job_trigger):
+    # What the form's "Default" tab posts: no agent, no options at all. The
+    # session still records the default prompt — resolution floors it, so a run
+    # with no persona is the stock agent rather than a bare assistant.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {"prompt": "collect today's news", "agent": None, "options": {}}
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["agent"] is None
+    assert session["options"]["system_prompt"] == {"type": "preset", "preset": "claude_code"}
+
+
+async def test_create_session_appends_extra_instructions_to_the_default_prompt(no_job_trigger):
+    # The "Default" tab's extra-instructions box: the preset, plus text after it.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "collect today's news",
+            "options": {
+                "system_prompt": {
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "Cite every source.",
+                }
+            },
+        }
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["options"]["system_prompt"]["append"] == "Cite every source."
+
+
+async def test_create_session_rejects_an_unknown_preset(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(SyrosError, match="preset"):
+        await api(store).create_session(
+            {"prompt": "go", "options": {"system_prompt": {"type": "file", "path": "/p.md"}}}
+        )
+    assert store.sessions == {}
 
 
 async def test_create_session_resolves_agent(no_job_trigger):
@@ -939,13 +997,46 @@ async def test_skills_stats_and_files():
     console = api(FakeStore(), objects=objects)
 
     result = await console.skills()
-    assert result["skills"] == [{"name": "pdf", "file_count": 2, "total_size": 7, "updated": None}]
+    assert result["skills"] == [
+        {"name": "pdf", "workspace": None, "file_count": 2, "total_size": 7, "updated": None}
+    ]
 
     listing = await console.skill_files("pdf")
     assert [f["name"] for f in listing["files"]] == ["SKILL.md", "ref/x.md"]
 
     with pytest.raises(NotFound):
         await console.skill_files("nope")
+
+
+async def test_skills_carry_frontmatter_description():
+    """The description is what the page leads with, so it rides the listing."""
+    frontmatter = b"---\nname: pdf\ndescription: Merge, split, and OCR PDFs\n---\n# pdf\n"
+    objects = FakeObjects(skills={"pdf": {"SKILL.md": frontmatter}, "bare": {"SKILL.md": b"# x"}})
+
+    rows = {
+        row["name"]: row for row in (await api(FakeStore(), objects=objects).skills())["skills"]
+    }
+    assert rows["pdf"]["description"] == "Merge, split, and OCR PDFs"
+    assert "description" not in rows["bare"]
+
+
+async def test_skills_list_every_scope_unless_one_is_named():
+    """A workspace skill only mounts somewhere, so the global view must show it."""
+    objects = FakeObjects(
+        skills={"pdf": {"SKILL.md": b"# pdf"}},
+        workspace_skills={"growth": {"brand": {"SKILL.md": b"---\ndescription: Ours\n---\n"}}},
+    )
+    console = api(FakeStore(), objects=objects)
+
+    everything = await console.skills()
+    assert [(r["name"], r["workspace"]) for r in everything["skills"]] == [
+        ("pdf", None),
+        ("brand", "growth"),
+    ]
+    assert everything["skills"][1]["description"] == "Ours"
+
+    just_one = await console.skills("growth")
+    assert [(r["name"], r["workspace"]) for r in just_one["skills"]] == [("brand", "growth")]
 
 
 async def test_skill_file_read_write_delete():
@@ -973,6 +1064,25 @@ async def test_skill_file_read_write_delete():
     assert "logo.bin" not in objects.skills["pdf"]
     with pytest.raises(NotFound):
         await console.delete_skill_file("pdf", "logo.bin")
+
+
+async def test_writing_a_file_creates_the_skill():
+    """What the console's folder upload relies on: a skill has no create
+    endpoint, it exists as soon as the first file lands under its prefix. The
+    browser walks the directory and sends one write per file, nested paths and
+    all — global or scoped to a workspace."""
+    objects = FakeObjects()
+    console = api(FakeStore(), objects=objects)
+
+    await console.write_skill_file("my-skill", "SKILL.md", "# new")
+    await console.write_skill_file("my-skill", "scripts/fill.py", "print()")
+    assert objects.skills["my-skill"] == {"SKILL.md": b"# new", "scripts/fill.py": b"print()"}
+    listing = await console.skill_files("my-skill")
+    assert [f["name"] for f in listing["files"]] == ["SKILL.md", "scripts/fill.py"]
+
+    await console.write_skill_file("ws-skill", "SKILL.md", "# ws", workspace="team")
+    assert objects.workspace_skills["team"]["ws-skill"] == {"SKILL.md": b"# ws"}
+    assert "ws-skill" not in objects.skills  # scopes never collide
 
 
 async def test_skill_file_too_large():
@@ -1316,3 +1426,52 @@ async def test_static_serving_next_export():
         assert status == 404 and b"error" in body
     finally:
         server.shutdown()
+
+
+class FakeBlob:
+    def __init__(self, data=None, boom=False, generation=1):
+        self.data, self.boom, self.generation = data, boom, generation
+        self.reads = 0
+
+    def download_as_bytes(self, end=None):
+        self.reads += 1
+        if self.boom:
+            raise RuntimeError("gone")
+        self.asked = end
+        return self.data[: (end or len(self.data))]
+
+
+def test_descriptions_range_read_and_tolerate_failure():
+    """Only the head of each SKILL.md is fetched, and one bad blob can't blank
+    the listing — the page still has to render."""
+    from syros.console.objects import _descriptions
+
+    good = FakeBlob(b"---\ndescription: Reads PDFs\n---\n" + b"z" * 99_000)
+    described = _descriptions({"pdf": good, "broken": FakeBlob(boom=True)}, {})
+
+    assert described == {"pdf": "Reads PDFs"}
+    assert good.asked == 4096  # a prefix, not the 99 KB body
+
+
+def test_descriptions_cache_by_generation():
+    """The console polls this every 8s; a description only moves when SKILL.md
+    is rewritten, so a steady prefix must stop re-reading."""
+    from syros.console.objects import _descriptions
+
+    blob = FakeBlob(b"---\ndescription: First\n---\n")
+    cache: dict = {}
+
+    assert _descriptions({"pdf": blob}, cache) == {"pdf": "First"}
+    assert _descriptions({"pdf": blob}, cache) == {"pdf": "First"}
+    assert blob.reads == 1  # second poll served from cache
+
+    edited = FakeBlob(b"---\ndescription: Second\n---\n", generation=2)
+    assert _descriptions({"pdf": edited}, cache) == {"pdf": "Second"}
+
+    # a failed read must not be cached, or a blip hides the text until the
+    # next write; and a deleted skill must not pin its entry
+    flaky = FakeBlob(boom=True, generation=3)
+    assert _descriptions({"pdf": flaky}, cache) == {}
+    assert _descriptions({"pdf": flaky}, cache) == {}
+    assert flaky.reads == 2
+    assert _descriptions({}, cache) == {} and cache == {}

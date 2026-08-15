@@ -55,6 +55,9 @@ async with SyrosClient(AgentOptions()) as client:
     # client.interrupt() / client.terminate() / AgentOptions(resume=client.session_id)
 ```
 
+Runnable versions of both — plus the message types, an approval policy, and resume/rewind
+— are in [`examples/`](examples/), indexed in [examples/README.md](examples/README.md).
+
 Ops without a UI:
 
 ```
@@ -162,6 +165,30 @@ syros agents show|update|delete reviewer
 
 The console has an Agents view with the same create/edit/delete surface, and sessions
 show which agent they ran as. Workflow tasks can reference an agent too (below).
+
+### The default agent
+
+A persona is what you get for naming an agent or writing one — not the price of not
+naming one. With no `system_prompt` in any layer, a session resolves to the harness's own
+default prompt (the same floor that lands the model on `"sonnet"`), so the SDK, the CLI
+and the console all behave the same way: no agent, no persona, just the stock agent.
+
+```python
+from syros import query, AgentOptions
+
+async for message in query(                    # the default agent, no configuration
+    prompt="collect today's news",
+    options=AgentOptions(allowed_tools=["Read", "Write", "Bash", "WebSearch"]),
+):
+    ...
+```
+
+`system_prompt="..."` replaces that prompt with a persona. To keep it and add to it,
+`default_prompt("Be terse.")` builds the preset with the instructions appended — what
+the console's **Default** tab sends as *extra instructions*, and what the `append` toggle
+on the agent/workspace/settings forms stores. `system_prompt=""` is the escape hatch for
+a run with no system prompt at all. Tool calls are gated as always — unlisted tools still
+pause for approval.
 
 ## Workflows
 
@@ -282,10 +309,21 @@ stays deleted.
 
 ```
 syros skills                         # list skills in the bucket
+syros skills push ./my-skill         # upload a local skill directory
 syros skills files pdf               # list one skill's files
 syros skills cat pdf SKILL.md        # print one skill file
 syros skills sync                    # seed skills/ from the official anthropics/skills repo
 ```
+
+A skill is a directory, so uploading one is how you create one. `push` walks the
+directory, names the skill after its basename (`--name` overrides), and requires a
+`SKILL.md` at the root — without one nothing would discover the skill, so a push that
+found no SKILL.md would report success and mount nothing. Tooling state (`.git/`,
+`__pycache__/`, `node_modules/`, dotfiles) and symlinks are skipped, and files over
+10 MiB are skipped and reported so everything a push writes stays console-editable.
+Pushes merge; `--replace` clears the skill first, so files deleted locally are dropped.
+The console does the same thing from the browser: drop a folder onto the Skills page
+(or a workspace's skills card), or use the folder picker.
 
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
 tarball and copies each skill into the bucket — nothing is vendored, and the copies are
@@ -295,7 +333,7 @@ into every run) and per-workspace (`team-skills/{workspace}/`, mounted only for 
 sessions, shadowing a same-named global). The console has a Skills view with the same
 surface as workspaces — browse a skill, edit a file in place, upload, or delete the
 skill; a workspace's skills live on its workspace page. `syros skills --workspace
-<name>` scopes the CLI.
+<name>` scopes both the CLI and where a push lands.
 
 ## Analysis
 
@@ -524,14 +562,15 @@ doing nothing.
 
 | claude_agent_sdk option | syros |
 |---|---|
-| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness) |
+| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness), except that an unset `system_prompt` resolves to the default-agent preset rather than to no system prompt — pass `""` for that |
+| `system_prompt` presets | the default-agent preset only (`claude_code` on the wire) — the resolution floor, and `default_prompt()` when you want it with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
 | `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
 | `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`), the workspace's skills, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
-| `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
+| `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
 ## Workspaces and global settings
 
@@ -580,7 +619,8 @@ uv run ruff check . && uv run ruff format --check .   # CI lints the whole repo
 ```
 
 Layout: `src/syros/` (client SDK + sandbox runner in one package), `infra/` (Terraform),
-`examples/`, `tests/` (unit + fake-store integration; no GCP needed).
+[`examples/`](examples/) (runnable SDK snippets, checked by `tests/test_examples.py`),
+`tests/` (unit + fake-store integration; no GCP needed).
 
 ## Status
 

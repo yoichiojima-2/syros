@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2 } from "lucide-react";
+import { MessageSquarePlus, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -81,7 +81,7 @@ export default function AgentsPage() {
                   <TableHead>Model</TableHead>
                   <TableHead>Tools</TableHead>
                   <TableHead>Updated</TableHead>
-                  <TableHead className="w-10" />
+                  <TableHead className="w-20" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -130,7 +130,14 @@ function AgentRow({
       <TableCell className="text-xs text-muted-foreground">
         {relTime(agent.updated_at, now)}
       </TableCell>
-      <TableCell className="w-10 text-right" onClick={(e) => e.stopPropagation()}>
+      <TableCell className="w-20 text-right" onClick={(e) => e.stopPropagation()}>
+        {/* A real link, so the launcher opens in a tab on cmd-click; the agent
+            page leads with the prompt box. */}
+        <Button variant="ghost" size="icon" className="size-7 hover:text-primary" asChild>
+          <Link href={href} title={`New session as ${agent.name}`}>
+            <MessageSquarePlus />
+          </Link>
+        </Button>
         <Button
           variant="ghost"
           size="icon"

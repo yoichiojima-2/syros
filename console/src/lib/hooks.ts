@@ -257,9 +257,16 @@ export function useConnectors(intervalMs = 15000): ConnectorSummary[] | null {
   return connectors;
 }
 
-/** Skills in one scope: global (workspace null) or a workspace's own skill set. */
-export function useSkills(workspace: string | null = null, intervalMs = 8000): SkillSummary[] | null {
+/** Skills in one scope: global (workspace null) or a workspace's own skill set.
+ *  Exposes a refresh like useSkillFiles, so an upload shows up without waiting
+ *  out the poll. */
+export function useSkills(
+  workspace: string | null = null,
+  intervalMs = 8000,
+): { skills: SkillSummary[] | null; refresh: () => void } {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
+  const [nonce, setNonce] = useState(0);
+  // reset only when the scope changes — a refresh must not flash a skeleton
   useEffect(() => setSkills(null), [workspace]);
   usePolling(
     (alive) => {
@@ -270,9 +277,9 @@ export function useSkills(workspace: string | null = null, intervalMs = 8000): S
         .catch(() => {});
     },
     intervalMs,
-    [workspace],
+    [workspace, nonce],
   );
-  return skills;
+  return { skills, refresh: () => setNonce((n) => n + 1) };
 }
 
 /** Files in one skill (global or workspace-scoped). Like useWorkspaceFiles this exposes
