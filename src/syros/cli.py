@@ -39,7 +39,7 @@ syros connectors set <name> [--token X | --file p]
 syros connectors remove <name>          destroy the stored credential
 syros console                           serve the web console (localhost or Cloud Run)
 syros export                            snapshot Firestore into BigQuery for analysis
-syros migrate [--dry-run]               move an old installation onto the current data layout
+syros migrate [--dry-run] [--force]     move an old installation onto the current data layout
 """
 
 from __future__ import annotations
@@ -553,7 +553,7 @@ async def _skills(args) -> None:
             raise SystemExit(str(exc)) from exc
         sys.stdout.buffer.write(data)
         return
-    stats = await GcsObjects(project, bucket).skill_stats()
+    stats = await GcsObjects(project, bucket).skill_stats(args.workspace)
     for name in sorted(stats):
         stat = stats[name]
         print(f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']} bytes")
@@ -781,7 +781,10 @@ async def _migrate(args) -> None:
 
     project = _project(args)
     result = await migrate.run(
-        project, env.default_bucket(args.bucket, project), dry_run=args.dry_run
+        project,
+        env.default_bucket(args.bucket, project),
+        dry_run=args.dry_run,
+        force=args.force,
     )
     for move in result["moved"]:
         print(f"move     {move['from']}  ->  {move['to']}")
@@ -791,6 +794,8 @@ async def _migrate(args) -> None:
         print(f"drop     teams/{name}  (workspaces/{name} already exists)")
     for path in result["rewritten"]:
         print(f"rewrite  {path}  options.team -> options.workspace")
+    for name in result["unmovable"]:
+        print(f"skip     {name}  (not a name syros would have written; move it by hand)")
     counts = (
         f"{len(result['moved'])} object(s), {len(result['adopted'])} workspace doc(s),"
         f" {len(result['rewritten'])} option dict(s)"
@@ -798,6 +803,8 @@ async def _migrate(args) -> None:
     print(f"{'would migrate' if result['dry_run'] else 'migrated'} {counts}")
     if result["in_place"]:
         print(f"{result['in_place']} object(s) already under a workspace ws/ or skills/ prefix")
+    if result["busy"]:
+        print(f"warning: live workspace lease(s): {', '.join(result['busy'])}")
 
 
 async def _console(args) -> None:
@@ -963,6 +970,9 @@ def main() -> None:
     )
     migrate.add_argument("--bucket", default=None)
     migrate.add_argument("--dry-run", action="store_true", help="report the plan, change nothing")
+    migrate.add_argument(
+        "--force", action="store_true", help="migrate even while a workspace lease is live"
+    )
     migrate.set_defaults(func=_migrate)
 
     console = sub.add_parser("console")

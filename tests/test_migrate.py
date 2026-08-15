@@ -1,5 +1,6 @@
 """The one-shot layout migration: planning, blob moves, and doc rewrites."""
 
+import time
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ from .test_workspace import FakeBucket
 
 
 def test_plan_moves_folds_legacy_prefixes_into_the_workspace():
-    moves, reserved = migrate.plan_moves(
+    moves, in_place, unmovable = migrate.plan_moves(
         [
             "team-skills/shared/pdf/SKILL.md",
             "team-skills/shared/pdf/ref/notes.md",
@@ -30,7 +31,7 @@ def test_plan_moves_folds_legacy_prefixes_into_the_workspace():
         ("workspaces/shared/report.md", "workspaces/shared/ws/report.md"),
         ("workspaces/shared/sub/deep/a.txt", "workspaces/shared/ws/sub/deep/a.txt"),
     ]
-    assert reserved == []
+    assert in_place == [] and unmovable == []
 
 
 def test_plan_moves_is_idempotent():
@@ -38,14 +39,31 @@ def test_plan_moves_is_idempotent():
         "workspaces/shared/ws/report.md",
         "workspaces/shared/skills/pdf/SKILL.md",
     ]
-    moves, reserved = migrate.plan_moves(migrated)
+    moves, in_place, unmovable = migrate.plan_moves(migrated)
     assert moves == []
-    assert reserved == migrated
+    assert in_place == migrated and unmovable == []
 
 
 def test_plan_moves_ignores_prefix_markers_and_bare_names():
-    moves, reserved = migrate.plan_moves(["workspaces/shared/", "workspaces/", "team-skills/ws/"])
-    assert moves == [] and reserved == []
+    moves, in_place, unmovable = migrate.plan_moves(
+        ["workspaces/shared/", "workspaces/", "team-skills/ws/"]
+    )
+    assert moves == [] and in_place == [] and unmovable == []
+
+
+def test_plan_moves_reports_hand_uploaded_names_instead_of_raising():
+    # one object nobody could have written through syros must not abort the
+    # whole migration — it is named in the report and left where it is
+    moves, _, unmovable = migrate.plan_moves(
+        [
+            "workspaces/Old Team/notes.md",
+            "team-skills/Old Team/pdf/SKILL.md",
+            "workspaces/shared/report.md",
+        ]
+    )
+
+    assert moves == [("workspaces/shared/report.md", "workspaces/shared/ws/report.md")]
+    assert unmovable == ["workspaces/Old Team/notes.md", "team-skills/Old Team/pdf/SKILL.md"]
 
 
 # --- blob moves ---
@@ -125,8 +143,23 @@ def test_rewrite_doc_covers_workflow_task_overrides():
     ]
 
 
+def test_rewrite_doc_covers_a_runs_captured_spec():
+    # a run doc holds the task list under `spec`, and its own `tasks` is a
+    # status map keyed by task id — which must not be mistaken for a task list
+    fields = migrate.rewrite_doc(
+        {
+            "options": {"team": "shared"},
+            "spec": [{"id": "a", "prompt": "go", "options": {"team": "other"}}],
+            "tasks": {"a": {"status": "running", "session_id": "sess_1"}},
+        }
+    )
+    assert fields["spec"] == [{"id": "a", "prompt": "go", "options": {"workspace": "other"}}]
+    assert "tasks" not in fields
+
+
 def test_rewrite_doc_returns_none_for_a_clean_doc():
     assert migrate.rewrite_doc({"options": {"workspace": "shared"}, "tasks": []}) is None
+    assert migrate.rewrite_doc({"tasks": {"a": {"status": "done"}}}) is None
     assert migrate.rewrite_doc({}) is None
 
 
@@ -147,9 +180,14 @@ class FakeSnapshot:
 
 
 class FakeDocument:
-    def __init__(self, collection: dict[str, Any], doc_id: str) -> None:
+    def __init__(self, collection: dict[str, Any], doc_id: str, subs: dict[str, Any]) -> None:
         self._collection = collection
         self._id = doc_id
+        self._subs = subs
+
+    def collection(self, name: str) -> "FakeCollection":
+        """Subcollections keyed (parent doc id, name), like workflows/{n}/runs."""
+        return FakeCollection(self._subs.setdefault((self._id, name), {}), self._subs)
 
     async def get(self) -> FakeSnapshot:
         return FakeSnapshot(self._id, self._collection.get(self._id))
@@ -165,11 +203,12 @@ class FakeDocument:
 
 
 class FakeCollection:
-    def __init__(self, docs: dict[str, Any]) -> None:
+    def __init__(self, docs: dict[str, Any], subs: dict[str, Any]) -> None:
         self._docs = docs
+        self._subs = subs
 
     def document(self, doc_id: str) -> FakeDocument:
-        return FakeDocument(self._docs, doc_id)
+        return FakeDocument(self._docs, doc_id, self._subs)
 
     async def stream(self):
         for doc_id in sorted(self._docs):
@@ -179,11 +218,13 @@ class FakeCollection:
 class FakeDb:
     """Only the Firestore surface migrate_firestore touches."""
 
-    def __init__(self, **collections: dict[str, Any]) -> None:
+    def __init__(self, subcollections: dict[str, Any] | None = None, **collections: Any) -> None:
         self.data: dict[str, dict[str, Any]] = collections
+        # keyed (parent doc id, subcollection name) -> {doc id: doc}
+        self.subs: dict[tuple[str, str], dict[str, Any]] = subcollections or {}
 
     def collection(self, name: str) -> FakeCollection:
-        return FakeCollection(self.data.setdefault(name, {}))
+        return FakeCollection(self.data.setdefault(name, {}), self.subs)
 
 
 async def test_migrate_firestore_adopts_legacy_team_docs_and_rewrites_options():
@@ -242,6 +283,54 @@ async def test_migrate_firestore_dry_run_changes_nothing():
     assert db.data["teams"] == {"shared": {"options": {}}}
     assert db.data["workspaces"] == {}
     assert db.data["agents"]["critic"]["options"] == {"team": "shared"}
+
+
+async def test_migrate_firestore_rewrites_in_flight_run_docs():
+    """A run captures its options and task spec at launch; leaving them behind
+    would fail the run's next task with `unknown option(s): team`."""
+    db = FakeDb(
+        workflows={"nightly": {"options": {"workspace": "shared"}}},
+        subcollections={
+            ("nightly", "runs"): {
+                "run_1": {
+                    "options": {"team": "shared"},
+                    "spec": [{"id": "a", "prompt": "go", "options": {"team": "other"}}],
+                    "tasks": {"a": {"status": "running", "session_id": "sess_1"}},
+                }
+            }
+        },
+    )
+
+    result = await migrate.migrate_firestore(db)
+
+    run_doc = db.subs[("nightly", "runs")]["run_1"]
+    assert run_doc["options"] == {"workspace": "shared"}
+    assert run_doc["spec"][0]["options"] == {"workspace": "other"}
+    assert run_doc["tasks"] == {"a": {"status": "running", "session_id": "sess_1"}}
+    assert result["rewritten"] == ["workflows/nightly/runs/run_1"]
+
+
+async def test_run_refuses_while_a_workspace_lease_is_live(bucket):
+    live = {"lease_session_id": "sess_1", "lease_expires": time.time() + 60}
+    db = FakeDb(workspaces={"shared": live})
+
+    with pytest.raises(migrate.MigrationError, match="shared"):
+        await migrate.run("proj", "bkt", db=db, bucket=bucket)
+    assert "workspaces/shared/report.md" in bucket.objects  # nothing moved
+
+    # a dry run still reports, and --force overrides
+    assert (await migrate.run("proj", "bkt", dry_run=True, db=db, bucket=bucket))["busy"] == [
+        "shared"
+    ]
+    assert (await migrate.run("proj", "bkt", force=True, db=db, bucket=bucket))["busy"] == [
+        "shared"
+    ]
+    assert "workspaces/shared/ws/report.md" in bucket.objects
+
+
+async def test_run_ignores_an_expired_lease(bucket):
+    db = FakeDb(workspaces={"shared": {"lease_session_id": "sess_1", "lease_expires": 0.0}})
+    assert (await migrate.run("proj", "bkt", db=db, bucket=bucket))["busy"] == []
 
 
 async def test_run_reports_both_halves(bucket):

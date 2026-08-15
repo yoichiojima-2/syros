@@ -513,9 +513,14 @@ syros migrate             # do it
 ```
 
 It is idempotent — every step skips what is already in place, so re-running it (or
-running it on a fresh installation) is a no-op. Run it with no sessions live: it moves
-the objects a running session would be checkpointing. Objects already sitting under a
-workspace's `ws/` or `skills/` are left alone and reported as a count.
+running it on a fresh installation) is a no-op. It refuses to start while a workspace
+lease is live, since the session holding it is checkpointing to the prefix being moved
+(`--force` overrides). Stored options are rewritten everywhere they are read back:
+sessions, agents, workspaces, global settings, workflows, and the options each
+in-flight workflow run captured at launch. Objects already sitting under a workspace's
+`ws/` or `skills/` are left alone and reported as a count; a name syros would never
+have written (say, a hand-uploaded `workspaces/Old Team/`) is named in the report and
+left for you to move.
 
 ## How a run works
 
