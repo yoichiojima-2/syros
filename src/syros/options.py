@@ -137,8 +137,8 @@ class AgentOptions:
     # result, so later edits to the agent never change a running session.
     agent: str | None = None
     # Named workspace (workspaces/{name} in Firestore): sessions under the same
-    # workspace share one working directory (workspaces/{name}/ in the bucket,
-    # exclusive lease) and the workspace's skills, and inherit the workspace's
+    # workspace share one working directory (workspaces/{name}/ws/ in the
+    # bucket, exclusive lease) and the workspace's skills, and inherit the
     # stored options as defaults (under agent, over global settings). HOME
     # stays per-session, so transcripts and resume are unaffected. Fixed at
     # session creation; on resume the stored options win, like every

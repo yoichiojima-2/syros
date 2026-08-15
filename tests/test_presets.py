@@ -104,6 +104,32 @@ def test_every_preset_with_files_ships_them():
             assert shipped["SKILL.md"].startswith(b"---"), "skills need frontmatter"
 
 
+def test_preset_files_sit_at_the_prefix_they_install_to():
+    """data/ mirrors the bucket, so a preset's `files` is its destination.
+
+    This is what keeps the two workspace scopes from nesting: the research
+    workspace's files come from workspaces/research/ws, so the recursive walk
+    that collects them cannot reach the skill sitting beside them under
+    workspaces/research/skills.
+    """
+    from syros import layout
+
+    for preset in presets.CATALOG:
+        source = preset.spec.get("files")
+        if not source:
+            continue
+        if preset.kind == "workspace":
+            expected = layout.workspace_prefix(preset.object_name)
+        elif preset.kind == "skill":
+            expected = layout.skill_prefix(preset.object_name, preset.workspace)
+        else:
+            raise AssertionError(f"{preset.kind} presets ship no files")
+        assert source + "/" == expected, preset.name
+
+    workspace_files = dict(presets.files("workspaces/research/ws"))
+    assert set(workspace_files) == {"CLAUDE.md"}  # the skill beside it is not swept in
+
+
 def test_scheduled_workflows_install_paused():
     """A fresh install must not start spending because someone clicked Install."""
     for preset in presets.CATALOG:
