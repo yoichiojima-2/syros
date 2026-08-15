@@ -1,71 +1,83 @@
-# レビューノート: 初版ペルソナ/機能推奨ドキュメントの批判的レビュー
+# Review Notes: Critical Review of the Original Personas / Feature-Recommendation Docs
 
-初版の `personas.html` / `featurerecommendations.html`(2026-08、UX Design 作)を
-syros コードベース(v0.2.0)と照合した結果と、改訂版での修正方針の記録。
+A record of what came out of checking the original `personas.html` /
+`featurerecommendations.html` (August 2026, authored by UX Design) against the syros
+codebase (v0.2.0), and how the revised versions were corrected.
 
-## 総評
+## Overall assessment
 
-初版はコードベースを確認せずに書かれており、汎用的な「AI エージェント SaaS コンソール」
-のテンプレートに近い。3 つの系統的な誤りがある:
+The original was written without consulting the codebase and reads close to a generic
+"AI agent SaaS console" template. Three systematic errors run through it:
 
-1. **偽のギャップ** — 「ADD」17 件のうち少なくとも 5 件は実装済み。
-2. **現状の誤記** — 「MODIFY」のうち 2 件は、現状の挙動をそのまま「提案」として記述。
-3. **方針との矛盾** — 複数の項目が README「Out of scope」と
-   「1 GCP プロジェクト = 1 信頼境界」の設計方針に反する。
+1. **Fictional gaps** — at least 5 of the 17 "ADD" items are already implemented.
+2. **Misdescription of current state** — 2 of the "MODIFY" items present existing behavior
+   as a proposal.
+3. **Conflicts with stated design** — several items contradict the README's "Out of scope"
+   section and the "one GCP project = one trust boundary" position.
 
-## プロダクトの実像(照合の基準)
+## What the product actually is (the baseline for comparison)
 
-- `claude_agent_sdk` エージェントを GCP Cloud Run Jobs のサンドボックスで実行する
-  ミニマルなインフラ/SDK プロダクト。Python パッケージ(`src/syros/`)+ Terraform
-  (`infra/`)のみ。REST API なし、常時稼働コストなし。
-- Firestore = セッション状態・ジャーナル・承認キュー / GCS = ワークスペース・成果物 /
-  IAM = 認証 / Vertex AI = モデル。
-- コンソールは静的 Next.js エクスポート + stdlib の HTTP サーバで、ポーリングベース。
-- README「Out of scope」(REST API、バージョン付きレジストリ、vault/egress proxy、
-  マルチテナンシー)が設計の境界線。
+- A minimal infrastructure/SDK product that runs `claude_agent_sdk` agents sandboxed in GCP
+  Cloud Run Jobs. Just a Python package (`src/syros/`) and Terraform (`infra/`). No REST
+  API, no always-on cost.
+- Firestore = session state, journal, approval queue / GCS = workspaces and artifacts /
+  IAM = auth / Vertex AI = model access.
+- The console is a static Next.js export served by a stdlib HTTP server, and it polls.
+- The README's "Out of scope" list (REST API, versioned registry, vaults/egress proxy,
+  multi-env tenancy) is the design boundary.
 
-## 検証済みの個別指摘
+## Verified findings
 
-### 実装済みなのに「ADD」とされた項目
-| 初版の項目 | 実装箇所 |
+### Already implemented, but listed as "ADD"
+
+| Original item | Where it lives |
 |---|---|
-| フリート全体ダッシュボード | `/`, `/dashboard`(`console/src/app/dashboard/page.tsx`)|
-| 改竄不能なアクション台帳 | `journal.py`, `gate.py` — `PreToolUse` が実行前にコミット。`analytics.py` で BigQuery へ |
-| mid-run 介入 | inbox 経由の追いクエリ、実行中のコンポーザー |
-| セッション再開/継続 | `resume=`、ジャーナルツリー + `rewind` 分岐 |
-| jump-to-error 相当 | 型付きジャーナル + `state-badge` で部分カバー |
+| Fleet-wide dashboard | `/`, `/dashboard` (`console/src/app/dashboard/page.tsx`) |
+| Tamper-evident action ledger | `journal.py`, `gate.py` — `PreToolUse` commits before execution; `analytics.py` exports to BigQuery |
+| Mid-run steering | Follow-up queries via the inbox, composer during a live run |
+| Session resume / continuation | `resume=`, journal tree with `rewind` branching |
+| Jump-to-error equivalent | Partially covered by typed journal records + `state-badge` |
 
-### 現状を誤記した「MODIFY」
-- **状態モデル「二値→詳細化」**: 現状は `running|starting|stalled|queued|idle|terminated|unknown`
-  + 直交する `RunOutcome`(`console/src/lib/types.ts`, `console/api.py` の `derived_state()`)。
-  要求された "possibly-stalled" はリース失効ベースの `stalled` として実装済み。
-- **承認「リアルタイム割り込み→非同期キュー」**: 既に Firestore の非同期キュー、
-  監査付き、300 秒タイムアウト拒否(`gate.py`)。新規なのはリスク階層化のみ。
+### "MODIFY" items that misdescribe the current state
 
-### 方針と矛盾する項目(取り下げ/再定義)
-- アプリ内監査ロール → IAM viewer / IAP 招待(`infra/main.tf` の `console_iap`)。
-- 共有セッションリンク → artifact space + `storage.objectViewer` + IAP の文脈で再定義。
-- エンジニア別予算 → セッションに所有者概念がない(`trigger`/`agent` のみ)。実装不能。
+- **Status model, "binary → richer"**: the current model is
+  `running|starting|stalled|queued|idle|terminated|unknown` plus an orthogonal `RunOutcome`
+  (`console/src/lib/types.ts`, `derived_state()` in `console/api.py`). The requested
+  "possibly-stalled" ships as lease-based `stalled`.
+- **Approvals, "real-time interrupt → async queue"**: already an async Firestore queue,
+  audited, with a 300s timeout-deny (`gate.py`). Only risk-tiering is new.
 
-### 本物のギャップ(改訂版で優先度アップ)
-1. **通知の欠如(最大)** — プッシュ機構ゼロ。承認は放置で 300 秒後に*拒否*。
-2. **帰属バグ** — `_decided_by()`(`src/syros/console/api.py:163`)が IAP 身元でなく
-   `getpass.getuser()` / `"console"` を記録。監査証跡の主張を空洞化させる。
-   確認済み: 承認決定(`api.py:302`)、セッション作成(:239)、deployment 作成(:447)等で使用。
-3. **検索の欠如** — UI は状態フィルタのみ。BigQuery エクスポートはスナップショット。
-4. **フリート予算上限の欠如** — クエリ単位 `max_budget_usd` のみ(README:371 が自認)。
+### Items that conflict with the design (dropped or reframed)
 
-### ペルソナの修正
-- **Devon(Engineer)** → 第一ペルソナに昇格。実ユーザー像(SDK ファースト)に最も近い。
-  共有 JTBD を IAM/artifact space の語彙に書き直し。
-- **Maria(Manager)** → 「フリート運用者(プロジェクトオーナー)」に再スコープ。
-  エンジニア別予算関連(初版の約4割)を削除。
-- **Priya(Security)** → ジャーナル/BigQuery/IAM に接地。帰属バグを最大ペインに。
-  SOC2 型組織ワークフロー前提を除去。
-- 出典のない定量値はすべて「検証すべき仮説」とラベル付け。
+- In-app audit roles → IAM viewer / IAP invitation (`console_iap` in `infra/main.tf`).
+- Shareable session links → reframed around artifact spaces + `storage.objectViewer` + IAP.
+- Per-engineer budgets → sessions have no owner concept (only `trigger` / `agent`).
+  Unbuildable.
 
-## 成果物
+### The genuine gaps (raised in priority in the revision)
 
-- `docs/design/personas.md` — 改訂版ペルソナ(日本語)
-- `docs/design/feature-recommendations.md` — 修正版ギャップ分析(日本語)
-- 本ファイル — 修正根拠の記録
+1. **No notifications (biggest).** Zero push mechanism. An unattended approval times out to
+   a *denial* after 300 seconds.
+2. **Attribution bug.** `_decided_by()` (`src/syros/console/api.py:163`) records
+   `getpass.getuser()` / `"console"` instead of the IAP identity, hollowing out the
+   audit-trail claim. Confirmed in use at approval decisions (`api.py:302`), session
+   creation (:239), deployment creation (:447), and elsewhere.
+3. **No search.** The UI has only a state filter; the BigQuery export is a snapshot.
+4. **No fleet-level budget ceiling.** Only per-query `max_budget_usd` (acknowledged at
+   README:371).
+
+### Persona corrections
+
+- **Devon (Engineer)** → promoted to primary persona; closest to the real user (SDK-first).
+  The sharing JTBD was rewritten in IAM / artifact-space terms.
+- **Maria (Manager)** → rescoped as "fleet operator (project owner)". The per-engineer
+  budget material (roughly 40% of the original) was removed.
+- **Priya (Security)** → grounded in the journal, BigQuery, and IAM, with the attribution
+  bug as her top pain point. The assumed SOC2-style organizational workflow was removed.
+- All unsourced quantitative figures were labeled as assumptions to validate.
+
+## Deliverables
+
+- `docs/design/personas.md` — revised personas
+- `docs/design/feature-recommendations.md` — corrected gap analysis
+- This file — the record of why each change was made

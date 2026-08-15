@@ -1,79 +1,82 @@
-# 機能推奨(修正版)— コードベース照合済み
+# Feature Recommendations (Corrected) — Verified Against the Codebase
 
-初版の機能ギャップ分析を、syros のコードベース(README、`src/syros/`、`console/src/`)と
-照合して修正した版。初版の「ADD 17 件」のうち**5 件以上は既に実装済み**、「MODIFY 8 件」の
-うち 2 件は現状の挙動をそのまま提案として記述、複数の項目が README「Out of scope」の
-設計方針(IAM 委譲、単一プロジェクト信頼境界)と矛盾していた。本版では「既に存在する」を
-独立セクションに移し、本物のギャップだけを再優先化した。
+A correction of the original feature-gap analysis, checked against the syros codebase
+(README, `src/syros/`, `console/src/`). Of the original's 17 "ADD" items, **at least 5 are
+already implemented**; 2 of the 8 "MODIFY" items describe current behavior as if it were a
+proposal; and several items contradict the design positions stated in the README's "Out of
+scope" section (IAM delegation, single-project trust boundary). This version moves the
+already-built items into their own section and re-prioritizes only the genuine gaps.
 
-対応: [personas.md](personas.md)(改訂版)/ 日付: 2026年8月 / 根拠:
+Companion to [personas.md](personas.md) (revised) · Date: August 2026 · Rationale:
 [review-notes.md](review-notes.md)
 
-## サマリ
+## Summary
 
-| 区分 | 件数 |
+| Category | Count |
 |---|---|
-| 既に存在(初版が ADD/MODIFY と誤記) | 6 |
-| 本当に追加すべき機能 | 6 |
-| 変更すべき既存機能 | 3 |
-| 削除/再定義(方針と矛盾) | 5 |
+| Already exists (original mislabeled as ADD/MODIFY) | 6 |
+| Genuinely worth adding | 6 |
+| Existing functions to change | 3 |
+| Dropped / reframed (conflicts with stated design) | 5 |
 
-## 既に存在 — 初版が「新規追加」と誤記した実装済み機能
+## Already exists — implemented functions the original called "net-new"
 
-ロードマップから除外する。参照はすべて現行コード。
+Remove these from the roadmap. All references are to current code.
 
-| 機能 | 実装箇所 | 補足 |
+| Function | Where it lives | Notes |
 |---|---|---|
-| フリート全体ダッシュボード | `console/src/app/dashboard/page.tsx`、トップ `/` | 統計タイル、日別支出/アクティビティ、状態内訳、モデル別コスト、24h/7d/14d 切替。 |
-| 改竄不能なアクション台帳 | `journal.py`, `gate.py`, `analytics.py` | `PreToolUse` フックがツール実行**前**に `tool_call` レコードをコミット。BigQuery へエクスポート可。中核機能。 |
-| 詳細なセッション状態モデル | `console/src/lib/types.ts`, `console/api.py` の `derived_state()` | `running/starting/stalled/queued/idle/terminated/unknown` + 直交する `RunOutcome`。初版が求めた "possibly-stalled" は `stalled`(リース失効)として実装済み。 |
-| 非同期の承認キュー(全件ログ付き) | `gate.py`、`/approvals` ページ、`approval-card.tsx` | Firestore キュー + 監査レコード + 300秒タイムアウト拒否。初版 MODIFY の「リアルタイム割り込み→非同期キュー化」は現状の記述そのもの。 |
-| mid-run 介入(実行中の軌道修正) | inbox 経由の追いクエリ、コンソールのコンポーザー | 実行中セッションへの `query()` が inbox に届く。 |
-| セッション再開・分岐 | `resume=`、ジャーナルツリー + `rewind` | 過去の任意イベントからの分岐まで可能 — 初版の要求より強力。 |
+| Fleet-wide dashboard | `console/src/app/dashboard/page.tsx`, plus `/` | Stat tiles, daily spend/activity, state mix, cost by model, 24h/7d/14d range toggle. |
+| Tamper-evident action ledger | `journal.py`, `gate.py`, `analytics.py` | The `PreToolUse` hook commits a `tool_call` record **before** the tool runs. Exportable to BigQuery. A core selling point. |
+| Rich session status model | `console/src/lib/types.ts`, `derived_state()` in `console/api.py` | `running/starting/stalled/queued/idle/terminated/unknown` plus an orthogonal `RunOutcome`. The "possibly-stalled" state the original asked for ships as `stalled` (lapsed lease). |
+| Async approval queue with full logging | `gate.py`, the `/approvals` page, `approval-card.tsx` | Firestore queue + audit records + 300s timeout-deny. The original's MODIFY item ("real-time interrupt → async queue") describes what already exists. |
+| Mid-run steering | Follow-up queries via the inbox, console composer | A `query()` into a live session lands in its inbox. |
+| Session resume and branching | `resume=`, journal tree + `rewind` | Supports branching from any past event — stronger than what the original requested. |
 
-## 追加 — 本物のギャップ(再優先化済み)
+## Add — the genuine gaps (re-prioritized)
 
-コードベースに存在せず、設計方針とも矛盾しないもの。
+Absent from the codebase and consistent with the stated design.
 
-| # | 機能 | ペルソナ | 優先度 | 根拠 |
+| # | Function | Persona(s) | Priority | Why |
 |---|---|---|---|---|
-| 1 | 承認/入力待ちのプッシュ通知(email / webhook / Slack) | Engineer, Operator | **High** | **最大の実ギャップ。** コンソールはポーリングのみで通知機構が皆無。承認は誰も見ていなければ 300 秒で**拒否**にタイムアウトする(`gate.py`)— 気づけないことが実害に直結する。 |
-| 2 | 承認決定への IAP アイデンティティ帰属(バグ修正) | Security | **High** | `_decided_by()`(`src/syros/console/api.py:163`)が `getpass.getuser()` またはリテラル `"console"` にフォールバック。IAP の認証済みヘッダから取るべき。これを直すまで「誰が承認したか」は証明不能で、監査台帳の価値を毀損する。 |
-| 3 | セッション/トランスクリプトの検索(UI) | Security, Operator, Engineer | **High** | UI には状態チップフィルタしかない(`state-filter.tsx`)。「credentials.json に触れたセッション」は BigQuery エクスポート(スナップショット)でしか探せない。 |
-| 4 | プロジェクト単位の予算上限 + 超過アラート | Operator | **High** | 現状はクエリ単位の `max_budget_usd` のみ。README:371 自身が「クエリを制限するのであって、1日を制限するのではない — ハードシーリングには BigQuery カスタムクォータを」と認めている。日次/月次の上限と閾値アラートをプロジェクト粒度で(エンジニア別ではなく — ユーザーモデルが存在しない)。 |
-| 5 | セッション自動要約 | Operator, Engineer | **Med** | 長いジャーナルの斜め読み支援。台帳(一次記録)の代替ではなく便宜レイヤーとして。 |
-| 6 | リスク階層に応じた承認ルール | Engineer, Security | **Med** | 初版 MODIFY の唯一の新規部分。`allowed_tools`/`permission_mode` の粗い階層は既にあるため、これは拡張であり新設ではない。プッシュ通知(1)導入後に効果を再評価。 |
+| 1 | Push notifications for approvals / input-needed (email, webhook, Slack) | Engineer, Operator | **High** | **The single biggest real gap.** The console polls and has no notification mechanism at all. An approval times out to a **denial** after 300 seconds (`gate.py`) — failing to notice causes direct harm. |
+| 2 | IAP identity attribution for approval decisions (bug fix) | Security | **High** | `_decided_by()` (`src/syros/console/api.py:163`) falls back to `getpass.getuser()` or the literal `"console"`. It should read the authenticated IAP header. Until this is fixed, "who approved this" is unprovable, which undermines the value of the audit ledger. |
+| 3 | Session and transcript search in the UI | Security, Operator, Engineer | **High** | The UI has only a state-chip filter (`state-filter.tsx`). "Which sessions touched credentials.json" is answerable only through the BigQuery export, which is a snapshot. |
+| 4 | Project-level budget ceilings + overrun alerts | Operator | **High** | Only the per-query `max_budget_usd` exists. README:371 concedes it "bound[s] a query, not a day — use a BigQuery custom quota for a hard ceiling." Daily/monthly ceilings and threshold alerts should be scoped to the project, not per engineer (there is no user model). |
+| 5 | Session auto-summary | Operator, Engineer | **Med** | Helps skim long journals. A convenience layer over the ledger, never a replacement for the primary record. |
+| 6 | Risk-tiered approval rules | Engineer, Security | **Med** | The only genuinely new part of the original's MODIFY item. A coarse version already exists via `allowed_tools`/`permission_mode`, so this is an extension, not a new capability. Re-evaluate its value after (1) ships. |
 
-## 変更 — 既存機能の変更
+## Modify — changes to existing functions
 
-初版 8 件から、現状誤記の 2 件と存在しない機能前提の行を除いた残り。
+What remains of the original's 8 items after removing the 2 that misdescribe current
+behavior and the rows that presuppose features which don't exist.
 
-| 機能 | 現状 → 変更 | ペルソナ |
+| Function | Current → Change | Persona(s) |
 |---|---|---|
-| BigQuery エクスポートの鮮度 | 手動 `syros export` のスナップショット → スケジュール実行(deployment 機構の再利用)または増分エクスポートで監査クエリの鮮度を担保 | Security |
-| 承認タイムアウトの扱い | 300 秒で無言の拒否 → タイムアウト間近/発生をセッション詳細と通知(追加-1)に表面化。タイムアウト値の per-session 設定は既存の `AgentOptions` パターンに従う | Engineer |
-| トランスクリプトビューア | フラット表示 → ルーチンの折り畳み / 特権的ツールコールのハイライト(ジャーナルの型付きレコードをそのまま活用) | Operator, Security |
+| BigQuery export freshness | Manual `syros export` snapshots → scheduled runs (reusing the deployment mechanism) or incremental export, so audit queries stay current | Security |
+| Approval timeout handling | Silent denial at 300s → surface imminent and elapsed timeouts in session detail and in notifications (Add-1). Per-session timeout configuration should follow the existing `AgentOptions` pattern | Engineer |
+| Transcript viewer | Flat rendering → collapse routine records / highlight privileged tool calls, using the journal's typed records directly | Operator, Security |
 
-## 削除 / 再定義 — 設計方針と矛盾するため取り下げる項目
+## Drop / reframe — items that conflict with the stated design
 
-README「Out of scope」および「1 GCP プロジェクト = 1 信頼境界」の明示方針に基づく。
+Based on the README's "Out of scope" section and the "one GCP project = one trust boundary"
+position.
 
-| 初版の項目 | 取り下げ/再定義の理由 |
+| Original item | Why it is dropped or reframed |
 |---|---|
-| アプリ内の読み取り専用監査ロール/アクセス階層 | 認証は設計上 IAM/IAP に委譲(`infra/main.tf` の `console_iap`/`console_invokers`)。正しい解は「IAM viewer ロール + IAP 招待」のドキュメント化であり、アプリ内ロールモデルの新設ではない。 |
-| 共有可能なセッションリンク + Slack/PR エクスポート | 公開共有リンクは信頼境界モデルに反する。共有の実体は artifact space(`artifacts/{space}/` + `storage.objectViewer`)と IAP 経由のコンソールアクセス。「読み取り専用の共有」はその文脈で再定義する。 |
-| エンジニア別の予算配分・コスト内訳 | 支出を帰属させるユーザーモデルが存在しない(セッションが持つのは `trigger` と `agent`)。仕様のままでは実装不能。予算はプロジェクト粒度で(追加-4)。 |
-| ロール別アラートストリーム分割 | アプリ内ロールが存在しない前提の上に立つ。まず通知そのもの(追加-1)を作る。宛先の分岐は通知設定として後日検討。 |
-| 重複コストページの統合 | 前提が事実誤認 — コスト表示は `/dashboard` に一本化済みで、重複ページは存在しない。 |
+| In-app read-only audit role / access tiers | Auth is delegated to IAM/IAP by design (`console_iap` / `console_invokers` in `infra/main.tf`). The right answer is documenting an IAM viewer role plus IAP invitation, not building an in-app role model. |
+| Shareable session links + export to Slack/PR | Public share links cut against the trust-boundary model. Sharing in practice means artifact spaces (`artifacts/{space}/` + `storage.objectViewer`) and console access through IAP. "Read-only sharing" should be reframed in those terms. |
+| Per-engineer budget allocation and cost breakdown | There is no user model to attribute spend to (sessions carry `trigger` and `agent`, not an owner). Unbuildable as specified. Budgets belong at project granularity (Add-4). |
+| Role-split alert streams | Presupposes in-app roles that don't exist. Build the notification itself first (Add-1); routing can follow as a notification setting. |
+| Consolidating duplicate cost pages | The premise is factually wrong — cost display is already unified in `/dashboard` and no duplicate pages exist. |
 
-## 維持 — 初版から正しかった原則
+## Keep — what the original got right
 
-**エージェント自身の記述を唯一の監査証拠にしない** — 妥当、かつ syros は既にそう
-設計されている。`tool_call` レコードは実行前にプラットフォーム側フックがコミットする
-一次記録であり、エージェントの語りから独立している。要約(追加-5)は台帳に裏打ちされた
-便宜レイヤーに留める。
+**Don't treat the agent's own narrative as the sole audit evidence.** Valid — and syros is
+already built this way. The `tool_call` record is a primary record committed by a
+platform-side hook before execution, independent of anything the agent says about itself.
+Summaries (Add-5) should stay a convenience layer backed by the ledger.
 
 ---
 
-優先順位はコードベース v0.2.0(2026-08 時点)との照合に基づく。各判断の根拠:
-[review-notes.md](review-notes.md)
+Prioritization reflects a comparison against codebase v0.2.0 as of August 2026. Rationale
+for each judgment: [review-notes.md](review-notes.md)

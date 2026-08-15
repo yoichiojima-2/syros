@@ -1,201 +1,216 @@
-# ユーザーペルソナ(改訂版)— syros コンソール
+# User Personas (Revised) — syros Console
 
-初版のペルソナを、実際のプロダクトに合わせて修正した改訂版。syros は SaaS のチーム管理
-コンソールではなく、**自分の GCP プロジェクト内で `claude_agent_sdk` エージェントを
-サンドボックス実行するミニマルなインフラ/SDK プロダクト**である(Cloud Run Jobs +
-Firestore + GCS + IAM + Vertex AI)。認証・共有・テナンシーは意図的に GCP IAM へ
-委譲されており(README「Out of scope」)、「1 GCP プロジェクト = 1 信頼境界」。
-ペルソナはこの現実に接地させた。
+A revision of the original personas, corrected against the actual product. syros is not a
+SaaS team-management console. It is a **minimal infrastructure/SDK product that runs
+`claude_agent_sdk` agents sandboxed inside your own GCP project** (Cloud Run Jobs +
+Firestore + GCS + IAM + Vertex AI). Auth, sharing, and tenancy are deliberately delegated
+to GCP IAM (README, "Out of scope"), and the tenancy model is "one GCP project = one trust
+boundary". These personas are grounded in that reality.
 
-対象: syros(SDK + コンソール)/ 日付: 2026年8月 / 初版からの改訂 — 根拠は
-[review-notes.md](review-notes.md) 参照。
+Subject: syros (SDK + console) · Date: August 2026 · Revised from the original — rationale
+in [review-notes.md](review-notes.md).
 
-> **注意:** 各ペルソナ内の定量値(セッション数、許容中断時間など)は初版で出典なく
-> 置かれた数値であり、**すべて「検証すべき仮説」**である。_(仮説)_ と付した箇所は
-> 実ユーザーへのインタビューで検証すること。
+> **Note:** The quantitative figures in each persona (session counts, tolerable
+> interruption times, etc.) were stated without sourcing in the original and are **all
+> hypotheses to be validated**. Anything marked _(assumption)_ needs confirmation through
+> real user interviews.
 
 ---
 
-## Devon Okafor — Builder(**第一ペルソナ**)
+## Devon Okafor — Builder (**primary persona**)
 
-シニアソフトウェアエンジニア · SDK ファーストのパワーユーザー
+Senior software engineer · SDK-first power user
 
-SDK からエージェントに実作業を委譲し、複数セッションを並行運用する。コンソールは
-監視・承認・介入のための補助面。
+Delegates real work to agents from the SDK and runs several sessions in parallel. The
+console is a secondary surface for monitoring, approvals, and intervention.
 
-> 「フローを保ちたい — 単純作業はエージェントに任せて、本当に判断が要るときだけ
-> 呼び戻してほしい。」
+> "I want to stay in flow — let the agent handle the grind, and only pull me back in when
+> it genuinely needs my judgment."
 
-### ゴール
+### Goals
 
-- スコープの明確なタスク(リファクタ、テスト、バグ修正、移行)を委譲し、end-to-end で任せる。
-- 3–5 の並行セッション _(仮説)_ を、各セッションの状態を見失わずに回す。
-- 承認要求に素早く応答する — 現状、**誰も見ていなければ承認は 300 秒でタイムアウト
-  拒否される**(`gate.py`)ため、気づける仕組みが死活問題。
-- 実行中のエージェントを、文脈を一から説明し直さずに軌道修正する(実在機能: 実行中
-  セッションへの追いクエリ)。
-- 成果物を artifact space(`artifacts/{space}/`)経由でチームメイトに引き渡す —
-  共有は IAM(`storage.objectViewer`)で行う。
+- Hand off well-scoped tasks (refactors, tests, bug fixes, migrations) and trust agents to
+  run them end to end.
+- Keep 3–5 parallel sessions _(assumption)_ moving without losing track of any one of them.
+- Respond to approval requests quickly — today, **an approval times out to a denial after
+  300 seconds if nobody is watching** (`gate.py`), so a way to find out is critical.
+- Redirect a running agent without restating context from scratch (this exists: follow-up
+  queries to a live session).
+- Hand work to teammates through artifact spaces (`artifacts/{space}/`) — sharing is done
+  via IAM (`storage.objectViewer`).
 
-### フラストレーション
+### Frustrations
 
-- 承認待ちや入力待ちを**プッシュで知る手段がない** — コンソールはポーリングのみで、
-  タブを開いていない間の承認要求は黙って拒否に倒れる。
-- 過去セッションを横断して「あのファイルを触った実行はどれか」を探す**検索が UI にない**
-  (状態フィルタのみ)。
-- `workspace_busy` などの停止理由・状態遷移は充実しているが、それを「気づく」のは
-  自分の目視頼み。
+- **No way to be pushed a notification** for approvals or input requests — the console
+  polls only, so an approval raised while the tab is closed silently falls to denial.
+- **No search in the UI** for finding which past run touched a given file (state filter
+  only).
+- Stop reasons and state transitions (`workspace_busy` and friends) are rich, but noticing
+  them depends on eyeballing the UI.
 
 ### Jobs to Be Done
 
-> **エージェントにタスクを渡した**とき、**入力が必要になった瞬間に通知が届き、素早く
-> 判断だけ返せる**ようにしたい。そうすれば**承認のタイムアウト拒否で作業が無駄に
-> 止まらず、自分はフローに留まれる**。
+> When I **hand a task to an agent**, I want to **be notified the moment it needs input and
+> reply with just the decision**, so that **work isn't wasted on approval timeouts and I
+> stay in flow**.
 
-> **成果物を渡す**とき、**artifact space と IAP 経由の読み取り専用コンソールアクセス**
-> で共有したい。公開共有リンクは信頼境界(1 プロジェクト = 1 境界)に反するため求めない。
+> When I **hand off output**, I want to share it through **artifact spaces plus read-only
+> console access via IAP**. I don't want public share links — they cut against the trust
+> boundary (one project = one boundary).
 
-### 行動・習慣(実プロダクトに接地)
+### Behaviors and habits (grounded in the real product)
 
-- 入口は SDK(`query()` / `resume=`)。コンソールは監視と承認に使う。
-- ジャーナルツリーの `rewind` で過去イベントから分岐して手戻りを回避する。
-- `syros tail` でライブ追跡、トランスクリプトより diff・成果物を見る。
-- 共有ワークスペースは 1 実行 1 リースの制約(`workspace_busy`)を理解して運用する。
+- Entry point is the SDK (`query()` / `resume=`). The console is for monitoring and
+  approvals.
+- Uses `rewind` on the journal tree to branch from a past event instead of redoing work.
+- Follows live runs with `syros tail`; reads diffs and artifacts rather than transcripts.
+- Works around the one-run-per-workspace lease constraint (`workspace_busy`).
 
-### プロダクトへの要求
+### Product needs
 
-- 入力待ち/承認のプッシュ通知(**最優先**)
-- セッション・トランスクリプト検索
-- 明確な状態表示(実装済)
-- mid-run 介入(実装済)
-- resume / rewind(実装済)
-- 承認タイムアウトの可視化
+- Push notifications for input-needed / approvals (**top priority**)
+- Session and transcript search
+- Clear status indicators (already exists)
+- Mid-run steering (already exists)
+- resume / rewind (already exists)
+- Visibility into approval timeouts
 
-### 技術リテラシー
+### Technical context
 
-- 非常に高い。SDK・CLI・BigQuery を直接使う。UI は速さと正確さを重視。
-- 成功 = 委譲したタスクの完了数、承認起因の無駄な停止ゼロ、フロー維持。
+- Very high fluency. Uses the SDK, CLI, and BigQuery directly. Values speed and precision
+  in the UI.
+- Success = tasks delegated and completed, zero wasted stalls from approvals, flow
+  preserved.
 
 ---
 
 ## Maria Chen — Operator
 
-フリート運用者(GCP プロジェクトオーナー)· 旧「エンジニアリングマネージャー」を再定義
+Fleet operator (GCP project owner) · rescoped from the original "engineering manager"
 
-単一 GCP プロジェクト内で走る全セッションの健全性とコストに責任を持つ。組織的な
-「チーム予算配分」は対象外(帰属先となるユーザーモデルが存在しない)。
+Accountable for the health and cost of every session running inside a single GCP project.
+Organization-level "team budget allocation" is out of scope — there is no user model to
+attribute spend to.
 
-> 「全キーストロークを見張る必要はない — 何かがおかしくなった瞬間に知りたいし、
-> 2分以内に原因まで辿り着きたい。」
+> "I don't need to watch every keystroke — I need to know the instant something goes
+> sideways, and I need to get to the bottom of it in under two minutes."
 
-### ゴール
+### Goals
 
-- フリートの健全性を一目で把握する(実装済: `/` と `/dashboard` — 状態内訳、日別支出、
-  モデル別コスト)。
-- 危険な操作(force-push、シークレット露出、本番アクセス)を事後でなく事前に止める
-  (実装済の基盤: 承認ゲート + kill switch `syros kill`)。
-- `stalled`(リース失効)や `queued` のまま滞留したセッションに気づいて対処する。
-- **プロジェクトレベル**の支出上限を持つ — 現状はクエリ単位の `max_budget_usd` のみで、
-  README も「クエリを制限するのであって、1日を制限するのではない」と明言(README:371)。
+- See fleet health at a glance (already exists: `/` and `/dashboard` — state mix, daily
+  spend, cost by model).
+- Stop risky actions (force-push, secret exposure, prod access) before the fact, not after
+  (foundations already exist: the approval gate plus the `syros kill` kill switch).
+- Notice and act on sessions stuck in `stalled` (lease lapsed) or `queued`.
+- Have a **project-level** spend ceiling — today only the per-query `max_budget_usd` exists,
+  and the README itself states it "bound[s] a query, not a day" (README:371).
 
-### フラストレーション
+### Frustrations
 
-- ダッシュボードは見に行けば分かるが、**異常をプッシュで知らせる仕組みがない** —
-  「pull しかない」ことが最大の穴。
-- 日次・月次の支出上限や超過アラートがなく、暴走セッションはダッシュボードを開くまで
-  見えない。
-- フリート横断で「特定のファイル/ツールに触れたセッション」を探せない(BigQuery
-  エクスポートはあるがスナップショット)。
+- The dashboard answers her questions if she goes and looks, but **nothing pushes anomalies
+  to her** — pull-only is the biggest hole.
+- No daily/monthly spend ceiling or overrun alert, so a runaway session is invisible until
+  she opens the dashboard.
+- No fleet-wide way to find sessions that touched a given file or tool (the BigQuery export
+  exists but is a snapshot).
 
 ### Jobs to Be Done
 
-> **チェックインのタイミングでコンソールを開いた**とき、**介入が必要なセッションと
-> その理由がすぐ分かる**ようにしたい。そうすれば**必要な所だけ介入し、残りは任せて
-> 回せる**。(状態モデルは実装済 — 足りないのは push 通知)
+> When I **open the console during a check-in**, I want to **immediately see which sessions
+> need me and why**, so I can **intervene only where it matters and let the rest run**.
+> (The state model already exists — what's missing is push notification.)
 
-> **支出を管理する**とき、**プロジェクト単位の日次/月次上限と超過アラート**が欲しい。
-> そうすれば**請求書で初めて気づく事態を避けられる**。
+> When I **manage spend**, I want **project-level daily/monthly ceilings with overrun
+> alerts**, so I can **avoid finding out from the invoice**.
 
-### 初版から削除したもの(理由付き)
+### Removed from the original (with reasons)
 
-- **エンジニア別の予算配分・コスト内訳** — セッションに「所有者」がない(`trigger` と
-  `agent` のみ)。ユーザーモデルなしには実装不能。
-- **チーム予算の月次防衛** — マルチテナンシーは明示的に Out of scope。予算はプロジェクト
-  単位が正しい粒度。
-- **「単一画面がない」というペイン** — 事実誤認。`/dashboard` が既に存在する。
+- **Per-engineer budget allocation and cost breakdown** — sessions have no owner (only
+  `trigger` and `agent`). Unbuildable without a user model.
+- **Defending a monthly team budget** — multi-env tenancy is explicitly out of scope. The
+  project is the correct budget granularity.
+- **The "no single pane of glass" pain point** — factually wrong; `/dashboard` already
+  exists.
 
-### プロダクトへの要求
+### Product needs
 
-- 異常のプッシュ通知(**最優先**)
-- プロジェクト単位の予算上限 + 超過アラート
-- フリート横断検索
-- セッション自動要約
-- ダッシュボード(実装済)
-- kill switch(実装済)
+- Push notification for anomalies (**top priority**)
+- Project-level budget ceiling + overrun alerts
+- Fleet-wide search
+- Session auto-summary
+- Dashboard (already exists)
+- Kill switch (already exists)
 
-### 技術リテラシー
+### Technical context
 
-- 高いが時間制約が強い。1日数回のチェックイン _(仮説)_ + アラート駆動で動きたい。
-- 成功 = 想定外ゼロ、検知から原因特定まで 2 分以内 _(仮説)_、予算内着地。
+- High fluency but time-constrained. Wants a few check-ins a day _(assumption)_ plus
+  alert-driven interruption.
+- Success = no surprises, under two minutes from detection to root cause _(assumption)_,
+  landing within budget.
 
 ---
 
 ## Priya Nair — Auditor
 
-セキュリティ/監査担当 · ジャーナル + BigQuery + IAM を武器に監査する
+Security and compliance reviewer · audits using the journal, BigQuery, and IAM
 
-エージェントが「何をしたか」を、エージェント自身の説明とは独立に証明する。syros の
-ジャーナルは既にその大部分を提供している — 残る穴は「誰が承認したか」の帰属。
+Proves what an agent actually did, independent of the agent's own account of it. syros's
+journal already provides most of this — the remaining hole is attribution of *who
+approved*.
 
-> 「エージェントが何をする**つもり**だったかはどうでもいい — 実際に何をしたか、
-> 許可されていたか、それを半年後に証明できるかだ。」
+> "I don't care what the agent **meant** to do — I care what it actually did, whether it
+> was allowed to, and whether I can prove that six months from now."
 
-### 既に手にしているもの(初版は「ない」と誤記)
+### What she already has (the original wrongly claimed these were missing)
 
-- **実行前コミットの監査台帳**: `PreToolUse` フックがツール実行**前**に `tool_call`
-  レコードを Firestore にコミット(`journal.py`, `gate.py`)。エージェントの語りとは
-  独立した一次記録。
-- **承認の完全な記録**: 承認キューは全決定(許可/拒否/タイムアウト)を記録。
-- **SQL での横断分析**: `syros export` → BigQuery 5 テーブル(`sessions`, `events`,
-  `tool_calls`, `approvals`, `agents`)。「今月 credentials.json に触れたセッション」は
-  ここで書ける。
-- **読み取り専用アクセス**: アプリ内ロールではなく IAM viewer / IAP 招待で実現する
-  (設計方針どおり)。
+- **An audit ledger committed before execution**: the `PreToolUse` hook commits a
+  `tool_call` record to Firestore **before** the tool runs (`journal.py`, `gate.py`). This
+  is a primary record, independent of the agent's narrative.
+- **Complete approval records**: the approval queue records every decision (allow / deny /
+  timeout).
+- **Cross-fleet analysis in SQL**: `syros export` → five BigQuery tables (`sessions`,
+  `events`, `tool_calls`, `approvals`, `agents`). "Which sessions touched credentials.json
+  this month" is expressible here.
+- **Read-only access**: delivered through IAM viewer roles / IAP invitation rather than an
+  in-app role, exactly as designed.
 
-### フラストレーション(実在するもの)
+### Frustrations (the real ones)
 
-- **帰属の穴(最重要)**: コンソールからの承認決定が IAP アイデンティティでなく
-  `getpass.getuser()` またはリテラル `"console"` として記録される
-  (`src/syros/console/api.py:163` の `_decided_by()`)。「誰が許可したか」を証明
-  できない限り、監査証跡の主張は成立しない。
-- BigQuery エクスポートは**スナップショット** — 最後のエクスポート以降の行動は SQL では
-  見えない。
-- UI にフリート横断検索がなく、定期スイープのたびに SQL を書く必要がある。
-- ポリシー違反(シークレットパターン等)の自動フラグはない — 検知は人力クエリ頼み。
+- **The attribution hole (most important)**: approval decisions made from the console are
+  recorded as `getpass.getuser()` or the literal string `"console"` rather than the IAP
+  identity (`_decided_by()` at `src/syros/console/api.py:163`). Until "who authorized this"
+  is provable, the audit-trail claim doesn't hold.
+- The BigQuery export is a **snapshot** — anything after the last export is invisible to
+  SQL.
+- No fleet-wide search in the UI, so every scheduled sweep means writing SQL.
+- No automatic flagging of policy violations (secret patterns and the like) — detection is
+  manual querying.
 
 ### Jobs to Be Done
 
-> **定期監査またはインシデント対応**のとき、**特権的アクションの完全な記録を、
-> 実行者と承認者の身元付きで**参照したい。そうすれば**問題がなかったことを証明でき、
-> あれば即座に特定できる**。(記録は実装済 — 欠けているのは承認者の帰属)
+> When I **run a scheduled audit or respond to an incident**, I want **a complete record of
+> privileged actions with the identity of both the executor and the approver**, so I can
+> **prove nothing improper happened — or pinpoint it immediately if it did**. (The record
+> exists; the approver's identity is what's missing.)
 
-### プロダクトへの要求
+### Product needs
 
-- 承認決定への IAP 帰属(バグ修正・**最優先**)
-- フリート横断検索(UI)
-- ポリシーパターンの自動フラグ
-- エクスポートの鮮度改善 or 定期化
-- 監査台帳(実装済)
-- IAM viewer での読み取り専用(設計どおり)
+- IAP identity attribution for approval decisions (bug fix, **top priority**)
+- Fleet-wide search in the UI
+- Automatic flagging of policy patterns
+- Fresher or scheduled exports
+- Audit ledger (already exists)
+- Read-only access via IAM viewer (as designed)
 
-### 初版から削除したもの(理由付き)
+### Removed from the original (with reasons)
 
-- **アプリ内の監査ロール階層** — 認証は IAM/IAP に委譲する設計(README「Out of scope」)。
-  要求は IAM の語彙で書くべき。
-- **SOC2 型の組織コンプライアンスワークフロー前提** — 単一プロジェクト信頼境界の
-  プロダクトにはスコープ過大。レビュー状態の管理は軽量なタグ付けとして再検討。
+- **An in-app audit role hierarchy** — auth is delegated to IAM/IAP by design (README, "Out
+  of scope"). The requirement should be written in IAM's vocabulary.
+- **Assumed SOC2-style organizational compliance workflow** — overscoped for a
+  single-project trust boundary. Review-status tracking should be reconsidered as
+  lightweight tagging.
 
 ---
 
-ペルソナは生きたドキュメント — 実ユーザーインタビューで _(仮説)_ ラベルの数値を
-検証し、更新すること。改訂根拠: [review-notes.md](review-notes.md)
+Personas are living documents — validate the figures marked _(assumption)_ through real
+user interviews and update them. Revision rationale: [review-notes.md](review-notes.md)
