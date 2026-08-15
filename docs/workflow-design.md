@@ -247,8 +247,10 @@ Two channels, both explicit:
    (Dagster's split: dependencies order execution, storage carries data).
    Guidance, not mechanism: a *linear* chain can share a `workspace` (the
    exclusive lease is harmless when tasks run one at a time); *parallel*
-   branches must use artifact spaces (no lease; the workspace lease would
-   serialize them — the trap `deployments.tick` already documents).
+   branches must use artifact spaces (no lease). The lease does not queue the
+   losing branch, it kills it: the runner releases with
+   `stop_reason="workspace_busy"`, which `advance` records as a failed task and
+   whose downstream cone it then skips, failing the run.
 
 Deliberately not: Step Functions-style input/output path plumbing, or a
 LangGraph-style shared typed state. Both buy parallel-branch power at a

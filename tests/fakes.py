@@ -548,10 +548,15 @@ class FakeObjects:
         skill_prefix(name)
         validate_file("skill file", file)
 
-    def _skill_pool(self, workspace):
+    def _skill_pool(self, workspace, create=False):
+        """The skill dict for a scope. Reads must not `setdefault`: listing a
+        workspace's skills would then leave an empty entry behind, and a test
+        asserting nothing was created for that workspace would see a phantom."""
         if workspace is None:
             return self.skills
-        return self.workspace_skills.setdefault(workspace, {})
+        if create:
+            return self.workspace_skills.setdefault(workspace, {})
+        return self.workspace_skills.get(workspace, {})
 
     async def skill_stats(self, workspace=None):
         pool = self._skill_pool(workspace)
@@ -574,7 +579,7 @@ class FakeObjects:
 
     async def write_skill_file(self, name, file, data, workspace=None):
         self._check_skill(name, file)
-        self._skill_pool(workspace).setdefault(name, {})[file] = data
+        self._skill_pool(workspace, create=True).setdefault(name, {})[file] = data
 
     async def delete_skill_file(self, name, file, workspace=None):
         self._check_skill(name, file)

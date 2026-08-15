@@ -17,13 +17,12 @@ import type { InstallPresetsResponse } from "@/lib/types";
 // edited presets is a CLI decision (`syros presets install --force`), not one
 // to offer behind a button that looks like "get started".
 
-export function InstallPresetsButton({
-  onInstalled,
-  className,
-}: {
-  onInstalled?: () => void;
-  className?: string;
-}) {
+// No onInstalled/refresh callback on purpose. This button only ever renders
+// inside an empty state, so refreshing unmounts it — along with the flash it
+// was about to show, which matters most when that flash is an error. Every list
+// hook polls (4-5s), so the rows arrive on their own and the outcome stays
+// readable until they do.
+export function InstallPresetsButton() {
   const [flash, run] = useAction();
   const [busy, setBusy] = useState(false);
 
@@ -32,17 +31,16 @@ export function InstallPresetsButton({
       setBusy(true);
       try {
         const result = await post<InstallPresetsResponse>("/api/presets/install", {});
-        onInstalled?.();
         if (!result.installed.length) return "everything is already installed";
-        const skipped = result.skipped.length ? `, ${result.skipped.length} already present` : "";
-        return `installed ${result.installed.length} preset(s), ${result.files} file(s)${skipped}`;
+        const kept = result.kept ? `, ${result.kept} existing file(s) kept` : "";
+        return `installed ${result.installed.length} preset(s), ${result.files} file(s)${kept}`;
       } finally {
         setBusy(false);
       }
     });
 
   return (
-    <span className={className}>
+    <span>
       <Button variant="outline" size="sm" onClick={install} disabled={busy}>
         <Sparkles />
         {busy ? "Installing…" : "Install examples"}

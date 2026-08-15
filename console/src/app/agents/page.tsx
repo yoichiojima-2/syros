@@ -75,7 +75,7 @@ export default function AgentsPage() {
                 </code>
               </p>
               <div>
-                <InstallPresetsButton onInstalled={refresh} />
+                <InstallPresetsButton />
                 <p className="mt-2 text-[11px]">
                   Four example agents, a workspace, two workflows and two skills — editable, and
                   scheduled ones install paused.

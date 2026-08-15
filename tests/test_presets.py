@@ -217,7 +217,7 @@ async def test_scheduled_workflow_is_stored_paused_with_its_schedule():
     _summary, store, _objects = await install()
     workflow = store.workflows["daily-brief"]
     assert workflow["enabled"] is False
-    assert workflow["schedule"] == {"cron": "0 9 * * *", "timezone": "Asia/Tokyo"}
+    assert workflow["schedule"] == {"cron": "0 9 * * *", "timezone": "UTC"}
     # The slot is still computed, so resuming has something to re-base from.
     assert workflow["next_run_at"] > 0
 
@@ -363,3 +363,160 @@ async def test_status_distinguishes_the_two_brief_scopes():
     assert rows["brief"]["workspace"] is None
     assert rows["research-brief"]["installed"] is False
     assert rows["research-brief"]["workspace"] == "research"
+
+
+# --- not clobbering what is already there -----------------------------------
+
+
+async def test_a_bare_bucket_workspace_counts_as_installed():
+    """A workspace is real as a GCS directory with no Firestore doc — the
+    console lists those. Installing must not attach the preset's stored options
+    to one someone is already using, nor rewrite their CLAUDE.md."""
+    objects = FakeObjects(workspaces={"research": {"CLAUDE.md": b"MY OWN NOTES"}})
+    summary, store, _objects = await install(["research"], objects=objects)
+
+    assert named(summary["installed"]) == []
+    assert named(summary["skipped"]) == ["research"]
+    assert objects.workspaces["research"]["CLAUDE.md"] == b"MY OWN NOTES"
+    assert "research" not in store.workspaces
+
+
+async def test_existing_files_are_kept_and_counted():
+    objects = FakeObjects(skills={"brief": {"SKILL.md": b"mine"}})
+    summary, _store, _objects = await install(["brief"], objects=objects)
+
+    assert objects.skills["brief"]["SKILL.md"] == b"mine"
+    assert summary["kept"] == 1
+    # ...but the file the skill was missing is still written.
+    assert "reference/structure.md" in objects.skills["brief"]
+    assert summary["files"] == 1
+
+
+async def test_install_repairs_a_document_whose_files_never_landed():
+    """The failure mode is real: create the doc, then die before the upload.
+    Re-running has to finish the job rather than skip it forever."""
+    _summary, store, objects = await install(["research"])
+    del objects.workspaces["research"]["CLAUDE.md"]
+
+    summary, _store, _objects = await install(["research"], store=store, objects=objects)
+
+    assert named(summary["skipped"]) == ["research"]  # the doc is left alone
+    assert "CLAUDE.md" in objects.workspaces["research"]  # the file comes back
+    assert summary["files"] == 1
+
+
+async def test_writing_workspace_files_refuses_a_busy_workspace():
+    """Same guard the console applies: a live run checkpoints its whole ws/
+    directory at idle, so a file written under it mid-run is lost."""
+    import time
+
+    store, objects = FakeStore(), FakeObjects()
+    store.workspaces["research"] = {
+        "options": {},
+        "runtime": {"lease_expires": time.time() + 60},
+        "lease_session_id": "sess_live",
+    }
+
+    with pytest.raises(presets.PresetError, match="busy"):
+        await install(["research"], store=store, objects=objects)
+
+
+async def test_a_busy_workspace_is_fine_when_there_is_nothing_to_write():
+    import time
+
+    _summary, store, objects = await install(["research"])
+    store.workspaces["research"]["runtime"] = {"lease_expires": time.time() + 60}
+
+    summary, _store, _objects = await install(["research"], store=store, objects=objects)
+    assert named(summary["skipped"]) == ["research"]
+
+
+# --- concurrency and aliasing -----------------------------------------------
+
+
+async def test_losing_a_creation_race_is_a_skip_not_an_error(monkeypatch):
+    """Two console tabs, or a CLI install racing a click: the button promises
+    clicking twice is safe, so a create that loses has to land as a skip."""
+    store, objects = FakeStore(), FakeObjects()
+    await install(["researcher"], store=store, objects=objects)
+
+    # Pretend the snapshot was taken before that install, so the create runs
+    # against a name that has since been taken.
+    monkeypatch.setattr(presets._Present, "has", lambda self, preset: False)
+
+    summary = await presets.install(
+        ["researcher"], store=store, objects=objects, options=OPTIONS, created_by="tester"
+    )
+    assert named(summary["installed"]) == []
+    assert named(summary["skipped"]) == ["researcher"]
+
+
+async def test_a_kind_with_no_installer_fails_loudly():
+    """Adding a kind to KINDS and forgetting its branch must not report success
+    for an object that was never created."""
+    store = FakeStore()
+    with pytest.raises(presets.PresetError, match="no installer for kind"):
+        await presets._create(
+            presets.Preset(name="x", kind="connector", description="d", spec={"name": "x"}),
+            store=store,
+            options=OPTIONS,
+            created_by=None,
+            replace=False,
+        )
+
+
+async def test_installed_documents_do_not_alias_the_catalog():
+    """CATALOG is module-level state in a long-lived console process."""
+    _summary, store, _objects = await install(["researcher"])
+    stored = store.agents["researcher"]["options"]
+    catalog_options = presets.get("researcher").spec["options"]
+
+    assert stored["allowed_tools"] == catalog_options["allowed_tools"]
+    assert stored["allowed_tools"] is not catalog_options["allowed_tools"]
+    assert stored["artifacts"] is not catalog_options["artifacts"]
+
+    stored["allowed_tools"].append("Bash")
+    assert "Bash" not in catalog_options["allowed_tools"]
+
+
+def test_definition_hands_out_a_copy():
+    first = presets.definition("research-pipeline")
+    first["spec"]["tasks"][0]["prompt"] = "clobbered"
+    assert presets.definition("research-pipeline")["spec"]["tasks"][0]["prompt"] != "clobbered"
+
+
+def test_presets_are_hashable():
+    """frozen=True over a dict field would generate a __hash__ that raises."""
+    assert len({presets.get("researcher"), presets.get("writer")}) == 2
+
+
+# --- ordering ---------------------------------------------------------------
+
+
+def test_dependencies_within_one_kind_install_in_order():
+    """Nothing in the catalog needs this yet; the ordering guarantee should not
+    depend on that staying true."""
+    make = lambda name, requires=(): presets.Preset(  # noqa: E731
+        name=name, kind="agent", description="d", spec={"name": name}, requires=requires
+    )
+    base, derived = make("base"), make("derived", ("base",))
+    assert [p.name for p in presets._by_dependency([derived, base])] == ["base", "derived"]
+
+
+def test_a_requirement_cycle_is_reported():
+    make = lambda name, requires: presets.Preset(  # noqa: E731
+        name=name, kind="agent", description="d", spec={"name": name}, requires=requires
+    )
+    with pytest.raises(presets.PresetError, match="cycle"):
+        presets._by_dependency([make("a", ("b",)), make("b", ("a",))])
+
+
+def test_kind_order_still_dominates_dependency_order():
+    ordered = presets.resolve()
+    kinds = [preset.kind for preset in ordered]
+    assert kinds == sorted(kinds, key=presets.KINDS.index)
+    # every requirement lands before the preset that needs it
+    placed: set[str] = set()
+    for preset in ordered:
+        assert all(required in placed for required in preset.requires)
+        placed.add(preset.name)

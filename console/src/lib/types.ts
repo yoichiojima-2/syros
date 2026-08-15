@@ -357,13 +357,15 @@ export interface PresetsResponse {
   presets: PresetRow[];
 }
 
-/** Reply shape of POST /api/presets/install. */
+/** Reply shape of POST /api/presets/install. `files` counts what was written,
+ * `kept` what was already there and left alone. */
 export interface InstallPresetsResponse {
   now: number;
   ok: boolean;
-  installed: (Omit<PresetRow, "installed"> & { replaced: boolean })[];
-  skipped: (Omit<PresetRow, "installed"> & { reason: string })[];
+  installed: (Omit<PresetRow, "installed"> & { replaced: boolean; files: number })[];
+  skipped: (Omit<PresetRow, "installed"> & { reason: string; files: number })[];
   files: number;
+  kept: number;
 }
 
 export interface SpaceSummary {

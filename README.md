@@ -171,9 +171,11 @@ Two deliberate choices worth knowing. **Scheduled presets install paused**: `dai
 carries a cron but arrives disabled, so clicking Install never starts spending — resume it
 once its prompt says what you actually want briefed, and the next slot re-bases on the
 current time. And **`research-pipeline` shares an artifact space rather than a workspace**:
-its two middle tasks run in parallel, and a workspace's exclusive lease would serialize
-them ([docs/workflow-design.md](docs/workflow-design.md)). The serial tail does take the
-workspace, from the agents it names.
+its two middle tasks run in parallel, and the loser of a workspace lease does not queue —
+the runner releases it with `stop_reason=workspace_busy`, which the run records as a failed
+task and whose downstream tasks it then skips. Artifact spaces take no lease. The serial
+tail of the chain does take the workspace, from the agents it names, where one-at-a-time is
+the point.
 
 ## Agents
 

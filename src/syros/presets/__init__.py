@@ -25,13 +25,16 @@ brings in everything it references.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
+from copy import deepcopy
+from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
 from .. import agents, workflows, workspaces
 from ..errors import SyrosError
 from ..options import AgentOptions, options_from_doc
+from ..store import lease_active
 
 # Install order, and the order the catalog lists in. Workflows last: their
 # task-level agent references are resolved against the store when the workflow
@@ -43,11 +46,18 @@ class PresetError(SyrosError):
     """An unknown preset was named, or the catalog is internally inconsistent."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Preset:
     """One catalog entry. `name` addresses the preset; the object it creates
     takes its own name from `spec` (they differ only where two presets create
-    same-named objects in different scopes — the two `brief` skills)."""
+    same-named objects in different scopes — the two `brief` skills).
+
+    `eq=False` keeps identity equality and hashing: `frozen=True` alone would
+    synthesise an `__eq__`/`__hash__` over the fields, and `spec` is a dict, so
+    the generated `__hash__` would raise the moment a Preset went into a set.
+    Nothing about the dict is actually frozen either — read `spec` through
+    `definition()`, which copies.
+    """
 
     name: str
     kind: str
@@ -263,7 +273,13 @@ CATALOG: tuple[Preset, ...] = (
         spec={
             "name": "daily-brief",
             "cron": "0 9 * * *",
-            "timezone": "Asia/Tokyo",
+            # UTC, like every other default in syros. A named zone would be a
+            # better demo of the scheduler and a worse default: 09:00 in a zone
+            # the installer did not choose is a surprise, and resolving one
+            # needs a tz database this package does not depend on. Change it on
+            # the workflow (--tz, or the console's timezone field) — cron is
+            # evaluated as wall-clock time there, so it survives DST.
+            "timezone": workflows.DEFAULT_TIMEZONE,
             # Presets never install a live schedule: a fresh install should not
             # start spending because someone clicked Install. Resuming re-bases
             # the next slot on the current time, so nothing fires retroactively.
@@ -304,10 +320,12 @@ CATALOG: tuple[Preset, ...] = (
             "enabled": True,
             # Workflow-level defaults, inherited by every task under its own
             # options and its agent's. Deliberately an artifact space and not a
-            # workspace: 'sources' and 'landscape' run at the same time, and a
-            # workspace's exclusive lease would serialize them (the serial tail
-            # picks up workspace="research" from the writer/reviewer agents,
-            # where one-at-a-time is exactly what you want).
+            # workspace: 'sources' and 'landscape' run at the same time, and the
+            # loser of a workspace lease does not wait — the runner releases it
+            # with stop_reason="workspace_busy", which the run records as a
+            # failed task and whose downstream cone it then skips. The serial
+            # tail does pick up workspace="research" from the writer/reviewer
+            # agents, where one-at-a-time is exactly what you want.
             "options": {"artifacts": {"research": "rw"}},
             "tasks": [
                 {
@@ -410,7 +428,36 @@ def resolve(names: list[str] | tuple[str, ...] | None = None) -> list[Preset]:
             queue.extend(get(name).requires)
     order = {kind: index for index, kind in enumerate(KINDS)}
     chosen = [preset for preset in CATALOG if preset.name in wanted]
-    return sorted(chosen, key=lambda preset: order[preset.kind])
+    return _by_dependency(sorted(chosen, key=lambda preset: order[preset.kind]))
+
+
+def _by_dependency(chosen: list[Preset]) -> list[Preset]:
+    """Stable topological order over `requires`, applied to a kind-ordered list.
+
+    Kind order already satisfies every cross-kind edge the catalog has today (a
+    workflow requires agents, an agent requires a workspace), so in practice
+    this only settles edges *inside* one kind — but sorting on the edges rather
+    than assuming the kinds cover them keeps `requires` meaning exactly one
+    thing, and turns a future intra-kind dependency into correct ordering
+    instead of a "no such agent" halfway through an install.
+    """
+    pending = list(chosen)
+    names = {preset.name for preset in pending}
+    placed: set[str] = set()
+    ordered: list[Preset] = []
+    while pending:
+        # `pending` keeps kind order, so the first ready preset is always the
+        # earliest kind that can go now.
+        ready = next(
+            (p for p in pending if all(r in placed for r in p.requires if r in names)), None
+        )
+        if ready is None:
+            cycle = ", ".join(sorted(preset.name for preset in pending))
+            raise PresetError(f"preset requirements form a cycle: {cycle}")
+        pending.remove(ready)
+        placed.add(ready.name)
+        ordered.append(ready)
+    return ordered
 
 
 def _row(preset: Preset) -> dict[str, Any]:
@@ -436,111 +483,206 @@ def definition(name: str) -> dict[str, Any]:
     their own `--tasks` file rather than installing it.
     """
     preset = get(name)
-    return {**_row(preset), "spec": preset.spec}
+    # A copy: the catalog is module-level state in a long-lived console process,
+    # and a caller that edited what it was handed would corrupt every later
+    # install.
+    return {**_row(preset), "spec": deepcopy(preset.spec)}
 
 
 # --- installation -----------------------------------------------------------
 
 
 @dataclass
-class _Result:
-    installed: list[dict[str, Any]] = field(default_factory=list)
-    skipped: list[dict[str, Any]] = field(default_factory=list)
-    files: int = 0
+class _Present:
+    """One batched look at what already exists, taken before anything is created.
+
+    Installing used to ask per preset, which is ~9 sequential round trips before
+    the first write; three list calls and one listing per skill scope answer the
+    same question and gather cleanly.
+    """
+
+    docs: dict[str, set[str]]
+    skills: dict[str | None, set[str]]
+    workspace_dirs: set[str]
+
+    def has(self, preset: Preset) -> bool:
+        name = preset.object_name
+        if preset.kind == "skill":
+            return name in self.skills.get(preset.workspace, set())
+        if preset.kind == "workspace":
+            # A workspace is real as a bare bucket directory too — the console
+            # lists those, and sessions can name one that has no document — so
+            # "already exists" has to mean either. Otherwise installing would
+            # quietly attach the preset's stored options, and its CLAUDE.md, to
+            # a workspace someone is already using.
+            return name in self.docs["workspace"] or name in self.workspace_dirs
+        return name in self.docs[preset.kind]
 
 
-async def _exists(preset: Preset, *, store: Any, objects: Any) -> bool:
-    name = preset.object_name
-    if preset.kind == "workspace":
-        return await store.get_workspace(name) is not None
-    if preset.kind == "agent":
-        return await store.get_agent(name) is not None
-    if preset.kind == "workflow":
-        return await store.get_workflow(name) is not None
-    return name in await objects.skill_stats(preset.workspace)
+async def _present(chosen: list[Preset], *, store: Any, objects: Any) -> _Present:
+    scopes = sorted({p.workspace for p in chosen if p.kind == "skill"}, key=str)
+    agent_docs, workflow_docs, workspace_docs, dirs, *stats = await asyncio.gather(
+        store.list_agents(),
+        store.list_workflows(),
+        store.list_workspaces(),
+        objects.workspace_stats(),
+        *(objects.skill_stats(scope) for scope in scopes),
+    )
+    return _Present(
+        docs={
+            "agent": {doc["name"] for doc in agent_docs},
+            "workflow": {doc["name"] for doc in workflow_docs},
+            "workspace": {doc["name"] for doc in workspace_docs},
+        },
+        skills={scope: set(names) for scope, names in zip(scopes, stats)},
+        workspace_dirs=set(dirs),
+    )
 
 
-async def _write_files(preset: Preset, *, objects: Any) -> int:
+async def _require_free(store: Any, name: str) -> None:
+    """Refuse to write a workspace a live run holds — the same guard the console
+    applies to every workspace write, for the same reason: the runner
+    checkpoints its whole ws/ directory at idle, so a file written under it
+    mid-run is silently replaced by the job's own copy."""
+    doc = await store.get_workspace(name)
+    if lease_active(doc):
+        raise PresetError(
+            f"workspace {name} is busy — session {doc.get('lease_session_id')} holds its lease,"
+            " and its checkpoint would overwrite these files. Try again once it is idle."
+        )
+
+
+async def _write_files(preset: Preset, *, store: Any, objects: Any, force: bool) -> tuple[int, int]:
+    """Write the preset's files, returning (written, kept).
+
+    Without `force` a file that is already there is kept, never overwritten:
+    that is what makes it safe to write into a workspace or skill that exists,
+    which in turn is what lets an install interrupted between creating a
+    document and writing its files be repaired by simply running again.
+    """
     source = preset.spec.get("files")
     if not source:
-        return 0
-    written = 0
-    for file, data in files(source):
-        if preset.kind == "skill":
-            await objects.write_skill_file(
-                preset.object_name, file, data, workspace=preset.workspace
-            )
+        return 0, 0
+    name = preset.object_name
+    skill = preset.kind == "skill"
+    listed = (
+        await objects.skill_files(name, preset.workspace)
+        if skill
+        else await objects.workspace_files(name)
+    )
+    present = {item["name"] for item in listed}
+
+    pending = [(file, data) for file, data in files(source) if force or file not in present]
+    kept = len(files(source)) - len(pending)
+    if not pending:
+        return 0, kept
+    if not skill:
+        # Only once there is something to write: an install with nothing to add
+        # should not fail just because a run happens to hold the workspace.
+        await _require_free(store, name)
+    for file, data in pending:
+        if skill:
+            await objects.write_skill_file(name, file, data, workspace=preset.workspace)
         else:
-            await objects.write_workspace_file(preset.object_name, file, data)
-        written += 1
-    return written
+            await objects.write_workspace_file(name, file, data)
+    return len(pending), kept
 
 
-async def _install_one(
+async def _create(
     preset: Preset,
     *,
     store: Any,
-    objects: Any,
     options: AgentOptions,
     created_by: str | None,
     replace: bool,
-) -> None:
+) -> bool:
+    """Create (or, with `replace`, rewrite) the preset's document.
+
+    False means someone else created it between the snapshot and now — two
+    console tabs, or a CLI install racing a click. That is a skip, not an error:
+    the button promises installing twice is safe.
+    """
     name = preset.object_name
     spec = preset.spec
+    try:
+        if preset.kind == "workspace":
+            run_options = options_from_doc(deepcopy(spec["options"]))
+            if replace:
+                await workspaces.update(
+                    name, run_options, options=options, description=preset.description, store=store
+                )
+            else:
+                await workspaces.create(
+                    name,
+                    run_options,
+                    options=options,
+                    description=preset.description,
+                    created_by=created_by,
+                    store=store,
+                )
+        elif preset.kind == "agent":
+            run_options = options_from_doc(deepcopy(spec["options"]))
+            if replace:
+                await agents.update(
+                    name, run_options, options=options, description=preset.description, store=store
+                )
+            else:
+                await agents.create(
+                    name,
+                    run_options,
+                    options=options,
+                    description=preset.description,
+                    created_by=created_by,
+                    store=store,
+                )
+        elif preset.kind == "workflow":
+            tasks = deepcopy(spec["tasks"])
+            defaults = options_from_doc(deepcopy(spec["options"]))
+            schedule = {
+                "cron_expression": spec.get("cron"),
+                "timezone": spec.get("timezone") or workflows.DEFAULT_TIMEZONE,
+            }
+            if replace:
+                # update() leaves enabled alone on purpose: replacing a
+                # definition should not silently re-pause a workflow someone
+                # deliberately resumed.
+                await workflows.update(
+                    name, tasks, defaults=defaults, options=options, store=store, **schedule
+                )
+            else:
+                await workflows.create(
+                    name,
+                    tasks,
+                    defaults=defaults,
+                    enabled=bool(spec.get("enabled", True)),
+                    options=options,
+                    created_by=created_by,
+                    store=store,
+                    **schedule,
+                )
+        elif preset.kind == "skill":
+            pass  # skills are files only; _write_files does the work
+        else:
+            # Reachable only by adding a kind to KINDS without a branch here.
+            # Silently reporting it installed would be worse than failing.
+            raise PresetError(f"preset {preset.name!r}: no installer for kind {preset.kind!r}")
+    except (agents.AgentError, workflows.WorkflowError, workspaces.WorkspaceError):
+        # Re-check rather than matching on the message: only a lost race is a
+        # skip, and anything else still has to surface.
+        if await _doc_exists(preset, store=store):
+            return False
+        raise
+    return True
+
+
+async def _doc_exists(preset: Preset, *, store: Any) -> bool:
     if preset.kind == "workspace":
-        run_options = options_from_doc(dict(spec["options"]))
-        if replace:
-            await workspaces.update(
-                name, run_options, options=options, description=preset.description, store=store
-            )
-        else:
-            await workspaces.create(
-                name,
-                run_options,
-                options=options,
-                description=preset.description,
-                created_by=created_by,
-                store=store,
-            )
-    elif preset.kind == "agent":
-        run_options = options_from_doc(dict(spec["options"]))
-        if replace:
-            await agents.update(
-                name, run_options, options=options, description=preset.description, store=store
-            )
-        else:
-            await agents.create(
-                name,
-                run_options,
-                options=options,
-                description=preset.description,
-                created_by=created_by,
-                store=store,
-            )
-    elif preset.kind == "workflow":
-        tasks = [dict(task) for task in spec["tasks"]]
-        defaults = options_from_doc(dict(spec["options"]))
-        schedule = {
-            "cron_expression": spec.get("cron"),
-            "timezone": spec.get("timezone") or workflows.DEFAULT_TIMEZONE,
-        }
-        if replace:
-            # update() leaves enabled alone on purpose: replacing a definition
-            # should not silently re-pause a workflow someone resumed.
-            await workflows.update(
-                name, tasks, defaults=defaults, options=options, store=store, **schedule
-            )
-        else:
-            await workflows.create(
-                name,
-                tasks,
-                defaults=defaults,
-                enabled=bool(spec.get("enabled", True)),
-                options=options,
-                created_by=created_by,
-                store=store,
-                **schedule,
-            )
+        return await store.get_workspace(preset.object_name) is not None
+    if preset.kind == "agent":
+        return await store.get_agent(preset.object_name) is not None
+    if preset.kind == "workflow":
+        return await store.get_workflow(preset.object_name) is not None
+    return False
 
 
 async def install(
@@ -554,42 +696,57 @@ async def install(
 ) -> dict[str, Any]:
     """Materialise presets into Firestore and the bucket.
 
-    Anything that already exists is skipped and reported, so installing twice is
-    a no-op and a partial install can be completed by re-running. `force`
-    replaces existing definitions instead — including the workspace's CLAUDE.md
-    and the skills' files, which is why it is not the default.
+    A preset whose object already exists keeps its definition — installing twice
+    is a no-op — but files it is missing are still written, so an install that
+    died between creating a document and uploading its files is repaired by
+    running again. Existing files are never overwritten and are reported as
+    `kept`; `force` is the explicit opt-out that replaces both definitions and
+    files, including edits you made to them.
 
     `objects` is an ObjectStoreProtocol (the console's), which is what lets the
     CLI, the console, and the tests share one code path.
     """
     options = options or AgentOptions()
-    result = _Result()
-    for preset in resolve(names):
-        exists = await _exists(preset, store=store, objects=objects)
-        if exists and not force:
-            result.skipped.append({**_row(preset), "reason": "already exists"})
-            continue
-        await _install_one(
-            preset,
-            store=store,
-            objects=objects,
-            options=options,
-            created_by=created_by,
-            replace=exists,
+    chosen = resolve(names)
+    present = await _present(chosen, store=store, objects=objects)
+    installed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    total_written = total_kept = 0
+
+    for preset in chosen:
+        exists = present.has(preset)
+        # Touch the definition only when it is new, or when force says to
+        # replace it; `created` is False if a concurrent install beat us to it.
+        created = (
+            await _create(
+                preset, store=store, options=options, created_by=created_by, replace=exists
+            )
+            if force or not exists
+            else False
         )
-        result.files += await _write_files(preset, objects=objects)
-        result.installed.append({**_row(preset), "replaced": exists})
+        # Overwrite files only when we own this install: losing the race means
+        # someone else's copy is the current one.
+        written, kept = await _write_files(
+            preset, store=store, objects=objects, force=force and created
+        )
+        total_written += written
+        total_kept += kept
+        row = {**_row(preset), "files": written}
+        if created:
+            installed.append({**row, "replaced": exists})
+        else:
+            skipped.append({**row, "reason": "already exists"})
+
     return {
-        "installed": result.installed,
-        "skipped": result.skipped,
-        "files": result.files,
+        "installed": installed,
+        "skipped": skipped,
+        "files": total_written,
+        "kept": total_kept,
     }
 
 
 async def status(*, store: Any, objects: Any) -> list[dict[str, Any]]:
     """The catalog with an `installed` flag per row — what the console lists."""
-    rows = []
-    for preset in resolve():
-        installed = await _exists(preset, store=store, objects=objects)
-        rows.append({**_row(preset), "installed": installed})
-    return rows
+    chosen = resolve()
+    present = await _present(chosen, store=store, objects=objects)
+    return [{**_row(preset), "installed": present.has(preset)} for preset in chosen]

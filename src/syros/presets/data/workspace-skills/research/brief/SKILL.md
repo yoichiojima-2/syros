@@ -6,10 +6,19 @@ description: Write a decision-ready brief, following the research workspace's co
 # Brief (research workspace)
 
 **This skill shadows the global `brief` skill.** Both are named `brief`; the
-runner mounts global skills first and this workspace's skills over them, so
-inside the `research` workspace this file is the one that loads and the global
-one is invisible. That is the whole mechanism — a workspace skill overrides a
-same-named global by name alone, with nothing to configure.
+runner restores global skills into the session first and this workspace's skills
+over them, so inside the `research` workspace this `SKILL.md` is the one that
+loads. A workspace skill overrides a same-named global by name alone, with
+nothing to configure.
+
+The overlay is **file by file, not directory by directory** — worth knowing,
+because it is the part that surprises people. The restore only writes blobs; it
+never clears what is already there. So a same-named file wins, and any file the
+workspace copy *doesn't* carry stays visible from the global one. Here that is
+deliberate: this skill ships only `SKILL.md`, so the global skill's
+`reference/structure.md` remains available and is still the section layout to
+follow. If you ever need a global file to be *gone* rather than overridden, ship
+a replacement at the same path — there is no delete.
 
 Everything in the global skill still applies: find the delta first, lead with
 the change and its consequence, attach evidence to individual claims, mark
@@ -39,6 +48,11 @@ Inline citations carry the retrieval date as well as the publication date:
 The retrieval date matters here because these briefs are produced by scheduled
 runs — a claim sourced from a page that has since changed needs to be
 distinguishable from one read this morning.
+
+## Structure
+
+Use the section layout in the global skill's `reference/structure.md` — it is
+mounted alongside this file, per the overlay note above.
 
 ## Before you finish
 

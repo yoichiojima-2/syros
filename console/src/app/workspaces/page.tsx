@@ -81,7 +81,6 @@ export default function WorkspacesPage() {
                 appear here.
               </p>
               <div>
-                {/* useWorkspaces polls, so the new row arrives on its own. */}
                 <InstallPresetsButton />
                 <p className="mt-2 text-[11px]">
                   Adds a &quot;research&quot; workspace with a CLAUDE.md that loads as project

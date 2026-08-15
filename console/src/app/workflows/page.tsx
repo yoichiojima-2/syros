@@ -76,7 +76,7 @@ export default function WorkflowsPage() {
                 </code>
               </p>
               <div>
-                <InstallPresetsButton onInstalled={refresh} />
+                <InstallPresetsButton />
                 <p className="mt-2 text-[11px]">
                   Adds a scheduled one-task workflow (installed paused) and a five-task chain that
                   fans out and back in.

@@ -574,15 +574,18 @@ async def _presets(args) -> None:
     from . import presets
     from .console.objects import GcsObjects
 
-    project = _project(args)
-    objects = GcsObjects(project, env.default_bucket(args.bucket, project))
-    store = _store(args)
-
+    # `show` reads the catalog and nothing else — resolving a project first
+    # would make reading a definition impossible before there is one to install
+    # into, which is exactly when you want to read it.
     if args.action == "show":
         if not args.args:
             raise SystemExit("usage: syros presets show <name>")
         print(json.dumps(presets.definition(args.args[0]), indent=2))
         return
+
+    project = _project(args)
+    objects = GcsObjects(project, env.default_bucket(args.bucket, project))
+    store = _store(args)
 
     if args.action == "install":
         summary = await presets.install(
@@ -593,16 +596,19 @@ async def _presets(args) -> None:
             created_by=getpass.getuser(),
             force=args.force,
         )
-        for row in summary["installed"]:
-            print(
-                f"{'replaced' if row['replaced'] else 'installed':<10}  {row['kind']}/{row['name']}"
+        for row in summary["installed"] + summary["skipped"]:
+            verb = (
+                "skipped" if "reason" in row else ("replaced" if row["replaced"] else "installed")
             )
-        for row in summary["skipped"]:
-            print(f"{'skipped':<10}  {row['kind']}/{row['name']}  ({row['reason']})")
+            note = f"  ({row['reason']})" if "reason" in row else ""
+            files = f"  +{row['files']} file(s)" if row["files"] else ""
+            print(f"{verb:<10}  {row['kind']}/{row['name']}{note}{files}")
         print(
             f"\n{len(summary['installed'])} installed, {len(summary['skipped'])} skipped,"
             f" {summary['files']} file(s) written"
         )
+        if summary["kept"]:
+            print(f"{summary['kept']} existing file(s) left as they are")
         if summary["skipped"] and not args.force:
             print("--force replaces what already exists (including edits you made to it)")
         return
