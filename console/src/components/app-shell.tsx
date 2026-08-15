@@ -7,13 +7,14 @@ import {
   Bot,
   CalendarClock,
   ChartColumn,
-  FolderGit2,
   LayoutDashboard,
   Plug,
   ListTree,
   Package,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
+  Users,
 } from "lucide-react";
 import { useOnline } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -27,10 +28,11 @@ const NAV = [
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/deployments", label: "Deployments", icon: CalendarClock },
   { href: "/approvals", label: "Approvals", icon: ShieldCheck },
-  { href: "/workspaces", label: "Workspaces", icon: FolderGit2 },
+  { href: "/teams", label: "Teams", icon: Users },
   { href: "/skills", label: "Skills", icon: Sparkles },
   { href: "/connectors", label: "Connectors", icon: Plug },
   { href: "/artifacts", label: "Artifacts", icon: Package },
+  { href: "/settings", label: "Settings", icon: SlidersHorizontal },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -51,7 +53,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             icons, and the row scrolls sideways on the narrowest screens */}
         <nav className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto md:flex-none md:flex-col md:gap-0.5 md:overflow-visible">
           {NAV.map(({ href, label, icon: Icon }) => {
-            // detail pages are singular (/session, /deployment, /workspace) and
+            // detail pages are singular (/session, /deployment, /team) and
             // keep their list's nav entry lit
             const active = pathname === href || href === `${pathname}s`;
             return (

@@ -32,7 +32,10 @@ export interface SessionSummary {
   created_at: number | null;
   updated_at: number | null;
   model: string | null;
-  workspace: string | null;
+  team: string | null;
+  title: string | null; // model-written session title, when one has landed
+  summary: string | null; // model-written one-liner of where the session stands
+  created_by: string | null; // who started it, when recorded
   deployment: string | null; // the deployment that started it, if any
   trigger: string; // "api" | "console" | "deployment" | "manual"
   agent: string | null; // the stored agent its options were resolved from, if any
@@ -191,25 +194,27 @@ export interface ApprovalsResponse {
   approvals: ApprovalWithSession[];
 }
 
-export interface WorkspaceSessionRef {
+export interface TeamSessionRef {
   id: string;
   state: SessionState;
   updated_at: number | null;
 }
 
-export interface WorkspaceSummary {
+export interface TeamSummary {
   name: string;
   busy: boolean;
   lease_session_id: string | null;
+  description: string | null;
+  options: Record<string, unknown>; // serialized AgentOptions defaults
   file_count: number;
   total_size: number;
   updated: number | null;
-  sessions: WorkspaceSessionRef[];
+  sessions: TeamSessionRef[];
 }
 
-export interface WorkspacesResponse {
+export interface TeamsResponse {
   now: number;
-  workspaces: WorkspaceSummary[];
+  teams: TeamSummary[];
 }
 
 export interface StoredFile {
@@ -219,10 +224,16 @@ export interface StoredFile {
   tags?: string[];
 }
 
-export interface WorkspaceFilesResponse {
+export interface TeamFilesResponse {
   now: number;
   name: string;
   files: StoredFile[];
+}
+
+/** Global option defaults (serialized AgentOptions) every team and session inherits. */
+export interface SettingsResponse {
+  now: number;
+  options: Record<string, unknown>;
 }
 
 /** Reply shape of the file mutations (write, delete, rename, tags, folder). */
@@ -267,6 +278,7 @@ export interface SkillSummary {
 
 export interface SkillsResponse {
   now: number;
+  team: string | null; // null = global scope
   skills: SkillSummary[];
 }
 

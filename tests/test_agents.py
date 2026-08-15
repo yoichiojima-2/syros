@@ -113,7 +113,9 @@ async def test_resolve_missing_agent_raises():
 async def test_resolve_without_agent_is_noop():
     store = FakeStore()
     options = AgentOptions(project="p")
-    assert await agents.resolve(store, options) is options
+    resolved = await agents.resolve(store, options)
+    assert resolved.model == "sonnet"  # the built-in floor when no layer is stored
+    assert resolved.project == "p"
 
 
 async def test_resolve_merges_stored_options():

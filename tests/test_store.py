@@ -77,25 +77,25 @@ async def test_mark_starting_skips_live_and_dead_sessions():
 
 async def test_workspace_lease_claim_and_contend():
     store = FakeStore()
-    assert await store.claim_workspace("ws", "sess_a", 60) is True
-    assert await store.claim_workspace("ws", "sess_a", 60) is True  # re-entrant for the holder
-    assert await store.claim_workspace("ws", "sess_b", 60) is False
+    assert await store.claim_team("ws", "sess_a", 60) is True
+    assert await store.claim_team("ws", "sess_a", 60) is True  # re-entrant for the holder
+    assert await store.claim_team("ws", "sess_b", 60) is False
 
 
 async def test_workspace_lease_expiry_reclaimable():
     store = FakeStore()
-    await store.claim_workspace("ws", "sess_a", -1)  # already expired
-    assert await store.claim_workspace("ws", "sess_b", 60) is True
+    await store.claim_team("ws", "sess_a", -1)  # already expired
+    assert await store.claim_team("ws", "sess_b", 60) is True
 
 
 async def test_workspace_release_only_by_holder():
     store = FakeStore()
-    await store.claim_workspace("ws", "sess_a", 60)
-    await store.release_workspace("ws", "sess_b")  # no-op
-    assert store.workspaces["ws"]["lease_session_id"] == "sess_a"
-    await store.release_workspace("ws", "sess_a")
-    assert store.workspaces["ws"]["lease_session_id"] is None
-    assert store.workspaces["ws"]["lease_expires"] == 0.0
+    await store.claim_team("ws", "sess_a", 60)
+    await store.release_team("ws", "sess_b")  # no-op
+    assert store.teams["ws"]["lease_session_id"] == "sess_a"
+    await store.release_team("ws", "sess_a")
+    assert store.teams["ws"]["lease_session_id"] is None
+    assert store.teams["ws"]["lease_expires"] == 0.0
 
 
 async def test_runtime_map_reads():

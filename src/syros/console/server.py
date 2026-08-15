@@ -95,33 +95,44 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         ("api", "agents", None, "delete"),
         lambda api, body, query, name: api.delete_agent(name),
     ),
-    ("GET", ("api", "workspaces"), lambda api, body, query: api.workspaces()),
+    ("GET", ("api", "teams"), lambda api, body, query: api.teams()),
     (
         "POST",
-        ("api", "workspaces"),
-        lambda api, body, query: api.create_workspace(str(body.get("name") or "")),
+        ("api", "teams"),
+        lambda api, body, query: api.create_team(body),
     ),
     (
         "POST",
-        ("api", "workspaces", None, "delete"),
-        lambda api, body, query, name: api.delete_workspace(name),
+        ("api", "teams", None, "delete"),
+        lambda api, body, query, name: api.delete_team(name),
     ),
+    (
+        "POST",
+        ("api", "teams", None, "update"),
+        lambda api, body, query, name: api.update_team(name, body),
+    ),
+    (
+        "POST",
+        ("api", "settings"),
+        lambda api, body, query: api.update_settings(body),
+    ),
+    ("GET", ("api", "settings"), lambda api, body, query: api.settings()),
     (
         "GET",
-        ("api", "workspaces", None, "files"),
-        lambda api, body, query, name: api.workspace_files(name),
+        ("api", "teams", None, "files"),
+        lambda api, body, query, name: api.team_files(name),
     ),
     # Workspace file names may contain "/", so — as with artifacts — the file
     # rides the query string on GET and the JSON body on POST, never a segment.
     (
         "GET",
-        ("api", "workspaces", None, "file"),
-        lambda api, body, query, name: api.workspace_file(name, (query.get("name") or [""])[0]),
+        ("api", "teams", None, "file"),
+        lambda api, body, query, name: api.team_file(name, (query.get("name") or [""])[0]),
     ),
     (
         "POST",
-        ("api", "workspaces", None, "file"),
-        lambda api, body, query, name: api.write_workspace_file(
+        ("api", "teams", None, "file"),
+        lambda api, body, query, name: api.write_team_file(
             name,
             str(body.get("name") or ""),
             str(body.get("content") or ""),
@@ -130,49 +141,53 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     ),
     (
         "POST",
-        ("api", "workspaces", None, "file", "delete"),
-        lambda api, body, query, name: api.delete_workspace_file(name, str(body.get("name") or "")),
+        ("api", "teams", None, "file", "delete"),
+        lambda api, body, query, name: api.delete_team_file(name, str(body.get("name") or "")),
     ),
     (
         "POST",
-        ("api", "workspaces", None, "file", "rename"),
-        lambda api, body, query, name: api.rename_workspace_file(
+        ("api", "teams", None, "file", "rename"),
+        lambda api, body, query, name: api.rename_team_file(
             name, str(body.get("from") or ""), str(body.get("to") or "")
         ),
     ),
     (
         "POST",
-        ("api", "workspaces", None, "file", "tags"),
-        lambda api, body, query, name: api.set_workspace_file_tags(
+        ("api", "teams", None, "file", "tags"),
+        lambda api, body, query, name: api.set_team_file_tags(
             name, str(body.get("name") or ""), body.get("tags") or []
         ),
     ),
     (
         "POST",
-        ("api", "workspaces", None, "files", "delete"),
-        lambda api, body, query, name: api.delete_workspace_files(name, body.get("names") or []),
+        ("api", "teams", None, "files", "delete"),
+        lambda api, body, query, name: api.delete_team_files(name, body.get("names") or []),
     ),
     (
         "POST",
-        ("api", "workspaces", None, "folder", "delete"),
-        lambda api, body, query, name: api.delete_workspace_folder(
-            name, str(body.get("folder") or "")
-        ),
+        ("api", "teams", None, "folder", "delete"),
+        lambda api, body, query, name: api.delete_team_folder(name, str(body.get("folder") or "")),
     ),
     ("GET", ("api", "connectors"), lambda api, body, query: api.connectors()),
-    ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
+    (
+        "GET",
+        ("api", "skills"),
+        lambda api, body, query: api.skills((query.get("team") or [None])[0]),
+    ),
     ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
     (
         "GET",
         ("api", "skills", None, "files"),
-        lambda api, body, query, name: api.skill_files(name),
+        lambda api, body, query, name: api.skill_files(name, (query.get("team") or [None])[0]),
     ),
-    # Skill file names may contain "/", so — as with workspaces — the file
+    # Skill file names may contain "/", so — as with teams — the file
     # rides the query string on GET and the JSON body on POST, never a segment.
     (
         "GET",
         ("api", "skills", None, "file"),
-        lambda api, body, query, name: api.skill_file(name, (query.get("name") or [""])[0]),
+        lambda api, body, query, name: api.skill_file(
+            name, (query.get("name") or [""])[0], (query.get("team") or [None])[0]
+        ),
     ),
     (
         "POST",
@@ -182,17 +197,22 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             str(body.get("name") or ""),
             str(body.get("content") or ""),
             str(body.get("encoding") or "utf-8"),
+            str(body["team"]) if body.get("team") else None,
         ),
     ),
     (
         "POST",
         ("api", "skills", None, "file", "delete"),
-        lambda api, body, query, name: api.delete_skill_file(name, str(body.get("name") or "")),
+        lambda api, body, query, name: api.delete_skill_file(
+            name, str(body.get("name") or ""), str(body["team"]) if body.get("team") else None
+        ),
     ),
     (
         "POST",
         ("api", "skills", None, "delete"),
-        lambda api, body, query, name: api.delete_skill(name),
+        lambda api, body, query, name: api.delete_skill(
+            name, str(body["team"]) if body.get("team") else None
+        ),
     ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
     (

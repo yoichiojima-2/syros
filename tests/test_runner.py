@@ -117,8 +117,9 @@ async def test_runner_full_turn(env, store, fake_harness):
     assert client.options.env["ANTHROPIC_VERTEX_PROJECT_ID"] == "proj-1"
     assert "HOME" in client.options.env
     assert client.options.hooks and "PreToolUse" in client.options.hooks
-    # skills mounted into HOME are only visible with user settings enabled
-    assert client.options.setting_sources == ["user"]
+    # skills mounted into HOME need user settings; the team's CLAUDE.md at the
+    # workspace root needs project settings
+    assert client.options.setting_sources == ["user", "project"]
 
     # thinking_tokens progress events are dropped; everything else is journaled
     events = feed(store)
@@ -206,17 +207,20 @@ async def test_runner_syncs_session_prefixes_without_workspace(env, store, fake_
 
 
 async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gcs_sync):
-    await store.create_session(SID, {"workspace": "shared"})
+    await store.create_session(SID, {"team": "shared"})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)
 
     checkpointed = [("workspaces/shared/", "ws"), (f"sessions/{SID}/state/home/", "home")]
-    assert gcs_sync["restore"] == checkpointed + [("skills/", "skills")]
+    assert gcs_sync["restore"] == checkpointed + [
+        ("skills/", "skills"),
+        ("team-skills/shared/", "skills"),
+    ]
     assert gcs_sync["checkpoint"] == checkpointed
     # claimed during the run, released after
-    assert store.workspaces["shared"]["lease_session_id"] is None
-    assert store.workspaces["shared"]["lease_expires"] == 0.0
+    assert store.teams["shared"]["lease_session_id"] is None
+    assert store.teams["shared"]["lease_expires"] == 0.0
 
 
 async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync):
@@ -290,9 +294,9 @@ async def test_runner_without_mounts_leaves_prompt_and_session_untouched(env, st
 
 
 async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, gcs_sync):
-    await store.create_session(SID, {"workspace": "shared"})
+    await store.create_session(SID, {"team": "shared"})
     await store.push_inbox(SID, "message", "go")
-    await store.claim_workspace("shared", "sess_other", 3600)
+    await store.claim_team("shared", "sess_other", 3600)
 
     await run(SID)
 
@@ -307,7 +311,7 @@ async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, g
     assert doc["subtype"] == "workspace_busy"
     assert doc["is_error"] is True
     # the other session keeps its lease
-    assert store.workspaces["shared"]["lease_session_id"] == "sess_other"
+    assert store.teams["shared"]["lease_session_id"] == "sess_other"
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]
 
@@ -486,7 +490,7 @@ async def test_runner_fails_fast_on_connector_error(
         raise syros.runner.connectors.ConnectorError("connector 'github' has no stored credential")
 
     monkeypatch.setattr(syros.runner.connectors, "mcp_servers_for", boom)
-    await store.create_session(SID, {"connectors": ["github"], "workspace": "shared"})
+    await store.create_session(SID, {"connectors": ["github"], "team": "shared"})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)
@@ -502,6 +506,6 @@ async def test_runner_fails_fast_on_connector_error(
     assert doc["subtype"] == "connector_error"
     assert doc["is_error"] is True
     # the workspace lease claimed just before the connector check is released
-    assert store.workspaces["shared"]["lease_session_id"] is None
+    assert store.teams["shared"]["lease_session_id"] is None
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]

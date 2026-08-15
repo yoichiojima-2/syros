@@ -119,9 +119,10 @@ follow the session's active branch, so a rewind made from the CLI/SDK shows up l
 the rewind action itself is CLI/SDK-only. The state
 column is liveness rather than raw status: `starting` is a triggered job that hasn't
 claimed the session yet, `running` holds a live lease, and either one whose window lapsed
-shows as `stalled` — a job that died or never came up, and deletable as such. Shared
-workspaces are editable: open one to edit a file in place, upload, or delete — writes are
-refused while a run holds the lease, since its checkpoint would overwrite them. It also
+shows as `stalled` — a job that died or never came up, and deletable as such. Team
+workspaces are editable: open a team to edit a file in place (including its CLAUDE.md),
+upload, or delete — writes are refused while a run holds the lease, since its checkpoint
+would overwrite them. It also
 deploys to Cloud Run (`syros-console`, public URL behind IAP, IAM-gated), so the same console is
 reachable without a local checkout or GCP client libraries; see [Deploy](#deploy).
 
@@ -134,7 +135,7 @@ Docker image builds its own copy in a Node stage, so deploys need no local build
 ## Agents
 
 An agent is a named, stored run configuration — the persona a session runs as: system
-prompt, model, allowed tools, permission mode, workspace, artifact spaces, budgets. One
+prompt, model, allowed tools, permission mode, team, artifact spaces, budgets. One
 Firestore document, mirroring Claude Managed Agents' Agent object (minus versioning:
 the document is mutable, and every session snapshots the options it resolved at creation,
 so editing an agent changes future runs only).
@@ -174,7 +175,7 @@ exist.
 syros deployments create nightly-report \
   --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "profile the CSVs and rewrite report.md" \
-  --model claude-sonnet-5 --workspace reports --allow Read --allow Write
+  --model claude-sonnet-5 --team reports --allow Read --allow Write
 
 syros deployments                      # each deployment, its next slot, last run
 syros deployments runs nightly-report  # run history: outcome, trigger, cost
@@ -268,8 +269,11 @@ syros skills sync                    # seed skills/ from the official anthropics
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
 tarball and copies each skill into the bucket — nothing is vendored, and the copies are
 editable snapshots: re-syncing overwrites official files but never touches skills (or
-files) the tarball doesn't carry. The console has a Skills view with the same surface as
-workspaces — browse a skill, edit a file in place, upload, or delete the skill.
+files) the tarball doesn't carry. Skills come in two scopes: global (`skills/`, mounted
+into every run) and per-team (`team-skills/{team}/`, mounted only for that team's
+sessions, shadowing a same-named global). The console has a Skills view with the same
+surface as teams — browse a skill, edit a file in place, upload, or delete the skill;
+a team's skills live on its team page. `syros skills --team <name>` scopes the CLI.
 
 ## Analysis
 
@@ -503,9 +507,37 @@ doing nothing.
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
-| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`); transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
+| `team` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same team share one GCS-backed working directory (`workspaces/{name}/`), the team's skills, and its CLAUDE.md, and inherit the team's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per team — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
 | `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
+
+## Teams and global settings
+
+A team is a shared working context for sessions: one GCS-backed workspace
+(`workspaces/{name}/`, exclusive lease — one live run at a time), a `CLAUDE.md` at its
+root loaded as project memory for every run under the team, the team's own skills
+(`team-skills/{name}/` — mounted alongside the global `skills/`, shadowing same-named
+globals), and stored option defaults.
+
+Options resolve at session creation, layered — explicitly-set fields always win:
+
+```
+explicit options  ←  agent  ←  team options  ←  global settings  ←  model "sonnet"
+```
+
+`settings/global` is one Firestore doc of option defaults inherited by everything;
+the final fallback pins the model to `sonnet` so a session never records no model.
+
+```
+syros teams create dev --model claude-sonnet-5
+syros teams claude-md dev --file CLAUDE.md      # print without --file
+syros settings update --model claude-sonnet-5   # syros settings to show
+```
+
+From the SDK: `AgentOptions(team="dev")`. In the console, Teams replaces Workspaces —
+each team page bundles the file browser, its CLAUDE.md editor, team skills, and the
+team's stored options; Settings edits the global defaults. Sessions display an
+LLM-written title and summary (a haiku call when a run goes idle) instead of a bare id.
 
 ## Out of scope
 

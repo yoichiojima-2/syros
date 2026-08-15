@@ -25,10 +25,10 @@ import type {
   SpaceSummary,
   SpacesResponse,
   StoredFile,
+  TeamFilesResponse,
+  TeamsResponse,
+  TeamSummary,
   TranscriptEvent,
-  WorkspaceFilesResponse,
-  WorkspacesResponse,
-  WorkspaceSummary,
 } from "./types";
 
 /** Ticker on the server's clock (see api.ts) driving countdowns and relative times. */
@@ -197,36 +197,36 @@ export function useAgent(
   return { agent, missing, refresh: () => setNonce((n) => n + 1) };
 }
 
-export function useWorkspaces(intervalMs = 4000): WorkspaceSummary[] | null {
-  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
+export function useTeams(intervalMs = 4000): TeamSummary[] | null {
+  const [teams, setTeams] = useState<TeamSummary[] | null>(null);
   usePolling(() => {
-    api<WorkspacesResponse>("/api/workspaces")
-      .then((data) => setWorkspaces(data.workspaces))
+    api<TeamsResponse>("/api/teams")
+      .then((data) => setTeams(data.teams))
       .catch(() => {});
   }, intervalMs);
-  return workspaces;
+  return teams;
 }
 
-/** Files in one workspace. Unlike the artifact equivalent this exposes a
- *  refresh, so a save or delete shows up without waiting out the poll. */
-export function useWorkspaceFiles(
+/** Files in one team's workspace. Unlike the artifact equivalent this exposes
+ *  a refresh, so a save or delete shows up without waiting out the poll. */
+export function useTeamFiles(
   name: string | null,
   intervalMs = 8000,
 ): { files: StoredFile[] | null; refresh: () => void } {
   const [files, setFiles] = useState<StoredFile[] | null>(null);
   const [nonce, setNonce] = useState(0);
-  // reset only when the workspace changes — a refresh must not flash a skeleton
+  // reset only when the team changes — a refresh must not flash a skeleton
   useEffect(() => setFiles(null), [name]);
   useEffect(() => {
     if (!name) return;
     let cancelled = false;
     const poll = () => {
       if (document.hidden) return;
-      api<WorkspaceFilesResponse>(`/api/workspaces/${encodeURIComponent(name)}/files`)
+      api<TeamFilesResponse>(`/api/teams/${encodeURIComponent(name)}/files`)
         .then((data) => {
           if (!cancelled) setFiles(data.files);
         })
-        // an unknown workspace 404s; keep whatever we already had otherwise
+        // an unknown team 404s; keep whatever we already had otherwise
         .catch(() => {
           if (!cancelled) setFiles((prev) => prev ?? []);
         });
@@ -253,32 +253,48 @@ export function useConnectors(intervalMs = 15000): ConnectorSummary[] | null {
   return connectors;
 }
 
-export function useSkills(intervalMs = 8000): SkillSummary[] | null {
+/** Skills in one scope: global (team null) or a team's own skill set. */
+export function useSkills(team: string | null = null, intervalMs = 8000): SkillSummary[] | null {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
-  usePolling(() => {
-    api<SkillsResponse>("/api/skills")
-      .then((data) => setSkills(data.skills))
-      .catch(() => {});
-  }, intervalMs);
+  useEffect(() => setSkills(null), [team]);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return;
+      api<SkillsResponse>(`/api/skills${team ? `?team=${encodeURIComponent(team)}` : ""}`)
+        .then((data) => {
+          if (!cancelled) setSkills(data.skills);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const timer = setInterval(poll, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [team, intervalMs]);
   return skills;
 }
 
-/** Files in one skill. Like useWorkspaceFiles this exposes a refresh, so a
- *  save or delete shows up without waiting out the poll. */
+/** Files in one skill (global or team-scoped). Like useTeamFiles this exposes
+ *  a refresh, so a save or delete shows up without waiting out the poll. */
 export function useSkillFiles(
   name: string | null,
+  team: string | null = null,
   intervalMs = 8000,
 ): { files: StoredFile[] | null; refresh: () => void } {
   const [files, setFiles] = useState<StoredFile[] | null>(null);
   const [nonce, setNonce] = useState(0);
   // reset only when the skill changes — a refresh must not flash a skeleton
-  useEffect(() => setFiles(null), [name]);
+  useEffect(() => setFiles(null), [name, team]);
   useEffect(() => {
     if (!name) return;
     let cancelled = false;
     const poll = () => {
       if (document.hidden) return;
-      api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files`)
+      const query = team ? `?team=${encodeURIComponent(team)}` : "";
+      api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files${query}`)
         .then((data) => {
           if (!cancelled) setFiles(data.files);
         })
@@ -293,7 +309,7 @@ export function useSkillFiles(
       cancelled = true;
       clearInterval(timer);
     };
-  }, [name, intervalMs, nonce]);
+  }, [name, team, intervalMs, nonce]);
   return { files, refresh: () => setNonce((n) => n + 1) };
 }
 

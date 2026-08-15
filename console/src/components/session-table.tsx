@@ -86,7 +86,7 @@ export function SessionTable({
           <TableHead>Session</TableHead>
           <TableHead>State</TableHead>
           {!compact && <TableHead>Model</TableHead>}
-          {!compact && <TableHead>Workspace</TableHead>}
+          {!compact && <TableHead>Team</TableHead>}
           <TableHead className="text-right">Cost</TableHead>
           {!compact && <TableHead className="text-right">Journal</TableHead>}
           <TableHead className="text-right">Updated</TableHead>
@@ -111,8 +111,19 @@ export function SessionTable({
                 />
               </TableCell>
             )}
-            <TableCell className="font-mono text-xs" title={s.id}>
-              {shortId(s.id)}
+            <TableCell title={s.id}>
+              {s.title ? (
+                <span className="flex flex-col">
+                  <span className="text-[13px]">{s.title}</span>
+                  {!compact && (
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {shortId(s.id)}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="font-mono text-xs">{shortId(s.id)}</span>
+              )}
             </TableCell>
             <TableCell>
               <StateBadge state={s.state} />
@@ -124,7 +135,7 @@ export function SessionTable({
             )}
             {!compact && (
               <TableCell className="font-mono text-xs text-muted-foreground">
-                {s.workspace || "—"}
+                {s.team || "—"}
               </TableCell>
             )}
             <TableCell className="text-right font-mono text-xs tabular-nums">

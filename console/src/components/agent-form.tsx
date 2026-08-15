@@ -15,7 +15,7 @@ import {
   MODELS,
   TOOLS,
 } from "@/components/option-fields";
-import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
+import { useArtifactSpaces, useTeams } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { AgentSummary } from "@/lib/types";
@@ -33,7 +33,7 @@ export function AgentForm({
   onSaved: (name: string) => void;
   onCancel: () => void;
 }) {
-  const workspaces = useWorkspaces();
+  const teams = useTeams();
   const spaces = useArtifactSpaces();
   const stored = agent?.options ?? {};
   const [name, setName] = useState(agent?.name ?? "");
@@ -41,7 +41,7 @@ export function AgentForm({
   const [systemPrompt, setSystemPrompt] = useState((stored.system_prompt as string) ?? "");
   const [model, setModel] = useState((stored.model as string) ?? "");
   const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
-  const [workspace, setWorkspace] = useState((stored.workspace as string) ?? "");
+  const [team, setTeam] = useState((stored.team as string) ?? "");
   const [artifacts, setArtifacts] = useState(
     typeof stored.artifacts === "string" ? stored.artifacts : "",
   );
@@ -76,7 +76,7 @@ export function AgentForm({
     if (systemPrompt.trim()) options.system_prompt = systemPrompt;
     if (model.trim()) options.model = model.trim();
     if (permissionMode.trim()) options.permission_mode = permissionMode.trim();
-    if (workspace.trim()) options.workspace = workspace.trim();
+    if (team.trim()) options.team = team.trim();
     if (artifacts.trim()) options.artifacts = artifacts.trim();
     const allowed = [
       ...tools,
@@ -159,13 +159,13 @@ export function AgentForm({
             <Field label="Model">
               <ChoiceField value={model} onChange={setModel} choices={MODELS} noneLabel="default" />
             </Field>
-            <Field label="Workspace">
+            <Field label="Team">
               <ChoiceField
-                value={workspace}
-                onChange={setWorkspace}
-                choices={(workspaces ?? []).map((w) => w.name)}
+                value={team}
+                onChange={setTeam}
+                choices={(teams ?? []).map((t) => t.name)}
                 noneLabel="none"
-                customLabel="new workspace…"
+                customLabel="new team…"
               />
             </Field>
             <Field label="Artifact space">
