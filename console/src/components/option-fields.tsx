@@ -3,7 +3,9 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useConnectors } from "@/lib/hooks";
+import { type DefaultPrompt, defaultPrompt, isDefaultPrompt } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // The models people actually pick from; anything else goes through "custom".
@@ -180,7 +182,16 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   const storedBigquery = Boolean(
     (stored.mcp_servers as Record<string, unknown> | undefined)?.bq,
   );
-  const [systemPrompt, setSystemPrompt] = useState((stored.system_prompt as string) ?? "");
+  // The system prompt is either a hand-written persona that replaces the
+  // default prompt or text added after it, so the toggle and the text are one
+  // field split in two: with the toggle on, the text is what gets appended.
+  const storedAppend = isDefaultPrompt(stored.system_prompt);
+  const [append, setAppend] = useState(storedAppend);
+  const [systemPrompt, setSystemPrompt] = useState(
+    (storedAppend
+      ? (stored.system_prompt as DefaultPrompt).append
+      : (stored.system_prompt as string)) ?? "",
+  );
   const [model, setModel] = useState((stored.model as string) ?? "");
   const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
   const [workspace, setWorkspace] = useState(((stored.workspace ?? stored.team) as string) ?? "");
@@ -203,6 +214,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   );
   const [maxTurns, setMaxTurns] = useState(stored.max_turns == null ? "" : String(stored.max_turns));
   return {
+    append, setAppend,
     systemPrompt, setSystemPrompt,
     model, setModel,
     permissionMode, setPermissionMode,
@@ -219,22 +231,31 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
 
 export type OptionsDraft = ReturnType<typeof useOptionsDraft>;
 
-/** The serialized dict a draft submits. Only what was filled in rides the
- *  payload: an empty string is "unset", not "". */
-export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown> {
-  const options: Record<string, unknown> = {};
-  if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
-  if (draft.model.trim()) options.model = draft.model.trim();
-  if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
-  if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
-  if (draft.artifacts.trim()) options.artifacts = draft.artifacts.trim();
-  const allowed = [
+/** The tool allowlist a draft submits: the chips plus the free-text row. */
+export function allowedTools(draft: OptionsDraft): string[] {
+  return [
     ...draft.tools,
     ...draft.extraTools
       .split(",")
       .map((tool) => tool.trim())
       .filter((tool) => tool && !draft.tools.includes(tool)),
   ];
+}
+
+/** The serialized dict a draft submits. Only what was filled in rides the
+ *  payload: an empty string is "unset", not "". */
+export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown> {
+  const options: Record<string, unknown> = {};
+  // The preset rides the payload even with no text behind it: unset inherits
+  // whatever persona a workspace or the global settings stores, while the
+  // preset says "the default prompt, whatever those layers hold".
+  if (draft.append) options.system_prompt = defaultPrompt(draft.systemPrompt);
+  else if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
+  if (draft.model.trim()) options.model = draft.model.trim();
+  if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
+  if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
+  if (draft.artifacts.trim()) options.artifacts = draft.artifacts.trim();
+  const allowed = allowedTools(draft);
   if (draft.bigquery) {
     options.mcp_servers = { bq: BIGQUERY_SERVER };
     if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
@@ -244,6 +265,53 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
   if (draft.maxTurns.trim()) options.max_turns = Number(draft.maxTurns);
   return options;
+}
+
+/** The system-prompt field. Left empty the run gets the default prompt, so
+ *  what this field holds is a persona that replaces it; the `append` toggle
+ *  keeps the default prompt and adds the text after it instead. */
+export function SystemPromptField({ draft }: { draft: OptionsDraft }) {
+  const { append, setAppend, systemPrompt, setSystemPrompt } = draft;
+  return (
+    <Field
+      label="System prompt"
+      hint={
+        append ? "added after the default prompt" : "empty = the default prompt; text replaces it"
+      }
+    >
+      <div className="space-y-1.5">
+        <AppendToggle on={append} onChange={setAppend} />
+        <Textarea
+          value={systemPrompt}
+          onChange={(e) => setSystemPrompt(e.target.value)}
+          rows={3}
+          placeholder={append ? "Prefer small commits." : "You are a careful data analyst."}
+          className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
+        />
+      </div>
+    </Field>
+  );
+}
+
+/** One pill for "add to the default prompt instead of replacing it", styled
+ *  like the connector chips. */
+export function AppendToggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      title="Keep the default system prompt and add these instructions after it"
+      onClick={() => onChange(!on)}
+      className={cn(
+        "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+        on
+          ? "border-transparent bg-primary-soft text-foreground"
+          : "border-border text-muted-foreground hover:bg-secondary",
+      )}
+    >
+      append
+    </button>
+  );
 }
 
 /** Toggle-chip row over the common tools plus a free-text row for the rest —

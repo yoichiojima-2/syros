@@ -48,6 +48,13 @@ def test_run_options_validate_with_bigquery():
     options.validate()  # the flag emits exactly what validate() accepts
 
 
+def test_system_prompt_is_a_plain_replacement():
+    """No flag for the default prompt: unset is what resolves to it, and a
+    string here is the persona that replaces it."""
+    assert _run_options(args(system_prompt="Be terse.")).system_prompt == "Be terse."
+    assert _run_options(args()).system_prompt is None
+
+
 def test_connector_flag_repeatable_and_comma_separated():
     options = _run_options(args(connector=["slack", "github,google"]))
     assert options.connectors == ["slack", "github", "google"]
