@@ -18,9 +18,15 @@ import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-/** New-session form: a prompt plus the same run options a deployment carries.
- *  Starting one here is what a client's query() does — the session is ordinary,
- *  and the transcript takes over from the moment the job is triggered. */
+type Mode = "agent" | "custom";
+
+/** New-session form: a prompt plus either a stored agent or hand-picked run
+ *  options — never both. The tabs are exclusive because the backend merge
+ *  treats any explicitly-set field as a whole-value override of the agent's
+ *  (a single tool chip would silently replace the agent's entire allowlist),
+ *  so the agent tab sends the agent's stored options untouched and shows them
+ *  read-only instead. Starting a session here is what a client's query() does —
+ *  the session is ordinary, and the transcript takes over once the job runs. */
 export function SessionForm({
   onCreated,
   onCancel,
@@ -31,6 +37,7 @@ export function SessionForm({
   const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
   const { agents } = useAgents();
+  const [mode, setMode] = useState<Mode>("agent");
   const [prompt, setPrompt] = useState("");
   const [agent, setAgent] = useState("");
   const [model, setModel] = useState("");
@@ -43,33 +50,40 @@ export function SessionForm({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const selectedAgent = (agents ?? []).find((a) => a.name === agent) ?? null;
+  const ready = prompt.trim() && (mode === "custom" || agent.trim());
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy || !prompt.trim()) return;
+    if (busy || !ready) return;
     setBusy(true);
     setError("");
     // Only send what was filled in: an empty string is "unset", not "".
+    // On the agent tab the run options stay with the agent; only the budget
+    // rides along, since it's a per-run cap rather than part of the persona.
     const options: Record<string, unknown> = {};
-    if (model.trim()) options.model = model.trim();
-    if (workspace.trim()) options.workspace = workspace.trim();
-    if (artifacts.trim()) options.artifacts = artifacts.trim();
-    const allowed = [
-      ...tools,
-      ...extraTools
-        .split(",")
-        .map((tool) => tool.trim())
-        .filter((tool) => tool && !tools.includes(tool)),
-    ];
-    if (bigquery) {
-      options.mcp_servers = { bq: BIGQUERY_SERVER };
-      if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
-    }
-    if (allowed.length) options.allowed_tools = allowed;
     if (budget.trim()) options.max_budget_usd = Number(budget);
+    if (mode === "custom") {
+      if (model.trim()) options.model = model.trim();
+      if (workspace.trim()) options.workspace = workspace.trim();
+      if (artifacts.trim()) options.artifacts = artifacts.trim();
+      const allowed = [
+        ...tools,
+        ...extraTools
+          .split(",")
+          .map((tool) => tool.trim())
+          .filter((tool) => tool && !tools.includes(tool)),
+      ];
+      if (bigquery) {
+        options.mcp_servers = { bq: BIGQUERY_SERVER };
+        if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
+      }
+      if (allowed.length) options.allowed_tools = allowed;
+    }
     try {
       const { session_id } = await post<{ session_id: string }>("/api/sessions", {
         prompt: prompt.trim(),
-        agent: agent.trim() || null,
+        agent: mode === "agent" ? agent.trim() : null,
         options,
       });
       onCreated(session_id);
@@ -90,6 +104,25 @@ export function SessionForm({
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="space-y-4">
+          <div className="flex items-center gap-1 rounded-lg bg-secondary p-0.5 w-fit" role="tablist">
+            {(["agent", "custom"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={mode === tab}
+                onClick={() => setMode(tab)}
+                className={cn(
+                  "rounded-md px-3 py-1 text-[12px] font-medium transition-colors",
+                  mode === tab
+                    ? "bg-card text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {tab === "agent" ? "Agent" : "Custom"}
+              </button>
+            ))}
+          </div>
           <Field label="Prompt">
             <Textarea
               value={prompt}
@@ -107,88 +140,107 @@ export function SessionForm({
               className="rounded-lg border border-input bg-card px-3 py-2 text-[13px] leading-relaxed"
             />
           </Field>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <Field label="Agent" hint="stored defaults">
-              <ChoiceField
-                value={agent}
-                onChange={setAgent}
-                choices={(agents ?? []).map((a) => a.name)}
-                noneLabel="none"
-              />
-            </Field>
-            <Field label="Model">
-              <ChoiceField
-                value={model}
-                onChange={setModel}
-                choices={MODELS}
-                noneLabel="default"
-              />
-            </Field>
-            <Field label="Workspace">
-              <ChoiceField
-                value={workspace}
-                onChange={setWorkspace}
-                choices={(workspaces ?? []).map((w) => w.name)}
-                noneLabel="none"
-                customLabel="new workspace…"
-              />
-            </Field>
-            <Field label="Artifact space">
-              <ChoiceField
-                value={artifacts}
-                onChange={setArtifacts}
-                choices={(spaces ?? []).map((s) => s.name)}
-                noneLabel="none"
-                customLabel="new space…"
-              />
-            </Field>
-            <Field label="Budget (USD)">
-              <Input
-                value={budget}
-                onChange={(e) => setBudget(e.target.value)}
-                inputMode="decimal"
-                placeholder="none"
-                className="font-mono"
-              />
-            </Field>
-          </div>
-          <Field label="Allowed tools" hint="click to toggle">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {TOOLS.map((tool) => {
-                const on = tools.includes(tool);
-                return (
-                  <button
-                    key={tool}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() =>
-                      setTools(on ? tools.filter((t) => t !== tool) : [...tools, tool])
-                    }
-                    className={cn(
-                      "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
-                      on
-                        ? "border-transparent bg-primary-soft text-foreground"
-                        : "border-border text-muted-foreground hover:bg-secondary",
-                    )}
-                  >
-                    {tool}
-                  </button>
-                );
-              })}
-              <Input
-                value={extraTools}
-                onChange={(e) => setExtraTools(e.target.value)}
-                placeholder="more, comma separated"
-                className="h-7 w-52 font-mono text-[11px]"
-              />
-            </div>
-          </Field>
-          <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
-            <BigQueryToggle on={bigquery} onChange={setBigquery} />
-          </Field>
+          {mode === "agent" ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                <Field label="Agent" hint="runs with its stored options">
+                  <ChoiceField
+                    value={agent}
+                    onChange={setAgent}
+                    choices={(agents ?? []).map((a) => a.name)}
+                    noneLabel="pick one…"
+                  />
+                </Field>
+                <Field label="Budget (USD)" hint="per-run cap">
+                  <Input
+                    value={budget}
+                    onChange={(e) => setBudget(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="none"
+                    className="font-mono"
+                  />
+                </Field>
+              </div>
+              {selectedAgent && <AgentOptionsSummary options={selectedAgent.options} />}
+            </>
+          ) : (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <Field label="Model">
+                  <ChoiceField
+                    value={model}
+                    onChange={setModel}
+                    choices={MODELS}
+                    noneLabel="default"
+                  />
+                </Field>
+                <Field label="Workspace">
+                  <ChoiceField
+                    value={workspace}
+                    onChange={setWorkspace}
+                    choices={(workspaces ?? []).map((w) => w.name)}
+                    noneLabel="none"
+                    customLabel="new workspace…"
+                  />
+                </Field>
+                <Field label="Artifact space">
+                  <ChoiceField
+                    value={artifacts}
+                    onChange={setArtifacts}
+                    choices={(spaces ?? []).map((s) => s.name)}
+                    noneLabel="none"
+                    customLabel="new space…"
+                  />
+                </Field>
+                <Field label="Budget (USD)">
+                  <Input
+                    value={budget}
+                    onChange={(e) => setBudget(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="none"
+                    className="font-mono"
+                  />
+                </Field>
+              </div>
+              <Field label="Allowed tools" hint="click to toggle">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {TOOLS.map((tool) => {
+                    const on = tools.includes(tool);
+                    return (
+                      <button
+                        key={tool}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() =>
+                          setTools(on ? tools.filter((t) => t !== tool) : [...tools, tool])
+                        }
+                        className={cn(
+                          "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+                          on
+                            ? "border-transparent bg-primary-soft text-foreground"
+                            : "border-border text-muted-foreground hover:bg-secondary",
+                        )}
+                      >
+                        {tool}
+                      </button>
+                    );
+                  })}
+                  <Input
+                    value={extraTools}
+                    onChange={(e) => setExtraTools(e.target.value)}
+                    placeholder="more, comma separated"
+                    className="h-7 w-52 font-mono text-[11px]"
+                  />
+                </div>
+              </Field>
+              <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
+                <BigQueryToggle on={bigquery} onChange={setBigquery} />
+              </Field>
+            </>
+          )}
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
-            <Button type="submit" size="sm" disabled={busy || !prompt.trim()}>
+            <Button type="submit" size="sm" disabled={busy || !ready}>
               {busy ? "Starting…" : "Start session"}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
@@ -201,5 +253,59 @@ export function SessionForm({
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+/** Read-only view of the agent's stored options — what the run will actually
+ *  get. Editing them belongs on the agent page, not here. */
+function AgentOptionsSummary({ options }: { options: Record<string, unknown> }) {
+  const str = (key: string) => {
+    const value = options[key];
+    return typeof value === "string" && value ? value : null;
+  };
+  const list = (key: string) => {
+    const value = options[key];
+    return Array.isArray(value) && value.length ? (value as string[]) : null;
+  };
+  const systemPrompt = str("system_prompt");
+  const rows: [string, string][] = [];
+  const push = (label: string, value: string | null) => {
+    if (value) rows.push([label, value]);
+  };
+  push("model", str("model"));
+  push("permission mode", str("permission_mode"));
+  push("workspace", str("workspace"));
+  push("artifacts", str("artifacts"));
+  push("allowed tools", list("allowed_tools")?.join(", ") ?? null);
+  push("disallowed tools", list("disallowed_tools")?.join(", ") ?? null);
+  push("connectors", list("connectors")?.join(", ") ?? null);
+  const servers = options.mcp_servers;
+  if (servers && typeof servers === "object" && Object.keys(servers).length)
+    push("mcp servers", Object.keys(servers).join(", "));
+  if (typeof options.max_turns === "number") push("max turns", String(options.max_turns));
+  if (typeof options.max_budget_usd === "number")
+    push("budget (USD)", String(options.max_budget_usd));
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-secondary/40 p-3">
+      {systemPrompt && (
+        <p className="line-clamp-3 text-[12px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
+          {systemPrompt}
+        </p>
+      )}
+      {rows.length > 0 && (
+        <dl className="grid gap-x-4 gap-y-1 text-[11px] sm:grid-cols-[auto_1fr]">
+          {rows.map(([label, value]) => (
+            <div key={label} className="contents">
+              <dt className="tracking-[0.08em] text-faint uppercase">{label}</dt>
+              <dd className="font-mono text-muted-foreground break-words">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {!systemPrompt && rows.length === 0 && (
+        <p className="text-[12px] text-faint">This agent stores no options — runs use defaults.</p>
+      )}
+    </div>
   );
 }
