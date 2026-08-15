@@ -40,16 +40,64 @@ function browserZone(): string {
 
 /** The stored tasks of a workflow being edited, as editor drafts. Stored
  *  depends_on is always explicit (normalize_tasks resolves the linear default
- *  at write time), so it round-trips verbatim. */
+ *  at write time), and the editor holds dependencies by draft key, so the ids
+ *  are mapped over on the way in and back out at submit. */
 function draftsFrom(workflow: WorkflowSummary): TaskDraft[] {
+  const keyOf = new Map(workflow.tasks.map((task, i) => [task.id, `stored-${i}`]));
   return workflow.tasks.map((task, i) => ({
-    key: `stored-${i}-${task.id}`,
+    key: `stored-${i}`,
     id: task.id,
     prompt: task.prompt,
     agent: task.agent ?? "",
-    dependsOn: task.depends_on ?? [],
+    dependsOn: (task.depends_on ?? []).map((id) => keyOf.get(id) ?? id),
     options: task.options,
   }));
+}
+
+/** Option keys `useOptionsDraft` reads and `buildOptionsPayload` writes. An
+ *  edit full-replaces the stored dict, so anything outside this set — tools,
+ *  disallowed_tools, MCP servers other than the BigQuery toggle's — has to be
+ *  carried across or the console would quietly drop options only the CLI can
+ *  set. */
+const DRAFT_FIELDS = new Set([
+  "system_prompt",
+  "model",
+  "permission_mode",
+  "workspace",
+  "team",
+  "artifacts",
+  "allowed_tools",
+  "connectors",
+  "max_budget_usd",
+  "max_turns",
+]);
+
+function optionsPayload(
+  draft: Parameters<typeof buildOptionsPayload>[0],
+  stored: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const payload = buildOptionsPayload(draft);
+  if (!stored) return payload;
+  const carried = Object.fromEntries(
+    Object.entries(stored).filter(
+      ([key, value]) =>
+        !DRAFT_FIELDS.has(key) &&
+        key !== "mcp_servers" &&
+        value !== null &&
+        !(Array.isArray(value) && value.length === 0),
+    ),
+  );
+  // mcp_servers is half-modelled: the BigQuery pill owns the `bq` entry and
+  // knows nothing about the rest.
+  const servers = (stored.mcp_servers ?? {}) as Record<string, unknown>;
+  const others = Object.fromEntries(Object.entries(servers).filter(([key]) => key !== "bq"));
+  const bq = (payload.mcp_servers as Record<string, unknown> | undefined)?.bq;
+  const merged = { ...others, ...(bq ? { bq } : {}) };
+  return {
+    ...carried,
+    ...payload,
+    ...(Object.keys(merged).length ? { mcp_servers: merged } : {}),
+  };
 }
 
 /** Workflow definition form, for a new workflow or (with `initial`) an edit of
@@ -87,20 +135,24 @@ export function WorkflowForm({
     setBusy(true);
     setError("");
     try {
+      // Dependencies are held by draft key while editing; the wire wants ids.
+      const idOf = new Map(tasks.map((task) => [task.key, task.id.trim()]));
       const payload = tasks.map((task) => ({
         id: task.id.trim(),
         prompt: task.prompt,
         agent: task.agent.trim() || null,
         // An untouched dependency control stays off the payload so the server
         // applies its linear default.
-        ...(task.dependsOn !== null ? { depends_on: task.dependsOn } : {}),
+        ...(task.dependsOn !== null
+          ? { depends_on: task.dependsOn.map((key) => idOf.get(key) ?? key) }
+          : {}),
         ...(task.options ? { options: task.options } : {}),
       }));
       const body = {
         cron: cron.trim() || null,
         timezone: timezone.trim(),
         tasks: payload,
-        options: buildOptionsPayload(draft),
+        options: optionsPayload(draft, initial?.options),
       };
       await post(
         editing ? `/api/workflows/${encodeURIComponent(name)}/update` : "/api/workflows",

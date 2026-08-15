@@ -11,8 +11,11 @@ import { cn } from "@/lib/utils";
  *  dependency control, so the key is left off the payload and the server applies
  *  its linear default (the previous task in the list) — that way inserting or
  *  removing a task re-chains the neighbours without the form re-deriving
- *  anything. `options` is carried opaquely: per-task options are settable from
- *  the CLI, and editing a workflow here must not strip them. */
+ *  anything. Dependencies name the *editor keys* of other drafts, not their
+ *  ids, so renaming a task (including through an empty box mid-edit) can't
+ *  strand a dangling reference; ids are resolved at submit. `options` is
+ *  carried opaquely: per-task options are settable from the CLI, and editing a
+ *  workflow here must not strip them. */
 export type TaskDraft = {
   key: string;
   id: string;
@@ -38,11 +41,12 @@ function nextId(tasks: TaskDraft[]): string {
   }
 }
 
-/** The dependencies a task effectively has: an untouched draft chains to the
- *  task above it, which is what the server will do with the omitted key. */
+/** The dependencies a task effectively has, as editor keys: an untouched draft
+ *  chains to the task above it, which is what the server will do with the
+ *  omitted key. */
 function effectiveDeps(task: TaskDraft, index: number, tasks: TaskDraft[]): string[] {
   if (task.dependsOn !== null) return task.dependsOn;
-  return index === 0 ? [] : [tasks[index - 1].id];
+  return index === 0 ? [] : [tasks[index - 1].key];
 }
 
 /** Databricks-Jobs-style task list: a card per task, "+ Add task" to grow the
@@ -60,22 +64,11 @@ export function TaskListEditor({
   const patch = (index: number, fields: Partial<TaskDraft>) =>
     onChange(tasks.map((task, i) => (i === index ? { ...task, ...fields } : task)));
 
-  // A rename follows through into everyone who named this task explicitly.
-  const rename = (index: number, id: string) => {
-    const previous = tasks[index].id;
-    onChange(
-      tasks.map((task, i) => {
-        if (i === index) return { ...task, id };
-        if (!previous || task.dependsOn === null) return task;
-        return { ...task, dependsOn: task.dependsOn.map((d) => (d === previous ? id : d)) };
-      }),
-    );
-  };
-
-  // Removal drops the id from explicit dependency lists; untouched tasks
-  // re-chain to their new neighbour on their own.
+  // Removal drops the task from explicit dependency lists; untouched tasks
+  // re-chain to their new neighbour on their own. Renames need no such
+  // bookkeeping — dependencies are held by editor key.
   const remove = (index: number) => {
-    const gone = tasks[index].id;
+    const gone = tasks[index].key;
     onChange(
       tasks
         .filter((_, i) => i !== index)
@@ -93,20 +86,29 @@ export function TaskListEditor({
 
   return (
     <div className="space-y-3">
-      {tasks.map((task, index) => (
-        <TaskCard
-          key={task.key}
-          task={task}
-          index={index}
-          earlier={tasks.slice(0, index)}
-          deps={effectiveDeps(task, index, tasks)}
-          explicit={task.dependsOn !== null}
-          agents={agents}
-          onPatch={(fields) => patch(index, fields)}
-          onRename={(id) => rename(index, id)}
-          onRemove={tasks.length > 1 ? () => remove(index) : undefined}
-        />
-      ))}
+      {tasks.map((task, index) => {
+        const deps = effectiveDeps(task, index, tasks);
+        // The tasks above, plus anything else this one already depends on —
+        // a definition authored elsewhere may name a task listed later, and
+        // an invisible dependency is worse than an out-of-order chip.
+        const choices = [
+          ...tasks.slice(0, index),
+          ...tasks.slice(index + 1).filter((other) => deps.includes(other.key)),
+        ];
+        return (
+          <TaskCard
+            key={task.key}
+            task={task}
+            index={index}
+            choices={choices}
+            deps={deps}
+            explicit={task.dependsOn !== null}
+            agents={agents}
+            onPatch={(fields) => patch(index, fields)}
+            onRemove={tasks.length > 1 ? () => remove(index) : undefined}
+          />
+        );
+      })}
       <div className="flex items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={() => onChange([...tasks, emptyTask(nextId(tasks))])}>
           <Plus />
@@ -126,29 +128,27 @@ export function TaskListEditor({
 function TaskCard({
   task,
   index,
-  earlier,
+  choices,
   deps,
   explicit,
   agents,
   onPatch,
-  onRename,
   onRemove,
 }: {
   task: TaskDraft;
   index: number;
-  earlier: TaskDraft[];
+  choices: TaskDraft[];
   deps: string[];
   explicit: boolean;
   agents: string[];
   onPatch: (fields: Partial<TaskDraft>) => void;
-  onRename: (id: string) => void;
   onRemove?: () => void;
 }) {
   // The first click materializes the default before toggling, so "the previous
   // task" stays selected unless the user actually turns it off.
-  const toggleDep = (id: string) =>
+  const toggleDep = (key: string) =>
     onPatch({
-      dependsOn: deps.includes(id) ? deps.filter((d) => d !== id) : [...deps, id],
+      dependsOn: deps.includes(key) ? deps.filter((d) => d !== key) : [...deps, key],
     });
 
   return (
@@ -157,7 +157,7 @@ function TaskCard({
         <span className="font-mono text-[11px] text-faint tabular-nums">{index + 1}</span>
         <Input
           value={task.id}
-          onChange={(e) => onRename(e.target.value)}
+          onChange={(e) => onPatch({ id: e.target.value })}
           placeholder="task id"
           required
           aria-label="Task id"
@@ -200,24 +200,31 @@ function TaskCard({
               noneLabel="none"
             />
           </Field>
-          <Field
-            label="Runs after"
-            hint={index === 0 ? "first task" : "default: the task above"}
-          >
-            {index === 0 ? (
+          {/* A heading, not Field: Field is a <label>, and a label wrapping
+              buttons forwards its own clicks into the first chip. */}
+          <div className="space-y-1.5">
+            <span className="flex items-baseline gap-1.5">
+              <span className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+                Runs after
+              </span>
+              <span className="text-[10px] text-faint">
+                {index === 0 ? "first in the list" : "default: the task above"}
+              </span>
+            </span>
+            {choices.length === 0 ? (
               <p className="pt-1 text-[12px] text-muted-foreground">
                 runs first, when the workflow fires
               </p>
             ) : (
               <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                {earlier.map((other) => {
-                  const on = deps.includes(other.id);
+                {choices.map((other) => {
+                  const on = deps.includes(other.key);
                   return (
                     <button
                       key={other.key}
                       type="button"
                       aria-pressed={on}
-                      onClick={() => toggleDep(other.id)}
+                      onClick={() => toggleDep(other.key)}
                       className={cn(
                         "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
                         on
@@ -234,7 +241,7 @@ function TaskCard({
                 )}
               </div>
             )}
-          </Field>
+          </div>
         </div>
       </div>
     </div>
