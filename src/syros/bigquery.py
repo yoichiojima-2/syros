@@ -25,7 +25,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from .analytics import SCHEMAS
+from .analytics import RUN_LOG_SCHEMA, RUN_LOG_TABLE, SCHEMAS
 from .env import BigQueryEnv
 
 SERVER_VERSION = "1.0.0"
@@ -51,14 +51,15 @@ def _reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"[:ERROR_CHARS]
 
 
+def _columns(fields: list[tuple[str, str, str]]) -> str:
+    return ", ".join(f"{column} {type_}" for column, type_, _ in fields)
+
+
 def describe(config: BigQueryEnv) -> str:
     """Tool description, with the audit tables read straight out of
     analytics.SCHEMAS — the export's column list is the only copy, so a column
     added to the snapshot documents itself here for free."""
-    tables = "\n".join(
-        f"  {name}({', '.join(f'{column} {type_}' for column, type_, _ in fields)})"
-        for name, fields in SCHEMAS.items()
-    )
+    tables = "\n".join(f"  {name}({_columns(fields)})" for name, fields in SCHEMAS.items())
     return (
         f"Run one read-only BigQuery SELECT in project {config.project} and get the"
         " rows back as JSON.\n\n"
@@ -72,7 +73,14 @@ def describe(config: BigQueryEnv) -> str:
         "They are a snapshot written by `syros export`, not a live feed — check"
         f" MAX(updated_at) FROM `{config.project}.{config.dataset}.sessions` before"
         " concluding anything about the last few hours. JSON columns (options,"
-        " message, input) are queried with JSON_VALUE/JSON_QUERY.\n"
+        " message, input) are queried with JSON_VALUE/JSON_QUERY.\n\n"
+        f"  {RUN_LOG_TABLE}({_columns(RUN_LOG_SCHEMA)})\n"
+        "is the exception: append-only, written live by every run as it ends, and"
+        " it keeps rows for sessions since deleted from the control plane. Prefer"
+        " it for cost and audit questions — the snapshot above only ever shows"
+        " sessions that still exist. Sum run_cost_usd (this run alone); cost_usd"
+        " is the session's running total and double-counts if summed. It is"
+        " partitioned on released_at, so filter on it to keep the scan small.\n"
         "Any other dataset in the project is queryable too if the identity can"
         " read it; INFORMATION_SCHEMA.SCHEMATA lists them."
     )

@@ -163,6 +163,7 @@ RUN_LOG_TABLE = "run_log"
 RUN_LOG_FIELDS: list[Field] = [
     ("session_id", "STRING", "REQUIRED", lambda r: r["session_id"]),
     ("released_at", "TIMESTAMP", "NULLABLE", _ts("released_at")),
+    ("branch", "STRING", "NULLABLE", _get("branch")),
     ("stop_reason", "STRING", "NULLABLE", _get("stop_reason")),
     # Cost of this run alone, and the session's cumulative total after it.
     ("run_cost_usd", "FLOAT64", "NULLABLE", _get("run_cost_usd")),
@@ -222,6 +223,7 @@ def run_log_row(
     session_id: str,
     session: dict[str, Any],
     *,
+    branch: str,
     stop_reason: str,
     run_cost_usd: float,
     cost_usd: float,
@@ -236,6 +238,7 @@ def run_log_row(
         {
             **session,
             "session_id": session_id,
+            "branch": branch,
             "stop_reason": stop_reason,
             "run_cost_usd": run_cost_usd,
             "cost_usd": cost_usd,
@@ -245,19 +248,36 @@ def run_log_row(
     )
 
 
-def append_run_log(project: str, row: dict[str, Any], *, dataset: str = "syros") -> None:
+def run_log_insert_id(row: dict[str, Any]) -> str:
+    """BigQuery's best-effort dedupe key. Branch belongs in it: seq numbering
+    is per-branch (a rewind branch resumes from its base_seq), so
+    session+seq_head alone would collide across branches and BigQuery would
+    silently drop the second run's row."""
+    return f"{row['session_id']}:{row.get('branch') or MAIN_BRANCH}:{row['seq_head']}"
+
+
+def append_run_log(
+    project: str, row: dict[str, Any], *, dataset: str = "syros", timeout: float = 30.0
+) -> None:
     """Stream one audit row into run_log. A streaming insert, not a load job:
-    it needs only table-level dataEditor (no jobUser), and the row id makes a
-    runner retry after a mid-release crash a dedupe hint instead of a
-    duplicate. Callers treat failure as non-fatal — a BigQuery outage must
-    never fail a run that already finished its work."""
+    it needs only tables.updateData on the one table (no jobUser, no read),
+    and the insert id makes a runner retry after a mid-release crash a dedupe
+    hint instead of a duplicate.
+
+    Bounded on purpose. The default retry policy would keep trying for ten
+    minutes, and this runs at the tail of a leased job that bills for every
+    second it stays up; the caller treats failure as non-fatal, so losing one
+    row to a BigQuery outage beats holding the sandbox open through it.
+    """
     from google.cloud import bigquery
 
     client = bigquery.Client(project=project)
     errors = client.insert_rows_json(
         f"{project}.{dataset}.{RUN_LOG_TABLE}",
         [row],
-        row_ids=[f"{row['session_id']}:{row['seq_head']}"],
+        row_ids=[run_log_insert_id(row)],
+        timeout=timeout,
+        retry=bigquery.DEFAULT_RETRY.with_timeout(timeout),
     )
     if errors:
         raise RuntimeError(f"run_log insert failed: {errors}")

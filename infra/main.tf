@@ -167,16 +167,30 @@ resource "google_bigquery_dataset" "analytics" {
 # release. Unlike the snapshot tables (which `syros export` truncates and
 # rewrites), rows here outlive session deletion in Firestore — that is the
 # point. Schema mirrors RUN_LOG_FIELDS in src/syros/analytics.py; extend both
-# together. deletion_protection stays on: an audit log should not vanish on a
-# terraform destroy.
+# together.
+#
+# deletion_protection blocks `terraform destroy` on purpose — an audit log
+# should not evaporate with the rest of the deployment. Note the dataset above
+# sets delete_contents_on_destroy for the disposable snapshots: an operator who
+# clears this flag to unblock a destroy loses these rows too, so export them
+# first if they still matter.
+#
+# Day-partitioned on released_at: audit queries are nearly always time-ranged
+# ("what did last month cost"), and the partition filter keeps the agent-facing
+# bigquery tool under its scan cap as the log grows without bound.
 resource "google_bigquery_table" "run_log" {
   dataset_id          = google_bigquery_dataset.analytics.dataset_id
   table_id            = "run_log"
   description         = "Append-only per-run audit log, streamed by the sandbox runner at release"
   deletion_protection = true
+  time_partitioning {
+    type  = "DAY"
+    field = "released_at"
+  }
   schema = jsonencode([
     { name = "session_id", type = "STRING", mode = "REQUIRED" },
     { name = "released_at", type = "TIMESTAMP", mode = "NULLABLE" },
+    { name = "branch", type = "STRING", mode = "NULLABLE" },
     { name = "stop_reason", type = "STRING", mode = "NULLABLE" },
     { name = "run_cost_usd", type = "FLOAT64", mode = "NULLABLE" },
     { name = "cost_usd", type = "FLOAT64", mode = "NULLABLE" },
@@ -261,14 +275,28 @@ resource "google_cloud_run_v2_job_iam_member" "runner_runs_job" {
   member   = "serviceAccount:${google_service_account.runner.email}"
 }
 
+# Append-only by IAM, not by convention. The sandbox agent runs as this same
+# service account with an arbitrary shell, so anything the runner can do to the
+# audit log, a prompt-injected agent can do too: roles/bigquery.dataEditor would
+# hand it tables.delete (and terraform's deletion_protection is state-side only,
+# not API-enforced). Streaming an insert needs exactly tables.updateData —
+# no read, no delete, no schema rewrite, and no jobUser anywhere.
+resource "google_project_iam_custom_role" "run_log_writer" {
+  role_id     = "syrosRunLogWriter"
+  title       = "syros run log writer"
+  description = "Stream rows into the run_log audit table; no read, no delete"
+  # tables.get is metadata only (schema/size, never row data) and keeps client
+  # calls that resolve the table before inserting from failing.
+  permissions = ["bigquery.tables.get", "bigquery.tables.updateData"]
+}
+
 # Audit logging, not an agent capability: unconditional (unlike the
 # sandbox_bigquery grants below) and scoped to the one run_log table, so the
-# runner can stream its release rows but still can't read or rewrite any
-# snapshot table. Streaming inserts need no jobUser role.
+# runner can append its release rows and touch nothing else in the dataset.
 resource "google_bigquery_table_iam_member" "runner_run_log" {
   dataset_id = google_bigquery_dataset.analytics.dataset_id
   table_id   = google_bigquery_table.run_log.table_id
-  role       = "roles/bigquery.dataEditor"
+  role       = google_project_iam_custom_role.run_log_writer.id
   member     = "serviceAccount:${google_service_account.runner.email}"
 }
 

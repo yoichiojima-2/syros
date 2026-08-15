@@ -85,6 +85,46 @@ async def _advance_workflow(store: Store, config: env.RunnerEnv, session_id: str
         print(f"workflow advance failed for {session_id}: {error}", file=sys.stderr)
 
 
+async def _append_run_log(
+    config: env.RunnerEnv,
+    session_id: str,
+    session: dict[str, Any],
+    *,
+    branch: str,
+    stop_reason: str,
+    run_cost_usd: float,
+    cost_usd: float,
+    seq_head: int,
+) -> None:
+    """Record this run in the append-only BigQuery audit trail.
+
+    Called on every path that releases the session, including the zero-cost
+    fail-fast ones: "this run was blocked on a busy workspace" is exactly the
+    kind of thing an audit asks about later, and Firestore won't remember it
+    once the session is deleted.
+
+    Never fatal, and deliberately last: the session has already released and
+    any workflow already advanced, so a BigQuery outage costs one audit row
+    and nothing else.
+    """
+    try:
+        row = analytics.run_log_row(
+            session_id,
+            session,
+            branch=branch,
+            stop_reason=stop_reason,
+            run_cost_usd=run_cost_usd,
+            cost_usd=cost_usd,
+            seq_head=seq_head,
+            released_at=time.time(),
+        )
+        await asyncio.to_thread(
+            analytics.append_run_log, config.project, row, dataset=env.dataset()
+        )
+    except Exception as error:
+        print(f"run log append failed for {session_id}: {error}", file=sys.stderr)
+
+
 async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -> list[str]:
     """Poll the inbox for up to stay_alive seconds of idleness.
 
@@ -252,6 +292,16 @@ async def run(session_id: str) -> None:
                 tip_uuid=writer.tip_uuid,
             )
             await _advance_workflow(store, config, session_id)
+            await _append_run_log(
+                config,
+                session_id,
+                session,
+                branch=branch,
+                stop_reason="workspace_busy",
+                run_cost_usd=0.0,
+                cost_usd=float(session.get("cost_usd") or 0.0),
+                seq_head=writer.seq,
+            )
             return
         if options.workspace:
             leased_workspace["name"] = options.workspace  # heartbeat renews it from here on
@@ -290,6 +340,16 @@ async def run(session_id: str) -> None:
                     tip_uuid=writer.tip_uuid,
                 )
                 await _advance_workflow(store, config, session_id)
+                await _append_run_log(
+                    config,
+                    session_id,
+                    session,
+                    branch=branch,
+                    stop_reason="connector_error",
+                    run_cost_usd=0.0,
+                    cost_usd=float(session.get("cost_usd") or 0.0),
+                    seq_head=writer.seq,
+                )
                 return
             options.mcp_servers = {**servers, **options.mcp_servers}
 
@@ -493,25 +553,17 @@ async def run(session_id: str) -> None:
             # title/summary — never nested under runtime.
             **({"result": result_text[: workflows.RESULT_LIMIT]} if result_text else {}),
         )
-        # Audit trail: stream this run's row into BigQuery. Append-only and
-        # independent of Firestore, so cost analysis survives session deletion.
-        # Never fatal — the session already released.
-        try:
-            row = analytics.run_log_row(
-                session_id,
-                session,
-                stop_reason=stop_reason,
-                run_cost_usd=cost - starting_cost,
-                cost_usd=cost,
-                seq_head=writer.seq,
-                released_at=time.time(),
-            )
-            await asyncio.to_thread(
-                analytics.append_run_log, config.project, row, dataset=env.dataset()
-            )
-        except Exception as error:
-            print(f"run log append failed for {session_id}: {error}", file=sys.stderr)
         await _advance_workflow(store, config, session_id)
+        await _append_run_log(
+            config,
+            session_id,
+            session,
+            branch=branch,
+            stop_reason=stop_reason,
+            run_cost_usd=cost - starting_cost,
+            cost_usd=cost,
+            seq_head=writer.seq,
+        )
     finally:
         beat.cancel()
 
