@@ -66,6 +66,6 @@ syros コードベース(v0.2.0)と照合した結果と、改訂版での修正
 
 ## 成果物
 
-- `docs/design/personas.html` — 改訂版ペルソナ(日本語)
-- `docs/design/feature-recommendations.html` — 修正版ギャップ分析(日本語)
+- `docs/design/personas.md` — 改訂版ペルソナ(日本語)
+- `docs/design/feature-recommendations.md` — 修正版ギャップ分析(日本語)
 - 本ファイル — 修正根拠の記録
