@@ -272,6 +272,31 @@ export interface WorkspaceFilesResponse {
   files: StoredFile[];
 }
 
+/** A serialized AgentOptions `system_prompt` asking for the harness's own
+ *  default system prompt instead of a hand-written persona — mirrors
+ *  default_prompt() in src/syros/options.py, the only preset the server
+ *  accepts ("claude_code" is claude_agent_sdk's name for it on the wire). A
+ *  plain string replaces the prompt; this keeps it and adds `append` after it. */
+export interface DefaultPrompt {
+  type: "preset";
+  preset: "claude_code";
+  append?: string;
+}
+
+export function defaultPrompt(append?: string): DefaultPrompt {
+  const prompt: DefaultPrompt = { type: "preset", preset: "claude_code" };
+  if (append?.trim()) prompt.append = append;
+  return prompt;
+}
+
+export function isDefaultPrompt(value: unknown): value is DefaultPrompt {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as DefaultPrompt).preset === "claude_code"
+  );
+}
+
 /** Global option defaults (serialized AgentOptions) every workspace and session inherits. */
 export interface SettingsResponse {
   now: number;
@@ -313,6 +338,10 @@ export interface ConnectorsResponse {
 
 export interface SkillSummary {
   name: string;
+  /** null = global scope, mounted into every session. */
+  workspace: string | null;
+  /** SKILL.md frontmatter description — absent when the skill omits one. */
+  description?: string;
   file_count: number;
   total_size: number;
   updated: number | null;
@@ -337,6 +366,35 @@ export interface SyncSkillsResponse {
   skills: string[];
   files: number;
   skipped: { skill: string; file: string; size: number }[];
+}
+
+/** One row of GET /api/presets — an example object the install can create.
+ * `name` addresses the preset; `object` is what it creates, which differs only
+ * where two presets create same-named objects in different scopes. */
+export interface PresetRow {
+  name: string;
+  kind: "workspace" | "skill" | "agent" | "workflow";
+  object: string;
+  workspace: string | null;
+  description: string;
+  requires: string[];
+  installed: boolean;
+}
+
+export interface PresetsResponse {
+  now: number;
+  presets: PresetRow[];
+}
+
+/** Reply shape of POST /api/presets/install. `files` counts what was written,
+ * `kept` what was already there and left alone. */
+export interface InstallPresetsResponse {
+  now: number;
+  ok: boolean;
+  installed: (Omit<PresetRow, "installed"> & { replaced: boolean; files: number })[];
+  skipped: (Omit<PresetRow, "installed"> & { reason: string; files: number })[];
+  files: number;
+  kept: number;
 }
 
 export interface SpaceSummary {

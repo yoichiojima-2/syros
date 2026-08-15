@@ -3,7 +3,7 @@
 An agent is one Firestore document holding the same serialized `AgentOptions`
 subset a session stores: system prompt, model, tools, permission mode,
 workspace, artifact spaces, budgets. Referencing it (`AgentOptions(agent=...)`
-or a deployment's `agent` field) resolves the stored options as defaults, with
+or a workflow task's `agent` field) resolves the stored options as defaults, with
 any explicitly-set option on the caller's side overriding them. Resolution
 happens when a session is created and the merged result is snapshotted onto
 the session, so editing an agent changes future runs only — mirroring Claude
@@ -23,7 +23,13 @@ from typing import Any
 
 from .errors import SyrosError
 from .names import validate_name
-from .options import _SERIALIZED_FIELDS, DEFAULT_MODEL, AgentOptions, options_from_doc
+from .options import (
+    _SERIALIZED_FIELDS,
+    DEFAULT_MODEL,
+    AgentOptions,
+    default_prompt,
+    options_from_doc,
+)
 from .store import Store, StoreProtocol
 
 
@@ -151,7 +157,10 @@ async def resolve(store: StoreProtocol, options: AgentOptions) -> AgentOptions:
     options may name an agent or workspace — a stored layer naming one is
     ignored (merge never overrides a set field, and nesting would recurse).
     The model lands on "sonnet" when no layer names one, so a session never
-    records no model. A named workspace without a stored doc contributes no
+    records no model, and the system prompt lands on the harness's own the same
+    way: a persona is what you get for naming an agent or writing one, not the
+    price of not naming one. (An explicit "" is how you ask for no system
+    prompt at all.) A named workspace without a stored doc contributes no
     defaults; the shared directory and lease work by name alone."""
     merged = options
     if options.agent:
@@ -164,4 +173,8 @@ async def resolve(store: StoreProtocol, options: AgentOptions) -> AgentOptions:
     settings = await store.get_settings()
     if settings:
         merged = merge(options_from_doc(dict(settings.get("options") or {})), merged)
-    return replace(merged, model=merged.model or DEFAULT_MODEL)
+    return replace(
+        merged,
+        model=merged.model or DEFAULT_MODEL,
+        system_prompt=(default_prompt() if merged.system_prompt is None else merged.system_prompt),
+    )

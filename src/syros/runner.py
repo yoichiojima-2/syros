@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -21,10 +22,16 @@ from claude_agent_sdk import ClaudeSDKClient
 from . import env
 from .gate import Gate
 from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, git_info
-from .options import AgentOptions, build_sdk_options, model_env, options_from_doc
+from .options import (
+    AgentOptions,
+    append_system_prompt,
+    build_sdk_options,
+    model_env,
+    options_from_doc,
+)
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import artifacts, bigquery, connectors, layout, titles, workflows, workspace
+from . import analytics, artifacts, bigquery, connectors, layout, titles, workflows, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -82,6 +89,46 @@ async def _advance_workflow(store: Store, config: env.RunnerEnv, session_id: str
         await workflows.advance(store, AgentOptions(project=config.project), session)
     except Exception as error:
         print(f"workflow advance failed for {session_id}: {error}", file=sys.stderr)
+
+
+async def _append_run_log(
+    config: env.RunnerEnv,
+    session_id: str,
+    session: dict[str, Any],
+    *,
+    branch: str,
+    stop_reason: str,
+    run_cost_usd: float,
+    cost_usd: float,
+    seq_head: int,
+) -> None:
+    """Record this run in the append-only BigQuery audit trail.
+
+    Called on every path that releases the session, including the zero-cost
+    fail-fast ones: "this run was blocked on a busy workspace" is exactly the
+    kind of thing an audit asks about later, and Firestore won't remember it
+    once the session is deleted.
+
+    Never fatal, and deliberately last: the session has already released and
+    any workflow already advanced, so a BigQuery outage costs one audit row
+    and nothing else.
+    """
+    try:
+        row = analytics.run_log_row(
+            session_id,
+            session,
+            branch=branch,
+            stop_reason=stop_reason,
+            run_cost_usd=run_cost_usd,
+            cost_usd=cost_usd,
+            seq_head=seq_head,
+            released_at=time.time(),
+        )
+        await asyncio.to_thread(
+            analytics.append_run_log, config.project, row, dataset=env.dataset()
+        )
+    except Exception as error:
+        print(f"run log append failed for {session_id}: {error}", file=sys.stderr)
 
 
 async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -> list[str]:
@@ -249,6 +296,16 @@ async def run(session_id: str) -> None:
                 tip_uuid=writer.tip_uuid,
             )
             await _advance_workflow(store, config, session_id)
+            await _append_run_log(
+                config,
+                session_id,
+                session,
+                branch=branch,
+                stop_reason="workspace_busy",
+                run_cost_usd=0.0,
+                cost_usd=float(session.get("cost_usd") or 0.0),
+                seq_head=writer.seq,
+            )
             return
         if options.workspace:
             leased_workspace["name"] = options.workspace  # heartbeat renews it from here on
@@ -287,6 +344,16 @@ async def run(session_id: str) -> None:
                     tip_uuid=writer.tip_uuid,
                 )
                 await _advance_workflow(store, config, session_id)
+                await _append_run_log(
+                    config,
+                    session_id,
+                    session,
+                    branch=branch,
+                    stop_reason="connector_error",
+                    run_cost_usd=0.0,
+                    cost_usd=float(session.get("cost_usd") or 0.0),
+                    seq_head=writer.seq,
+                )
                 return
             options.mcp_servers = {**servers, **options.mcp_servers}
 
@@ -336,7 +403,7 @@ async def run(session_id: str) -> None:
         # The mounts are invisible to the agent otherwise — without this a session
         # can succeed while writing its output somewhere that never persists.
         if mounts := artifacts.mount_prompt(spaces):
-            options.system_prompt = "\n\n".join(filter(None, (options.system_prompt, mounts)))
+            options.system_prompt = append_system_prompt(options.system_prompt, mounts)
 
         # The workspace is restored now, so the context snapshot can carry its
         # git state; read once, not per event.
@@ -369,7 +436,8 @@ async def run(session_id: str) -> None:
         sdk_options.hooks = gate.hooks()
         sdk_options.mcp_servers = resolve_mcp_servers(options.mcp_servers, config.project)
 
-        cost = float(session.get("cost_usd") or 0.0)
+        starting_cost = float(session.get("cost_usd") or 0.0)
+        cost = starting_cost
         published = 0
         run_prompts: list[str] = []
         result_text: str | None = None
@@ -494,6 +562,16 @@ async def run(session_id: str) -> None:
             **({"result": result_text[: workflows.RESULT_LIMIT]} if result_text else {}),
         )
         await _advance_workflow(store, config, session_id)
+        await _append_run_log(
+            config,
+            session_id,
+            session,
+            branch=branch,
+            stop_reason=stop_reason,
+            run_cost_usd=cost - starting_cost,
+            cost_usd=cost,
+            seq_head=writer.seq,
+        )
     finally:
         beat.cancel()
 

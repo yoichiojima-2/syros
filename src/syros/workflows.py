@@ -51,7 +51,7 @@ from datetime import datetime
 from typing import Any
 
 from . import agents, cron, remote
-from .errors import SyrosError
+from .errors import SessionExists, SyrosError
 from .names import validate_name
 from .options import AgentOptions, options_from_doc
 from .store import (
@@ -102,6 +102,27 @@ def render_prompt(prompt: str, *, workflow: str, run_id: str, results: dict[str,
     rendered = _RESULT_REF.sub(lambda m: str(results.get(m.group(1)) or ""), prompt)
     rendered = _RUN_REF.sub(run_id, rendered)
     return _WORKFLOW_REF.sub(workflow, rendered)
+
+
+def dependency_closure(tasks: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Each task id -> every task it transitively depends on.
+
+    Kahn's algorithm: a leftover task means a dependency cycle. Two tasks may
+    run at the same time exactly when neither is in the other's closure.
+    """
+    direct = {t["id"]: set(t["depends_on"]) for t in tasks}
+    closure: dict[str, set[str]] = {}
+    remaining = {tid: set(deps) for tid, deps in direct.items()}  # consumed below
+    while remaining:
+        ready = [tid for tid, deps in remaining.items() if not deps]
+        if not ready:
+            raise WorkflowError(f"dependency cycle among tasks: {', '.join(sorted(remaining))}")
+        for tid in ready:
+            closure[tid] = direct[tid] | {c for d in direct[tid] for c in closure[d]}
+            del remaining[tid]
+        for deps in remaining.values():
+            deps.difference_update(ready)
+    return closure
 
 
 def normalize_tasks(tasks: Any) -> list[dict[str, Any]]:
@@ -158,21 +179,7 @@ def normalize_tasks(tasks: Any) -> list[dict[str, Any]]:
             if dep == task["id"]:
                 raise WorkflowError(f"task {task['id']!r} depends on itself")
 
-    # Kahn's algorithm: a leftover task means a dependency cycle, and the
-    # closure computed along the way is what result references validate against.
-    closure: dict[str, set[str]] = {}
-    remaining = {t["id"]: set(t["depends_on"]) for t in normalized}
-    while remaining:
-        ready = [tid for tid, deps in remaining.items() if not deps]
-        if not ready:
-            raise WorkflowError(f"dependency cycle among tasks: {', '.join(sorted(remaining))}")
-        for tid in ready:
-            direct = {t["id"]: set(t["depends_on"]) for t in normalized}[tid]
-            closure[tid] = direct | {c for d in direct for c in closure[d]}
-            del remaining[tid]
-        for deps in remaining.values():
-            deps.difference_update(ready)
-
+    closure = dependency_closure(normalized)
     for task in normalized:
         loose = result_refs(task["prompt"]) - closure[task["id"]]
         if loose:
@@ -236,17 +243,51 @@ async def _validate_tasks(
     options: AgentOptions,
 ) -> None:
     """Fail at definition time, not at the first firing."""
+    workspaces: dict[str, str] = {}
     for task in tasks:
+        agent_options = AgentOptions()
         if task["agent"] is not None:
             # The reference is still re-resolved on every launch, so a later
             # delete surfaces there.
-            await agents.require_agent(store, task["agent"])
+            agent = await agents.require_agent(store, task["agent"])
+            agent_options = options_from_doc(dict(agent.get("options") or {}))
         # Every run inherits the workflow's project, so validate the merged
         # options against it here rather than letting the first firing be the
         # thing that finds the problem.
         merged = agents.merge(defaults, options_from_doc(dict(task["options"])))
         merged.project = merged.project or defaults.project or options.project
         merged.validate()
+        # The layer order agents.resolve applies: task over workflow over agent.
+        # settings/global is deliberately left out — an installation-wide
+        # default must not retroactively invalidate a saved definition.
+        workspace = merged.workspace or agent_options.workspace
+        if workspace:
+            workspaces[task["id"]] = workspace
+    _reject_concurrent_workspace(tasks, workspaces)
+
+
+def _reject_concurrent_workspace(tasks: list[dict[str, Any]], workspaces: dict[str, str]) -> None:
+    """A workspace lease is exclusive, so two tasks that can run at the same
+    time can never both hold one: the loser releases `workspace_busy`, which
+    fails it and skips its whole downstream cone. Only a linear chain may share
+    a workspace; parallel branches pass files through artifact spaces instead
+    (docs/workflow-design.md). Rejecting the definition beats letting the first
+    firing be the thing that finds it — though only at definition time: an
+    agent re-pointed at a workspace afterwards is not re-checked, exactly as a
+    deleted agent is not, and surfaces at the launch instead."""
+    closure = dependency_closure(tasks)
+    ordered = [t["id"] for t in tasks if t["id"] in workspaces]
+    for i, first in enumerate(ordered):
+        for second in ordered[i + 1 :]:
+            if workspaces[first] != workspaces[second]:
+                continue
+            if first in closure[second] or second in closure[first]:
+                continue  # ordered by dependency: never live at the same time
+            raise WorkflowError(
+                f"tasks {first!r} and {second!r} can run at the same time but share "
+                f"workspace {workspaces[first]!r}, whose lease is exclusive — order them "
+                "with depends_on, or give the parallel branches an artifacts space instead"
+            )
 
 
 async def create(
@@ -426,7 +467,30 @@ async def run_now(
     options = options or AgentOptions()
     store = _store(options, store)
     workflow = await _require(store, name)
+    active = await active_run(store, workflow)
+    if active:
+        # The tick skips a due slot for the same reason; off-cycle there is no
+        # next slot to skip to, so the caller is told instead. Read-then-launch,
+        # as in the tick: two firings within the same instant can still both
+        # pass, and the loser's run is the one reconcile forgets.
+        raise WorkflowError(
+            f"workflow {name!r} already has run {active['id']} in flight — one run at a time"
+        )
     return await launch(store, options, workflow, trigger="manual", created_by=created_by, now=now)
+
+
+async def active_run(store: StoreProtocol, workflow: dict[str, Any]) -> dict[str, Any] | None:
+    """The workflow's in-flight run, if any.
+
+    One run per workflow at a time — the Databricks default, and the only safe
+    one when tasks share a workspace, whose exclusive lease a second run would
+    lose anyway (_reject_concurrent_workspace rests on this).
+    """
+    run_id = workflow.get("last_run_id")
+    if not run_id:
+        return None
+    run = await store.get_run(workflow["name"], run_id)
+    return run if run and run.get("status") == "running" else None
 
 
 async def launch(
@@ -619,33 +683,59 @@ async def _start_task(
         results = {tid: state.get("result") for tid, state in run["tasks"].items()}
         prompt = render_prompt(spec["prompt"], workflow=name, run_id=run_id, results=results)
         if await store.get_session(session_id) is None:
-            await store.create_session(
-                session_id,
-                resolved.serialize(),
-                created_by=created_by or f"workflow:{name}",
-                workflow=name,
-                run_id=run_id,
-                task=task_id,
-                trigger=run.get("trigger") or "schedule",
-                agent=spec.get("agent"),
-            )
-            await remote.send_prompt(store, session_id, options, prompt)
+            try:
+                await store.create_session(
+                    session_id,
+                    resolved.serialize(),
+                    created_by=created_by or f"workflow:{name}",
+                    workflow=name,
+                    run_id=run_id,
+                    task=task_id,
+                    trigger=run.get("trigger") or "schedule",
+                    agent=spec.get("agent"),
+                )
+            except SessionExists:
+                # Lost the create race (the reconcile pass re-starts a launch
+                # stuck past the grace, so two launchers can share one claimed
+                # id): the winner owns the session and sends the prompt. Only
+                # this error means that — a write that failed any other way
+                # still fails the task, with the real reason. The one other way
+                # to land here is our own create committing but losing its
+                # response to a retry, which leaves the session queued with no
+                # prompt; reconcile fails the task at the next tick.
+                pass
+            else:
+                await remote.send_prompt(store, session_id, options, prompt)
         # else: a launcher died between creating the session and recording it
         # here — the session (and its trigger) stands; just mark it running.
     except Exception as exc:  # a bad task must fail its cone, not the advancer
-        await _advance(
-            store,
-            options,
-            name,
-            run_id,
-            finished={
-                "task": task_id,
-                "status": "failed",
-                "result": None,
-                "error": f"{type(exc).__name__}: {exc}",
-            },
-            now=now,
-        )
+        error = f"{type(exc).__name__}: {exc}"  # `exc` is gone by the time this runs
+        try:
+            taken = await store.get_session(session_id) is not None
+        except Exception:
+            taken = False  # cannot tell; the guard below is what stands then
+        if taken:
+            # Someone got further with this launch than we did — the session may
+            # already be prompted and running, and it is not yet marked running,
+            # so the guard below would not catch it. Failing the task here would
+            # leave a live session working on a run that declared it dead; the
+            # reconcile pass settles it either way, from the session's own state.
+            return
+
+        def fail_launch(run_doc: dict[str, Any]) -> dict[str, Any] | None:
+            tasks = {tid: dict(state) for tid, state in (run_doc.get("tasks") or {}).items()}
+            state = tasks.get(task_id)
+            # Only the owner of this launch may fail it: a racing launcher may
+            # already have the task running, and failing it here would kill a
+            # live session and skip its whole downstream cone.
+            if not state or state["status"] != "launching" or state["session_id"] != session_id:
+                return None
+            state.update(status="failed", result=None, error=error, finished_at=now)
+            return {**run_doc, "tasks": tasks}
+
+        if await store.transition_run(name, run_id, fail_launch) is not None:
+            # Propagate the skip cone and close the run, same as any outcome.
+            await _advance(store, options, name, run_id, now=now)
         return
 
     def mark_running(run_doc: dict[str, Any]) -> dict[str, Any] | None:
@@ -761,13 +851,7 @@ async def tick(
             continue
         if not await store.claim_slot(name, due, following):
             continue  # another tick took this slot, or it was paused meanwhile
-        last_run = None
-        if workflow.get("last_run_id"):
-            last_run = await store.get_run(name, workflow["last_run_id"])
-        if last_run and last_run.get("status") == "running":
-            # One run per workflow at a time — the Databricks default, and the
-            # only safe one when tasks share a workspace, whose lease a second
-            # run would lose anyway.
+        if await active_run(store, workflow):
             await store.update_workflow(
                 name, last_skipped_at=now, skip_count=int(workflow.get("skip_count") or 0) + 1
             )

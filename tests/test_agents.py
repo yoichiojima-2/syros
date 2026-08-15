@@ -114,8 +114,33 @@ async def test_resolve_without_agent_is_noop():
     store = FakeStore()
     options = AgentOptions(project="p")
     resolved = await agents.resolve(store, options)
-    assert resolved.model == "sonnet"  # the built-in floor when no layer is stored
+    # the built-in floors when no layer stores one
+    assert resolved.model == "sonnet"
+    assert resolved.system_prompt == {"type": "preset", "preset": "claude_code"}
     assert resolved.project == "p"
+
+
+async def test_resolve_floors_the_system_prompt_only_when_no_layer_sets_one():
+    """Naming no agent is what gets you the default prompt; a persona is
+    something you write, in any layer, not something you fall into."""
+    store = FakeStore()
+    await make(store)  # agent "reviewer", system_prompt="be careful"
+    from_agent = await agents.resolve(store, AgentOptions(agent="reviewer", project="p"))
+    assert from_agent.system_prompt == "be careful"
+
+    explicit = await agents.resolve(store, AgentOptions(system_prompt="be terse", project="p"))
+    assert explicit.system_prompt == "be terse"
+
+    await store.update_settings({"options": {"system_prompt": "house style"}})
+    from_settings = await agents.resolve(store, AgentOptions(project="p"))
+    assert from_settings.system_prompt == "house style"
+
+
+async def test_resolve_keeps_an_explicit_empty_prompt():
+    """An empty string is the escape hatch: no system prompt at all."""
+    store = FakeStore()
+    resolved = await agents.resolve(store, AgentOptions(system_prompt="", project="p"))
+    assert resolved.system_prompt == ""
 
 
 async def test_resolve_merges_stored_options():

@@ -20,8 +20,9 @@ import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { WorkflowSummary } from "@/lib/types";
 
-// The presets cover what people actually schedule; anything else is typed in.
-const PRESETS: { label: string; cron: string }[] = [
+// Cron shortcuts, not to be confused with the object presets in /api/presets:
+// these cover what people actually schedule; anything else is typed in.
+const CRON_PRESETS: { label: string; cron: string }[] = [
   { label: "Manual only", cron: "" },
   { label: "Hourly", cron: "0 * * * *" },
   { label: "Daily 9am", cron: "0 9 * * *" },
@@ -207,7 +208,7 @@ export function WorkflowForm({
             </Field>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {PRESETS.map((preset) => (
+            {CRON_PRESETS.map((preset) => (
               <button
                 key={preset.label}
                 type="button"

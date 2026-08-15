@@ -17,9 +17,15 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
 
 - `AgentOptions` (`options.py`) is the serializable subset of ClaudeAgentOptions;
   new serialized fields must be added to `_SERIALIZED_FIELDS` or `options_from_doc`
-  rejects them. Options resolve at session creation (`agents.resolve`), layered by
-  proximity: explicit/task ← workflow ← agent ← workspace ← `settings/global` ←
-  model `"sonnet"` floor; the merged result is snapshotted onto the session.
+  rejects them. `system_prompt` is a plain string *or* the default-agent preset
+  dict (`default_prompt()`; `claude_code` is claude_agent_sdk's name for it on
+  the wire) — anything the platform adds to it goes through `append_system_prompt`,
+  so a preset stays a preset instead of flattening into a string that replaces it.
+  Options resolve at session creation (`agents.resolve`), layered by proximity:
+  explicit/task ← workflow ← agent ← workspace ← `settings/global` ← the built-in
+  floor (model `"sonnet"`, system prompt the default-agent preset — an explicit
+  `""` is how a run asks for no system prompt); the merged result is snapshotted
+  onto the session.
 - Workflows (`workflows.py`, `workflows/{name}` + its `runs/{run_id}` subcollection)
   are named chains of one-shot tasks with the cron attached — the one-task workflow
   is the old "deployment". Every task run is an ordinary session (provenance fields
@@ -41,6 +47,15 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
   onto it (old `team-skills/`, `teams/`, and `"team"` option keys). It is the only
   code that knows those names — nothing reads them as a fallback. Delete both once
   every installation has run it.
+- Presets (`presets/__init__.py`, data under `presets/data/`) are example objects
+  installed through the ordinary `create()` calls — nothing about an installed
+  preset is special afterwards, and no doc points back at the catalog. Install
+  order is by kind (`KINDS`): workflows last, because `workflows._validate_tasks`
+  resolves each task's agent against the store at definition time. Package data
+  ships because hatchling includes everything git-tracked under `src/syros/`; read
+  it with `importlib.resources`, never `__file__`. Adding a preset means adding a
+  `CATALOG` entry — `tests/test_presets.py` validates every options dict, task
+  list, and cross-reference, so a broken one fails there rather than on install.
 - Session `title`/`summary` are durable session fields written by the runner at
   idle via one haiku call (`titles.py`); failures fall back to first-prompt-line.
   Do not add them to `RUNTIME_FIELDS` in `store.py` — that nests under `runtime.`.

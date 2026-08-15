@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2 } from "lucide-react";
+import { MessageSquarePlus, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,6 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AgentForm } from "@/components/agent-form";
+import { InstallPresetsButton } from "@/components/install-presets-button";
 import { useAction, useAgents, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { relTime } from "@/lib/format";
@@ -63,15 +64,24 @@ export default function AgentsPage() {
               <Skeleton className="h-8" />
             </div>
           ) : agents.length === 0 ? (
-            <p className="p-10 text-center text-[13px] text-muted-foreground">
-              No agents yet — an agent is a stored run configuration (persona) that sessions and
-              workflow tasks reference by name.
-              <br />
-              Create one above, or with{" "}
-              <code className="font-mono text-xs">
-                syros agents create reviewer --system-prompt &quot;…&quot; --allow Read
-              </code>
-            </p>
+            <div className="space-y-4 p-10 text-center text-[13px] text-muted-foreground">
+              <p>
+                No agents yet — an agent is a stored run configuration (persona) that sessions and
+                workflow tasks reference by name.
+                <br />
+                Create one above, or with{" "}
+                <code className="font-mono text-xs">
+                  syros agents create reviewer --system-prompt &quot;…&quot; --allow Read
+                </code>
+              </p>
+              <div>
+                <InstallPresetsButton />
+                <p className="mt-2 text-[11px]">
+                  Four example agents, a workspace, two workflows and two skills — editable, and
+                  scheduled ones install paused.
+                </p>
+              </div>
+            </div>
           ) : (
             <Table>
               <TableHeader>
@@ -81,7 +91,7 @@ export default function AgentsPage() {
                   <TableHead>Model</TableHead>
                   <TableHead>Tools</TableHead>
                   <TableHead>Updated</TableHead>
-                  <TableHead className="w-10" />
+                  <TableHead className="w-20" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -130,7 +140,14 @@ function AgentRow({
       <TableCell className="text-xs text-muted-foreground">
         {relTime(agent.updated_at, now)}
       </TableCell>
-      <TableCell className="w-10 text-right" onClick={(e) => e.stopPropagation()}>
+      <TableCell className="w-20 text-right" onClick={(e) => e.stopPropagation()}>
+        {/* A real link, so the launcher opens in a tab on cmd-click; the agent
+            page leads with the prompt box. */}
+        <Button variant="ghost" size="icon" className="size-7 hover:text-primary" asChild>
+          <Link href={href} title={`New session as ${agent.name}`}>
+            <MessageSquarePlus />
+          </Link>
+        </Button>
         <Button
           variant="ghost"
           size="icon"

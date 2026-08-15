@@ -16,6 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { InstallPresetsButton } from "@/components/install-presets-button";
 import { StateBadge } from "@/components/state-badge";
 import { useAction, useNow, useWorkspaces } from "@/lib/hooks";
 import { api, post } from "@/lib/api";
@@ -73,11 +74,20 @@ export default function WorkspacesPage() {
               <Skeleton className="h-8" />
             </div>
           ) : workspaces.length === 0 ? (
-            <p className="p-6 text-center text-[13px] text-muted-foreground">
-              No workspaces yet — sessions created with{" "}
-              <code className="font-mono text-xs">AgentOptions(workspace=&quot;name&quot;)</code>{" "}
-              appear here.
-            </p>
+            <div className="space-y-4 p-6 text-center text-[13px] text-muted-foreground">
+              <p>
+                No workspaces yet — sessions created with{" "}
+                <code className="font-mono text-xs">AgentOptions(workspace=&quot;name&quot;)</code>{" "}
+                appear here.
+              </p>
+              <div>
+                <InstallPresetsButton />
+                <p className="mt-2 text-[11px]">
+                  Adds a &quot;research&quot; workspace with a CLAUDE.md that loads as project
+                  memory, and the agents that make it their own.
+                </p>
+              </div>
+            </div>
           ) : (
             <Table>
               <TableHeader>

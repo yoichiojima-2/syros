@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .. import agents, remote, workflows, workspaces
+from .. import agents, presets, remote, workflows, workspaces
 from .. import connectors as connectors_mod
 from ..journal import MAIN_BRANCH, active_branch
 from ..names import validate_name, validate_tags
@@ -831,8 +831,25 @@ class ConsoleAPI:
     # checkpoint the way a workspace edit would.
 
     async def skills(self, workspace: str | None = None) -> dict[str, Any]:
-        stats = await self._bucket_objects().skill_stats(workspace)
-        rows = [{"name": name, **stat} for name, stat in sorted(stats.items())]
+        """Skills in one scope, or — with no workspace named — every scope.
+
+        The global view lists workspace-scoped skills alongside the globals
+        (each tagged with its `workspace`) because a skill that only mounts
+        somewhere is exactly the one you cannot otherwise find; asking for a
+        workspace by name still narrows to just that scope.
+        """
+        objects = self._bucket_objects()
+        stats = await objects.skill_stats(workspace)
+        rows = [
+            {"name": name, "workspace": workspace, **stat} for name, stat in sorted(stats.items())
+        ]
+        if workspace is None:
+            scoped = await objects.workspace_skill_stats()
+            rows += [
+                {"name": name, "workspace": owner, **stat}
+                for owner, owned in sorted(scoped.items())
+                for name, stat in sorted(owned.items())
+            ]
         return {"now": time.time(), "workspace": workspace, "skills": to_jsonable(rows)}
 
     async def skill_files(self, name: str, workspace: str | None = None) -> dict[str, Any]:
@@ -886,6 +903,29 @@ class ConsoleAPI:
     async def sync_official_skills(self) -> dict[str, Any]:
         """Seed skills/ from the official anthropics/skills repo (editable copies)."""
         summary = await self._bucket_objects().sync_official_skills()
+        return {"now": time.time(), "ok": True, **to_jsonable(summary)}
+
+    # --- presets ---
+
+    async def presets(self) -> dict[str, Any]:
+        """The example catalog, each row flagged with whether it exists already."""
+        rows = await presets.status(store=self._store, objects=self._bucket_objects())
+        return {"now": time.time(), "presets": to_jsonable(rows)}
+
+    async def install_presets(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Create the example objects. `names` omitted installs the whole catalog;
+        anything that already exists is skipped unless `force` is set."""
+        names = body.get("names")
+        if names is not None and not isinstance(names, list):
+            raise ValueError("names must be a list of preset names")
+        summary = await presets.install(
+            names,
+            store=self._store,
+            objects=self._bucket_objects(),
+            options=self._options,
+            created_by=_decided_by(),
+            force=bool(body.get("force")),
+        )
         return {"now": time.time(), "ok": True, **to_jsonable(summary)}
 
     # --- shared artifact spaces ---

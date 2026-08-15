@@ -216,3 +216,16 @@ def test_config_from_env_overrides(monkeypatch):
         7,
         9,
     )
+
+
+def test_description_points_cost_questions_at_the_audit_log():
+    """The snapshot loses deleted sessions; run_log doesn't. An agent asked
+    'what did last month cost' has to be told which one to trust."""
+    from syros.analytics import RUN_LOG_SCHEMA
+
+    text = describe(CONFIG)
+    assert "run_log" in text
+    for column, _, _ in RUN_LOG_SCHEMA:
+        assert column in text
+    # and which cost column is summable: cost_usd is a running total
+    assert "run_cost_usd" in text
