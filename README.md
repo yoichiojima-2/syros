@@ -135,6 +135,50 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
 Docker image builds its own copy in a Node stage, so deploys need no local build.
 
+## Presets
+
+A fresh install is empty, and a blank system-prompt textarea is a bad first look at a
+platform whose interesting parts — the option-resolution chain, workspace project memory,
+task DAGs, skill scoping — are invisible until something is using them. `syros presets`
+ships a small catalog of worked examples and creates them as ordinary objects:
+
+```
+syros presets                        # the catalog, and what's already installed
+syros presets show research-pipeline # one preset's full definition, as JSON
+syros presets install                # create everything
+syros presets install research-pipeline   # or one, with whatever it references
+```
+
+The console has the same action behind an **Install examples** button in the Agents,
+Workflows, and Workspaces empty states.
+
+| preset | kind | what it demonstrates |
+|---|---|---|
+| `research` | workspace | stored option defaults, and a `CLAUDE.md` that loads as project memory |
+| `brief` | skill | a two-file skill (`SKILL.md` + `reference/`), mounted into every session |
+| `research-brief` | skill | the same skill name scoped to `research`, shadowing the global one |
+| `researcher` | agent | web tools, an artifact space, a budget cap, no workspace |
+| `writer` | agent | workspace-bound editing under `acceptEdits` |
+| `reviewer` | agent | least privilege — read-only tools, writes denied outright |
+| `analyst` | agent | the built-in BigQuery MCP server with `mcp__bq__query` pre-allowed |
+| `daily-brief` | workflow | one task on a cron — the classic scheduled prompt |
+| `research-pipeline` | workflow | a five-task DAG: fan-out, fan-in, and result piping |
+
+Installed presets are **yours** — ordinary documents and blobs in the usual collections,
+with no version pointer back to the catalog and nothing that re-syncs them. Edit or delete
+them freely. Re-running the installer skips whatever already exists (so a partial install
+completes cleanly), and `--force` is the explicit opt-out that replaces definitions and
+files, including edits you made.
+
+Two deliberate choices worth knowing. **Scheduled presets install paused**: `daily-brief`
+carries a cron but arrives disabled, so clicking Install never starts spending — resume it
+once its prompt says what you actually want briefed, and the next slot re-bases on the
+current time. And **`research-pipeline` shares an artifact space rather than a workspace**:
+its two middle tasks run in parallel, and a workspace's exclusive lease cannot be held by
+both — `workflows.create` rejects that definition outright. Artifact spaces take no lease.
+The serial tail of the chain does take the workspace, from the agents it names, where
+one-at-a-time is the point.
+
 ## Agents
 
 An agent is a named, stored run configuration — the persona a session runs as: system
@@ -165,6 +209,8 @@ syros agents show|update|delete reviewer
 
 The console has an Agents view with the same create/edit/delete surface, and sessions
 show which agent they ran as. Workflow tasks can reference an agent too (below).
+`syros presets install` creates four worked examples if you'd rather start from something
+than from a blank form — see [Presets](#presets).
 
 ### The default agent
 
@@ -326,14 +372,17 @@ The console does the same thing from the browser: drop a folder onto the Skills 
 (or a workspace's skills card), or use the folder picker.
 
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
-tarball and copies each skill into the bucket — nothing is vendored, and the copies are
-editable snapshots: re-syncing overwrites official files but never touches skills (or
-files) the tarball doesn't carry. Skills come in two scopes: global (`skills/`, mounted
-into every run) and per-workspace (`team-skills/{workspace}/`, mounted only for that workspace's
-sessions, shadowing a same-named global). The console has a Skills view with the same
-surface as workspaces — browse a skill, edit a file in place, upload, or delete the
-skill; a workspace's skills live on its workspace page. `syros skills --workspace
-<name>` scopes both the CLI and where a push lands.
+tarball and copies each skill into the bucket — Anthropic's skills are fetched, never
+vendored, and the copies are editable snapshots: re-syncing overwrites official files but
+never touches skills (or files) the tarball doesn't carry. (The two skills under
+[Presets](#presets) are the exception: those are syros' own, so they ship as package data
+rather than being fetched — same editable-copy semantics once installed.) Skills come in
+two scopes: global (`skills/`, mounted into every run) and per-workspace
+(`team-skills/{workspace}/`, mounted only for that workspace's sessions, shadowing a
+same-named global). The console has a Skills view with the same surface as workspaces —
+browse a skill, edit a file in place, upload, or delete the skill; a workspace's skills
+live on its workspace page. `syros skills --workspace <name>` scopes both the CLI and
+where a push lands.
 
 ## Analysis
 
@@ -483,6 +532,9 @@ gcloud builds submit --tag asia-northeast1-docker.pkg.dev/YOUR_PROJECT/syros/run
 # 3. Smoke test
 export SYROS_PROJECT=YOUR_PROJECT
 uv run python examples/hello.py
+
+# 4. Something to look at: example agents, a workspace, workflows and skills
+syros presets install
 ```
 
 Cloud Run resolves an image tag at deploy time, so a fresh project applies twice: the first

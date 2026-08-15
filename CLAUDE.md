@@ -43,6 +43,15 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
 - Skills are GCS prefixes, two scopes: `skills/` (global, mounted everywhere) and
   `team-skills/{workspace}/` (prefix keeps its pre-rename name; mounted for that
   workspace, shadows same-named globals).
+- Presets (`presets/__init__.py`, data under `presets/data/`) are example objects
+  installed through the ordinary `create()` calls — nothing about an installed
+  preset is special afterwards, and no doc points back at the catalog. Install
+  order is by kind (`KINDS`): workflows last, because `workflows._validate_tasks`
+  resolves each task's agent against the store at definition time. Package data
+  ships because hatchling includes everything git-tracked under `src/syros/`; read
+  it with `importlib.resources`, never `__file__`. Adding a preset means adding a
+  `CATALOG` entry — `tests/test_presets.py` validates every options dict, task
+  list, and cross-reference, so a broken one fails there rather than on install.
 - Session `title`/`summary` are durable session fields written by the runner at
   idle via one haiku call (`titles.py`); failures fall back to first-prompt-line.
   Do not add them to `RUNTIME_FIELDS` in `store.py` — that nests under `runtime.`.

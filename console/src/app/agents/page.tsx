@@ -16,6 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AgentForm } from "@/components/agent-form";
+import { InstallPresetsButton } from "@/components/install-presets-button";
 import { useAction, useAgents, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { relTime } from "@/lib/format";
@@ -63,15 +64,24 @@ export default function AgentsPage() {
               <Skeleton className="h-8" />
             </div>
           ) : agents.length === 0 ? (
-            <p className="p-10 text-center text-[13px] text-muted-foreground">
-              No agents yet — an agent is a stored run configuration (persona) that sessions and
-              workflow tasks reference by name.
-              <br />
-              Create one above, or with{" "}
-              <code className="font-mono text-xs">
-                syros agents create reviewer --system-prompt &quot;…&quot; --allow Read
-              </code>
-            </p>
+            <div className="space-y-4 p-10 text-center text-[13px] text-muted-foreground">
+              <p>
+                No agents yet — an agent is a stored run configuration (persona) that sessions and
+                workflow tasks reference by name.
+                <br />
+                Create one above, or with{" "}
+                <code className="font-mono text-xs">
+                  syros agents create reviewer --system-prompt &quot;…&quot; --allow Read
+                </code>
+              </p>
+              <div>
+                <InstallPresetsButton />
+                <p className="mt-2 text-[11px]">
+                  Four example agents, a workspace, two workflows and two skills — editable, and
+                  scheduled ones install paused.
+                </p>
+              </div>
+            </div>
           ) : (
             <Table>
               <TableHeader>
