@@ -23,6 +23,49 @@ from .workspace import _bucket
 
 OFFICIAL_SKILLS_TARBALL = "https://github.com/anthropics/skills/archive/refs/heads/main.tar.gz"
 
+SKILL_MD = "SKILL.md"
+# Frontmatter sits at the top of SKILL.md, so the console reads a prefix rather
+# than the whole file — canvas-design's is 5 MB and the description is line 3.
+FRONTMATTER_BYTES = 4096
+
+_BLOCK_SCALARS = frozenset(("", ">", "|", ">-", "|-", ">+", "|+"))
+
+
+def parse_description(data: bytes) -> str | None:
+    """The `description` from a SKILL.md YAML frontmatter block, or None.
+
+    This is the text the model matches against when deciding whether a skill
+    fires, so it is what the console shows to explain a skill. Deliberately a
+    small hand parser and not a YAML dependency: `data` may be a truncated
+    prefix of the file, which a real parser would reject outright.
+    """
+    lines = data.decode("utf-8", "replace").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+
+    body: list[str] = []
+    for line in lines[1:]:
+        if line.strip() in ("---", "..."):
+            break
+        body.append(line)
+
+    for index, line in enumerate(body):
+        if not line.startswith("description:"):
+            continue  # column 0 only — nested keys are not the skill's own
+        value = line[len("description:") :].strip()
+        if value in _BLOCK_SCALARS:
+            # folded/literal scalar: the value is the indented run beneath it
+            continuation = []
+            for follower in body[index + 1 :]:
+                if follower.strip() and not follower[:1].isspace():
+                    break
+                continuation.append(follower.strip())
+            value = " ".join(part for part in continuation if part)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return " ".join(value.split()) or None
+    return None
+
 
 def skill_prefix(name: str, workspace: str | None = None) -> str:
     """Global skills live under skills/{name}/; workspace skills under their

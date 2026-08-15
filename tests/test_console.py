@@ -21,7 +21,7 @@ from syros.console.api import (
 from syros.errors import OptionsError, SyrosError
 from syros.names import validate_file
 from syros.options import AgentOptions
-from syros.skills import skill_prefix
+from syros.skills import parse_description, skill_prefix
 from syros.workspace import workspace_prefix
 
 from .fakes import FakeStore, append_message
@@ -185,9 +185,22 @@ class FakeObjects:
             return self.skills
         return self.workspace_skills.setdefault(workspace, {})
 
+    @staticmethod
+    def _skill_stat(files):
+        stat = FakeObjects._stats(files)
+        described = parse_description(files.get("SKILL.md", b""))
+        return {**stat, "description": described} if described else stat
+
     async def skill_stats(self, workspace=None):
         pool = self._skill_pool(workspace)
-        return {name: self._stats(files) for name, files in pool.items()}
+        return {name: self._skill_stat(files) for name, files in pool.items()}
+
+    async def workspace_skill_stats(self):
+        return {
+            owner: {name: self._skill_stat(files) for name, files in pool.items()}
+            for owner, pool in self.workspace_skills.items()
+            if pool
+        }
 
     async def skill_files(self, name, workspace=None):
         files = self._skill_pool(workspace).get(name, {})
@@ -939,13 +952,46 @@ async def test_skills_stats_and_files():
     console = api(FakeStore(), objects=objects)
 
     result = await console.skills()
-    assert result["skills"] == [{"name": "pdf", "file_count": 2, "total_size": 7, "updated": None}]
+    assert result["skills"] == [
+        {"name": "pdf", "workspace": None, "file_count": 2, "total_size": 7, "updated": None}
+    ]
 
     listing = await console.skill_files("pdf")
     assert [f["name"] for f in listing["files"]] == ["SKILL.md", "ref/x.md"]
 
     with pytest.raises(NotFound):
         await console.skill_files("nope")
+
+
+async def test_skills_carry_frontmatter_description():
+    """The description is what the page leads with, so it rides the listing."""
+    frontmatter = b"---\nname: pdf\ndescription: Merge, split, and OCR PDFs\n---\n# pdf\n"
+    objects = FakeObjects(skills={"pdf": {"SKILL.md": frontmatter}, "bare": {"SKILL.md": b"# x"}})
+
+    rows = {
+        row["name"]: row for row in (await api(FakeStore(), objects=objects).skills())["skills"]
+    }
+    assert rows["pdf"]["description"] == "Merge, split, and OCR PDFs"
+    assert "description" not in rows["bare"]
+
+
+async def test_skills_list_every_scope_unless_one_is_named():
+    """A workspace skill only mounts somewhere, so the global view must show it."""
+    objects = FakeObjects(
+        skills={"pdf": {"SKILL.md": b"# pdf"}},
+        workspace_skills={"growth": {"brand": {"SKILL.md": b"---\ndescription: Ours\n---\n"}}},
+    )
+    console = api(FakeStore(), objects=objects)
+
+    everything = await console.skills()
+    assert [(r["name"], r["workspace"]) for r in everything["skills"]] == [
+        ("pdf", None),
+        ("brand", "growth"),
+    ]
+    assert everything["skills"][1]["description"] == "Ours"
+
+    just_one = await console.skills("growth")
+    assert [(r["name"], r["workspace"]) for r in just_one["skills"]] == [("brand", "growth")]
 
 
 async def test_skill_file_read_write_delete():
@@ -1316,3 +1362,25 @@ async def test_static_serving_next_export():
         assert status == 404 and b"error" in body
     finally:
         server.shutdown()
+
+
+def test_descriptions_range_read_and_tolerate_failure():
+    """Only the head of each SKILL.md is fetched, and one bad blob can't blank
+    the listing — the page still has to render."""
+    from syros.console.objects import _descriptions
+
+    class FakeBlob:
+        def __init__(self, data=None, boom=False):
+            self.data, self.boom, self.asked = data, boom, None
+
+        def download_as_bytes(self, end=None):
+            if self.boom:
+                raise RuntimeError("gone")
+            self.asked = end
+            return self.data[: (end or len(self.data))]
+
+    good = FakeBlob(b"---\ndescription: Reads PDFs\n---\n" + b"z" * 99_000)
+    described = _descriptions({"pdf": good, "broken": FakeBlob(boom=True)})
+
+    assert described == {"pdf": "Reads PDFs"}
+    assert good.asked == 4096  # a prefix, not the 99 KB body

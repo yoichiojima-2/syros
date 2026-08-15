@@ -313,6 +313,10 @@ export interface ConnectorsResponse {
 
 export interface SkillSummary {
   name: string;
+  /** null = global scope, mounted into every session. */
+  workspace: string | null;
+  /** SKILL.md frontmatter description — absent when the skill omits one. */
+  description?: string;
   file_count: number;
   total_size: number;
   updated: number | null;
