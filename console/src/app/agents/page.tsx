@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Play, Plus, Trash2 } from "lucide-react";
+import { MessageSquarePlus, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -159,10 +159,10 @@ function AgentRow({
           variant="ghost"
           size="icon"
           className="size-7 hover:text-primary"
-          title={`Start a session as ${agent.name}`}
+          title={`New session as ${agent.name}`}
           onClick={onRun}
         >
-          <Play />
+          <MessageSquarePlus />
         </Button>
         <Button
           variant="ghost"

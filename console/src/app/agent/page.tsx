@@ -3,7 +3,7 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Pencil, Play, Trash2 } from "lucide-react";
+import { ArrowLeft, MessageSquarePlus, Pencil, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -81,7 +81,7 @@ function AgentInner() {
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" disabled={!agent || running} onClick={() => setRunning(true)}>
-            <Play />
+            <MessageSquarePlus />
             New session
           </Button>
           <Button
