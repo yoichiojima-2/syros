@@ -185,6 +185,80 @@ async def test_task_validation():
         )
 
 
+async def test_concurrent_tasks_may_not_share_a_workspace():
+    store = FakeStore()
+    ws = {"workspace": "shared"}
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):  # two roots
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x", "options": ws, "depends_on": []},
+                {"id": "b", "prompt": "y", "options": ws, "depends_on": []},
+            ],
+        )
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):  # the workflow default
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x", "depends_on": []},
+                {"id": "b", "prompt": "y", "depends_on": []},
+            ],
+            defaults=AgentOptions(workspace="shared"),
+        )
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):  # a parallel branch
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x"},
+                {"id": "b", "prompt": "y", "options": ws, "depends_on": ["a"]},
+                {"id": "c", "prompt": "z", "options": ws, "depends_on": ["a"]},
+            ],
+        )
+    # different workspaces never contend, and neither do ordered tasks
+    await make_chain(
+        store,
+        [
+            {"id": "a", "prompt": "x", "options": ws, "depends_on": []},
+            {"id": "b", "prompt": "y", "options": {"workspace": "other"}, "depends_on": []},
+        ],
+        name="disjoint",
+    )
+    await make_chain(
+        store,
+        [{"id": "a", "prompt": "x"}, {"id": "b", "prompt": "y"}, {"id": "c", "prompt": "z"}],
+        name="linear",
+        defaults=AgentOptions(workspace="shared"),
+    )
+
+
+async def test_concurrent_tasks_may_not_share_an_agents_workspace():
+    store = FakeStore()
+    await store.create_agent("scribe", {"options": AgentOptions(workspace="shared").serialize()})
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x", "agent": "scribe", "depends_on": []},
+                {"id": "b", "prompt": "y", "agent": "scribe", "depends_on": []},
+            ],
+        )
+    # the task's own workspace wins over the agent's, as agents.resolve layers it
+    await make_chain(
+        store,
+        [
+            {"id": "a", "prompt": "x", "agent": "scribe", "depends_on": []},
+            {
+                "id": "b",
+                "prompt": "y",
+                "agent": "scribe",
+                "options": {"workspace": "other"},
+                "depends_on": [],
+            },
+        ],
+        name="layered",
+    )
+
+
 async def test_omitted_depends_on_chains_to_previous():
     store = FakeStore()
     await make_chain(store, [{"id": "a", "prompt": "x"}, {"id": "b", "prompt": "y"}])
@@ -536,6 +610,49 @@ async def test_workspace_busy_release_fails_task():
     first = task_state(store, "chain", run_id, "research")["session_id"]
     run = await complete(store, first, result=None, stop_reason="workspace_busy")
     assert run["tasks"]["research"]["status"] == "failed"
+    assert run["status"] == "failed"
+
+
+async def test_losing_the_create_race_keeps_the_live_task(no_job_trigger, monkeypatch):
+    store = FakeStore()
+    await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
+    run_id = await workflows.run_now("chain", options=OPTS, store=store)
+    sid = task_state(store, "chain", run_id, "research")["session_id"]
+    # rewind to a claim whose launcher had not created the session yet, so the
+    # reconcile pass re-launches it past the grace
+    task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
+    del store.sessions[sid]
+    winner = store.create_session
+
+    async def racing_create(session_id, *args, **kwargs):
+        await winner(session_id, *args, **kwargs)  # the other launcher gets there first
+        raise ValueError(f"session {session_id} exists")
+
+    monkeypatch.setattr(store, "create_session", racing_create)
+    await workflows.tick(OPTS, store=store, now=time.time())
+    state = task_state(store, "chain", run_id, "research")
+    assert state["status"] == "running"  # the winner's session stands
+    assert state["session_id"] == sid
+    assert task_state(store, "chain", run_id, "report")["status"] == "pending"
+
+
+async def test_launch_failure_fails_the_task(no_job_trigger, monkeypatch):
+    store = FakeStore()
+    await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
+    run_id = await workflows.run_now("chain", options=OPTS, store=store)
+    sid = task_state(store, "chain", run_id, "research")["session_id"]
+    task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
+    del store.sessions[sid]
+
+    async def broken_create(*args, **kwargs):
+        raise ValueError("firestore is down")
+
+    monkeypatch.setattr(store, "create_session", broken_create)
+    await workflows.tick(OPTS, store=store, now=time.time())
+    run = store.runs["chain"][run_id]
+    assert run["tasks"]["research"]["status"] == "failed"
+    assert "firestore is down" in run["tasks"]["research"]["error"]
+    assert run["tasks"]["report"]["status"] == "skipped"
     assert run["status"] == "failed"
 
 

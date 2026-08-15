@@ -245,10 +245,15 @@ Two channels, both explicit:
 2. **Files** — tasks in one run share whatever `workspace` / `artifacts`
    spaces their options mount, which already exist and already checkpoint
    (Dagster's split: dependencies order execution, storage carries data).
-   Guidance, not mechanism: a *linear* chain can share a `workspace` (the
-   exclusive lease is harmless when tasks run one at a time); *parallel*
-   branches must use artifact spaces (no lease; the workspace lease would
-   serialize them — the trap `deployments.tick` already documents).
+   A *linear* chain can share a `workspace` (the exclusive lease is harmless
+   when tasks run one at a time); *parallel* branches must use artifact spaces
+   (no lease; the workspace lease would not serialize them but fail the loser
+   `workspace_busy` — the trap `deployments.tick` already documents). Checked
+   at definition time rather than left as guidance: `_validate_tasks` rejects a
+   definition in which two tasks that can run at the same time name the same
+   workspace (via task, workflow, or agent options — an installation-wide
+   `settings/global` default is exempt, since it must not retroactively
+   invalidate saved definitions).
 
 Deliberately not: Step Functions-style input/output path plumbing, or a
 LangGraph-style shared typed state. Both buy parallel-branch power at a

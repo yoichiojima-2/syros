@@ -29,6 +29,7 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
+                                        (--workspace lists a workspace's skills)
 syros skills files <name>               list one skill's files (--workspace for workspace skills)
 syros skills cat <name> <file>          print one skill file's content
 syros skills sync                       seed skills/ from the official anthropics/skills repo
@@ -554,7 +555,7 @@ async def _skills(args) -> None:
             raise SystemExit(str(exc)) from exc
         sys.stdout.buffer.write(data)
         return
-    stats = await GcsObjects(project, bucket).skill_stats()
+    stats = await GcsObjects(project, bucket).skill_stats(workspace=args.workspace)
     for name in sorted(stats):
         stat = stats[name]
         print(f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']} bytes")
