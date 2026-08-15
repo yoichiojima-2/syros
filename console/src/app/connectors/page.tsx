@@ -83,7 +83,9 @@ export default function ConnectorsPage() {
       <p className="text-[12px] text-muted-foreground">
         Connectors mount the platform&apos;s official hosted MCP server into a session; credentials
         live in Secret Manager and are injected inside the sandbox at run start. Tool calls stay
-        audited and gateable like any other tool.
+        audited and gateable like any other tool. Verify a stored credential with{" "}
+        <span className="font-mono">syros connectors test</span>; see{" "}
+        <span className="font-mono">docs/connectors.md</span> for the full setup guide.
       </p>
     </div>
   );

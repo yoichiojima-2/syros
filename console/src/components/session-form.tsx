@@ -10,6 +10,7 @@ import {
   BIGQUERY_TOOL,
   BigQueryToggle,
   ChoiceField,
+  ConnectorPicker,
   Field,
   MODELS,
   TOOLS,
@@ -38,6 +39,7 @@ export function SessionForm({
   const [artifacts, setArtifacts] = useState("");
   const [tools, setTools] = useState<string[]>([]);
   const [extraTools, setExtraTools] = useState("");
+  const [connectors, setConnectors] = useState<string[]>([]);
   const [bigquery, setBigquery] = useState(false);
   const [budget, setBudget] = useState("");
   const [error, setError] = useState("");
@@ -65,6 +67,7 @@ export function SessionForm({
       if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
     }
     if (allowed.length) options.allowed_tools = allowed;
+    if (connectors.length) options.connectors = connectors;
     if (budget.trim()) options.max_budget_usd = Number(budget);
     try {
       const { session_id } = await post<{ session_id: string }>("/api/sessions", {
@@ -182,6 +185,9 @@ export function SessionForm({
                 className="h-7 w-52 font-mono text-[11px]"
               />
             </div>
+          </Field>
+          <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
+            <ConnectorPicker value={connectors} onChange={setConnectors} />
           </Field>
           <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
             <BigQueryToggle on={bigquery} onChange={setBigquery} />

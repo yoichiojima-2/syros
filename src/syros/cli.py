@@ -178,7 +178,10 @@ def _run_options(args) -> AgentOptions:
         mcp_servers["bq"] = {"type": "builtin", "name": "bigquery"}
         if "mcp__bq__query" not in allow:
             allow.append("mcp__bq__query")
+    flags = getattr(args, "connector", None) or []
+    connectors = [name for flag in flags for name in flag.split(",") if name]
     return AgentOptions(
+        connectors=connectors or None,
         model=args.model,
         system_prompt=args.system_prompt,
         allowed_tools=allow,
@@ -560,14 +563,43 @@ async def _connectors(args) -> None:
 
     if args.action == "list":
         status = await asyncio.to_thread(connectors.credential_status, project)
+        print(f"{'NAME':<8}  {'LABEL':<18}  {'AUTH':<7}  {'STATUS':<12}  UPDATED")
         for connector in connectors.CATALOG.values():
             state = status.get(connector.name) or {}
             configured = bool(state.get("configured"))
+            hint = f"run `syros connectors auth {connector.name}`"
+            if connector.auth == "token":
+                hint = f"run `syros connectors set {connector.name}`"
             print(
                 f"{connector.name:<8}  {connector.label:<18}  {connector.auth:<7}"
-                f"  {'configured' if configured else '—':<12}"
-                f"  {_local(state.get('updated')) if configured else ''}"
+                f"  {'configured' if configured else 'not set':<12}"
+                f"  {_local(state.get('updated')) if configured else hint}"
             )
+        return
+
+    if args.action == "test":
+        if args.name:
+            names = [args.name]
+        else:
+            status = await asyncio.to_thread(connectors.credential_status, project)
+            names = [name for name, state in status.items() if state.get("configured")]
+            if not names:
+                raise SystemExit(
+                    "no connector has a stored credential — run `syros connectors auth <name>`"
+                )
+        failed = False
+        for name in names:
+            try:
+                results = await asyncio.to_thread(connectors.probe, project, name)
+            except connectors.ConnectorError as error:
+                print(f"{name:<8}  {'-':<16}  {error}")
+                failed = True
+                continue
+            for key, (ok, detail) in results.items():
+                print(f"{name:<8}  {key:<16}  {detail}")
+                failed = failed or not ok
+        if failed:
+            raise SystemExit(1)
         return
 
     if not args.name:
@@ -674,6 +706,12 @@ def main() -> None:
     agents.add_argument("name", nargs="?")
     agents.add_argument("--description", default=None)
     # Run options: the subset of AgentOptions worth having on the command line.
+    agents.add_argument(
+        "--connector",
+        action="append",
+        metavar="NAME",
+        help="attach a platform connector (repeatable, or comma-separated)",
+    )
     agents.add_argument("--model", default=None)
     agents.add_argument("--system-prompt", default=None)
     agents.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
@@ -702,6 +740,12 @@ def main() -> None:
     deployments.add_argument("--prompt", default=None)
     deployments.add_argument("--agent", default=None, help="stored agent the runs default to")
     # Run options: the subset of AgentOptions worth having on the command line.
+    deployments.add_argument(
+        "--connector",
+        action="append",
+        metavar="NAME",
+        help="attach a platform connector (repeatable, or comma-separated)",
+    )
     deployments.add_argument("--model", default=None)
     deployments.add_argument("--system-prompt", default=None)
     deployments.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
@@ -744,7 +788,7 @@ def main() -> None:
 
     connectors = sub.add_parser("connectors")
     connectors.add_argument(
-        "action", nargs="?", default="list", choices=["list", "auth", "set", "remove"]
+        "action", nargs="?", default="list", choices=["list", "auth", "set", "test", "remove"]
     )
     connectors.add_argument("name", nargs="?")
     connectors.add_argument("--token", default=None, help="credential value for `set`")

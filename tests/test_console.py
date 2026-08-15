@@ -359,6 +359,17 @@ async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
     assert (await api(store).poll(sid, after=0))["session"]["state"] == "starting"
 
 
+async def test_create_session_carries_connectors(no_job_trigger):
+    store = FakeStore()
+    # The session form sends connector names only; expansion (URLs + tokens)
+    # happens inside the sandbox, so the stored options carry just the list.
+    result = await api(store).create_session(
+        {"prompt": "post the summary to slack", "options": {"connectors": ["slack", "github"]}}
+    )
+    session = store.sessions[result["session_id"]]
+    assert session["options"]["connectors"] == ["slack", "github"]
+
+
 async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
     # What the form's BigQuery toggle posts: the builtin reference plus its
     # pre-allowed tool, passing through options_from_doc/validate unchanged.

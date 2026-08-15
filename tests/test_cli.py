@@ -2,7 +2,10 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from syros.cli import _run_options
+from syros.errors import OptionsError
 
 
 def args(**overrides):
@@ -16,6 +19,7 @@ def args(**overrides):
         max_turns=None,
         max_budget_usd=None,
         bigquery=False,
+        connector=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -42,3 +46,19 @@ def test_run_options_validate_with_bigquery():
     options = _run_options(args(bigquery=True))
     options.project = "p"
     options.validate()  # the flag emits exactly what validate() accepts
+
+
+def test_connector_flag_repeatable_and_comma_separated():
+    options = _run_options(args(connector=["slack", "github,google"]))
+    assert options.connectors == ["slack", "github", "google"]
+
+
+def test_connector_flag_absent_stays_none():
+    assert _run_options(args()).connectors is None
+
+
+def test_connector_flag_unknown_name_rejected_by_validate():
+    options = _run_options(args(connector=["jira"]))
+    options.project = "p"
+    with pytest.raises(OptionsError, match="jira"):
+        options.validate()

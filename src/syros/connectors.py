@@ -260,6 +260,67 @@ def expand(names: list[str], tokens: dict[str, str]) -> dict[str, dict[str, obje
     return servers
 
 
+def _probe_server(url: str, token: str) -> tuple[bool, str]:
+    """POST a minimal MCP initialize; classify whether the server took the token.
+
+    An auth check, not a full MCP handshake: some vendors want streaming
+    session negotiation and answer a bare POST with a non-2xx status. Only
+    401/403 means the credential is bad; any other HTTP answer proves the
+    server saw and accepted the Authorization header.
+    """
+    import urllib.error
+
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "syros", "version": "0"},
+            },
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {token}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return True, f"ok (HTTP {response.status})"
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            return False, f"credential rejected (HTTP {error.code})"
+        return True, f"ok (HTTP {error.code}, credential accepted)"
+    except Exception as error:
+        return False, f"unreachable: {error}"
+
+
+def probe(project: str, name: str) -> dict[str, tuple[bool, str]]:
+    """Test a stored credential against each of the connector's servers.
+
+    Resolves the token exactly the way a run would (so an expired refresh
+    token fails here, not mid-session) and returns {server_key: (ok, detail)}.
+    Raises ConnectorError when no credential is stored or refresh fails.
+    """
+    if name not in CATALOG:
+        raise OptionsError(f"unknown connector {name!r}")
+    payload = read_credential(project, name)
+    if payload is None:
+        raise ConnectorError(
+            f"connector {name!r} has no stored credential —"
+            f" run `syros connectors auth {name}` (or `set`)"
+        )
+    token = resolve_token(name, payload)
+    return {key: _probe_server(url, token) for key, url in CATALOG[name].servers.items()}
+
+
 def mcp_servers_for(project: str, names: list[str]) -> dict[str, dict[str, object]]:
     """The runner's entrypoint: stored credentials -> ready mcp_servers dict."""
     tokens: dict[str, str] = {}

@@ -226,6 +226,7 @@ syros connectors                     # catalog + credential status
 syros connectors auth slack          # browser OAuth (MCP-spec, dynamic client registration)
 syros connectors auth google --client-secrets oauth_client.json
 syros connectors set github          # paste a static token (prompted, or --token/--file)
+syros connectors test                # verify every stored credential against its servers
 syros connectors remove notion       # destroy the stored credential
 ```
 
@@ -233,14 +234,19 @@ syros connectors remove notion       # destroy the stored credential
 AgentOptions(connectors=["slack", "github"])   # tools arrive as mcp__slack__*, mcp__github__*
 ```
 
-Agents and deployments take the same list (an override replaces the persona's list, like
-`allowed_tools`); the console shows the catalog under Connectors and offers the picker in
-both forms. Notes: tokens are minted once per run, so a run longer than the token's
-lifetime (~1h for Google) loses that connector's tools until the next run; a missing or
-unrefreshable credential fails the run fast with `stop_reason=connector_error`; Slack may
-require a workspace admin to approve the app the OAuth flow registers. Rolling out: deploy
-the new image before creating connector-bearing sessions — older runner images reject the
-new option field.
+Agents and deployments take the same list — `--connector slack --connector github` (or
+comma-separated) on `agents create` / `deployments create`, and an override replaces the
+persona's list, like `allowed_tools`. The console shows the catalog under Connectors and
+offers the picker in the session, agent, and deployment forms. Notes: tokens are minted
+once per run, so a run longer than the token's lifetime (~1h for Google) loses that
+connector's tools until the next run; a missing or unrefreshable credential fails the run
+fast with `stop_reason=connector_error` — `syros connectors test` catches this before a
+run does. Rolling out: deploy the new image before creating connector-bearing sessions —
+older runner images reject the new option field.
+
+The full setup guide — per-platform authorization walkthroughs (including creating the
+Google OAuth client), verification, and troubleshooting — is in
+[docs/connectors.md](docs/connectors.md).
 
 ## Skills
 

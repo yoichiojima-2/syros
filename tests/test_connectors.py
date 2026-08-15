@@ -153,3 +153,79 @@ def test_mcp_servers_for_missing_credential_names_connector(monkeypatch):
 def test_mcp_servers_for_rejects_unknown_names():
     with pytest.raises(OptionsError):
         connectors.mcp_servers_for("proj", ["jira"])
+
+
+# --- probe ---
+
+
+class _FakeResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _http_error(code):
+    import io
+    import urllib.error
+
+    return urllib.error.HTTPError("https://x", code, "err", {}, io.BytesIO(b""))
+
+
+def test_probe_server_ok(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(request):
+        seen["auth"] = request.get_header("Authorization")
+        seen["url"] = request.full_url
+        return _FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ok, detail = connectors._probe_server("https://mcp.example/mcp", "tok")
+    assert ok and "200" in detail
+    assert seen["auth"] == "Bearer tok"
+    assert seen["url"] == "https://mcp.example/mcp"
+
+
+def test_probe_server_auth_rejection_and_other_statuses(monkeypatch):
+    def raiser(code):
+        def fake_urlopen(request):
+            raise _http_error(code)
+
+        return fake_urlopen
+
+    monkeypatch.setattr("urllib.request.urlopen", raiser(401))
+    ok, detail = connectors._probe_server("https://mcp.example/mcp", "tok")
+    assert not ok and "401" in detail
+
+    # a non-auth error status still proves the credential was accepted
+    monkeypatch.setattr("urllib.request.urlopen", raiser(406))
+    ok, detail = connectors._probe_server("https://mcp.example/mcp", "tok")
+    assert ok and "406" in detail
+
+
+def test_probe_server_network_failure(monkeypatch):
+    def fake_urlopen(request):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ok, detail = connectors._probe_server("https://mcp.example/mcp", "tok")
+    assert not ok and "unreachable" in detail
+
+
+def test_probe_resolves_stored_credential_per_server(monkeypatch):
+    monkeypatch.setattr(connectors, "read_credential", lambda project, name: "ghp_tok")
+    monkeypatch.setattr(connectors, "_probe_server", lambda url, token: (True, f"ok {token}"))
+    results = connectors.probe("proj", "github")
+    assert results == {"github": (True, "ok ghp_tok")}
+
+
+def test_probe_without_credential_raises(monkeypatch):
+    monkeypatch.setattr(connectors, "read_credential", lambda project, name: None)
+    with pytest.raises(ConnectorError, match="slack"):
+        connectors.probe("proj", "slack")
+    with pytest.raises(OptionsError):
+        connectors.probe("proj", "jira")
