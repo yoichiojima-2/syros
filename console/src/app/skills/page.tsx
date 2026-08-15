@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SkillDropZone, SkillUpload } from "@/components/skill-upload";
 import { useAction, useNow, useSkillFiles, useSkills } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime } from "@/lib/format";
@@ -15,16 +16,17 @@ import type { SyncSkillsResponse } from "@/lib/types";
 
 // Skills live under skills/{name}/ (global) and team-skills/{workspace}/{name}/
 // in the bucket, and are mounted into a session's HOME at run start, so what
-// this page shows is exactly what the next run will discover. "Sync official
-// skills" seeds the global prefix with editable copies of
-// github.com/anthropics/skills.
+// this page shows is exactly what the next run will discover. A skill is a
+// directory, so uploading one is how you create one — drop a folder anywhere on
+// the list, or use the picker. "Sync official skills" seeds the global prefix
+// with editable copies of github.com/anthropics/skills.
 //
 // The row leads with the SKILL.md description rather than the byte counts: it
 // is the text the model matches on when deciding whether a skill fires, so it
 // is the only thing that distinguishes twenty rows of slugs from each other.
 
 export default function SkillsPage() {
-  const skills = useSkills();
+  const { skills, refresh } = useSkills();
   const now = useNow();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -34,6 +36,7 @@ export default function SkillsPage() {
     run(async () => {
       const result = await post<SyncSkillsResponse>("/api/skills/sync");
       const skipped = result.skipped.length ? `, ${result.skipped.length} skipped (too large)` : "";
+      refresh();
       return `synced ${result.files} file(s) across ${result.skills.length} skill(s)${skipped}`;
     });
 
@@ -57,87 +60,92 @@ export default function SkillsPage() {
       <div className="flex items-center gap-3">
         <h1 className="flex-1 font-serif text-2xl tracking-tight">Skills</h1>
         {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
+        <SkillUpload onUploaded={refresh} run={run} />
         <Button variant="outline" size="sm" onClick={sync}>
           <DownloadCloud /> Sync official skills
         </Button>
       </div>
-      <Card>
-        <CardContent className="px-0 py-0">
-          {skills === null ? (
-            <div className="space-y-2 p-4">
-              <Skeleton className="h-8" />
-              <Skeleton className="h-8" />
-            </div>
-          ) : skills.length === 0 ? (
-            <p className="p-6 text-center text-[13px] text-muted-foreground">
-              No skills yet — sync the official Anthropic skills above, or upload your own from a
-              skill&apos;s page. Every session mounts all skills at start.
-            </p>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2.5">
-                <div className="relative flex min-w-[240px] flex-1 items-center">
-                  <Search className="pointer-events-none absolute left-2.5 size-3.5 text-faint" />
-                  <Input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Filter by name or what it does"
-                    aria-label="Filter skills"
-                    className="h-8 pl-8 text-[13px]"
-                  />
-                </div>
-                <span className="font-mono text-[11px] whitespace-nowrap text-faint">
-                  {term
-                    ? `${hits.length} of ${skills.length}`
-                    : `${skills.length} skills · mounted at session start`}
-                </span>
+      <SkillDropZone onUploaded={refresh} run={run}>
+        <Card>
+          <CardContent className="px-0 py-0">
+            {skills === null ? (
+              <div className="space-y-2 p-4">
+                <Skeleton className="h-8" />
+                <Skeleton className="h-8" />
               </div>
-              {hits.length === 0 ? (
-                <p className="px-3 py-9 text-center text-[13px] text-muted-foreground">
-                  Nothing matches “{query.trim()}”.
-                </p>
-              ) : (
-                <>
-                  {global.length > 0 && <Section title="Global" />}
-                  {global.map((skill) => (
-                    <SkillRow
-                      key={skill.name}
-                      skill={skill}
-                      now={now}
-                      query={term}
-                      expanded={expanded === skill.name}
-                      onToggle={() => setExpanded(expanded === skill.name ? null : skill.name)}
+            ) : skills.length === 0 ? (
+              <p className="p-6 text-center text-[13px] text-muted-foreground">
+                No skills yet — drop a skill directory here (a folder with a SKILL.md in it), or sync
+                the official Anthropic skills above. Every session mounts all skills at start.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2.5">
+                  <div className="relative flex min-w-[240px] flex-1 items-center">
+                    <Search className="pointer-events-none absolute left-2.5 size-3.5 text-faint" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Filter by name or what it does"
+                      aria-label="Filter skills"
+                      className="h-8 pl-8 text-[13px]"
                     />
-                  ))}
-                  {(scoped.length > 0 || !term) && <Section title="Workspace" />}
-                  {scoped.map((skill) => {
-                    const key = `${skill.workspace}/${skill.name}`;
-                    return (
+                  </div>
+                  <span className="font-mono text-[11px] whitespace-nowrap text-faint">
+                    {term
+                      ? `${hits.length} of ${skills.length}`
+                      : `${skills.length} skills · mounted at session start`}
+                  </span>
+                </div>
+                {hits.length === 0 ? (
+                  <p className="px-3 py-9 text-center text-[13px] text-muted-foreground">
+                    Nothing matches “{query.trim()}”.
+                  </p>
+                ) : (
+                  <>
+                    {global.length > 0 && <Section title="Global" />}
+                    {global.map((skill) => (
                       <SkillRow
-                        key={key}
+                        key={skill.name}
                         skill={skill}
                         now={now}
                         query={term}
-                        expanded={expanded === key}
-                        onToggle={() => setExpanded(expanded === key ? null : key)}
+                        expanded={expanded === skill.name}
+                        onToggle={() => setExpanded(expanded === skill.name ? null : skill.name)}
+                        onDeleted={refresh}
                       />
-                    );
-                  })}
-                  {scoped.length === 0 && !term && (
-                    <p className="px-3.5 pt-0.5 pb-3 text-[12.5px] text-muted-foreground">
-                      None yet — a workspace skill lives under{" "}
-                      <code className="font-mono text-[11.5px] text-faint">
-                        team-skills/&#123;workspace&#125;/
-                      </code>{" "}
-                      and mounts only for that workspace, shadowing a global of the same name.
-                    </p>
-                  )}
-                </>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
+                    ))}
+                    {(scoped.length > 0 || !term) && <Section title="Workspace" />}
+                    {scoped.map((skill) => {
+                      const key = `${skill.workspace}/${skill.name}`;
+                      return (
+                        <SkillRow
+                          key={key}
+                          skill={skill}
+                          now={now}
+                          query={term}
+                          expanded={expanded === key}
+                          onToggle={() => setExpanded(expanded === key ? null : key)}
+                          onDeleted={refresh}
+                        />
+                      );
+                    })}
+                    {scoped.length === 0 && !term && (
+                      <p className="px-3.5 pt-0.5 pb-3 text-[12.5px] text-muted-foreground">
+                        None yet — a workspace skill lives under{" "}
+                        <code className="font-mono text-[11.5px] text-faint">
+                          team-skills/&#123;workspace&#125;/
+                        </code>{" "}
+                        and mounts only for that workspace, shadowing a global of the same name.
+                      </p>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </SkillDropZone>
     </div>
   );
 }
@@ -174,12 +182,14 @@ function SkillRow({
   query,
   expanded,
   onToggle,
+  onDeleted,
 }: {
   skill: SkillSummary;
   now: number;
   query: string;
   expanded: boolean;
   onToggle: () => void;
+  onDeleted: () => void;
 }) {
   const [flash, run] = useAction();
   const Chevron = expanded ? ChevronDown : ChevronRight;
@@ -193,6 +203,7 @@ function SkillRow({
       await post(`/api/skills/${encodeURIComponent(skill.name)}/delete`, {
         workspace: skill.workspace,
       });
+      onDeleted();
       return `deleted ${skill.name}`;
     });
   };

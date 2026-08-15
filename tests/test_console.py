@@ -1066,6 +1066,25 @@ async def test_skill_file_read_write_delete():
         await console.delete_skill_file("pdf", "logo.bin")
 
 
+async def test_writing_a_file_creates_the_skill():
+    """What the console's folder upload relies on: a skill has no create
+    endpoint, it exists as soon as the first file lands under its prefix. The
+    browser walks the directory and sends one write per file, nested paths and
+    all — global or scoped to a workspace."""
+    objects = FakeObjects()
+    console = api(FakeStore(), objects=objects)
+
+    await console.write_skill_file("my-skill", "SKILL.md", "# new")
+    await console.write_skill_file("my-skill", "scripts/fill.py", "print()")
+    assert objects.skills["my-skill"] == {"SKILL.md": b"# new", "scripts/fill.py": b"print()"}
+    listing = await console.skill_files("my-skill")
+    assert [f["name"] for f in listing["files"]] == ["SKILL.md", "scripts/fill.py"]
+
+    await console.write_skill_file("ws-skill", "SKILL.md", "# ws", workspace="team")
+    assert objects.workspace_skills["team"]["ws-skill"] == {"SKILL.md": b"# ws"}
+    assert "ws-skill" not in objects.skills  # scopes never collide
+
+
 async def test_skill_file_too_large():
     objects = FakeObjects(skills={"pdf": {"big.md": b"x" * 200}})
     with pytest.raises(TooLarge):

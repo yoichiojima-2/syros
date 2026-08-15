@@ -306,10 +306,21 @@ stays deleted.
 
 ```
 syros skills                         # list skills in the bucket
+syros skills push ./my-skill         # upload a local skill directory
 syros skills files pdf               # list one skill's files
 syros skills cat pdf SKILL.md        # print one skill file
 syros skills sync                    # seed skills/ from the official anthropics/skills repo
 ```
+
+A skill is a directory, so uploading one is how you create one. `push` walks the
+directory, names the skill after its basename (`--name` overrides), and requires a
+`SKILL.md` at the root — without one nothing would discover the skill, so a push that
+found no SKILL.md would report success and mount nothing. Tooling state (`.git/`,
+`__pycache__/`, `node_modules/`, dotfiles) and symlinks are skipped, and files over
+10 MiB are skipped and reported so everything a push writes stays console-editable.
+Pushes merge; `--replace` clears the skill first, so files deleted locally are dropped.
+The console does the same thing from the browser: drop a folder onto the Skills page
+(or a workspace's skills card), or use the folder picker.
 
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
 tarball and copies each skill into the bucket — nothing is vendored, and the copies are
@@ -319,7 +330,7 @@ into every run) and per-workspace (`team-skills/{workspace}/`, mounted only for 
 sessions, shadowing a same-named global). The console has a Skills view with the same
 surface as workspaces — browse a skill, edit a file in place, upload, or delete the
 skill; a workspace's skills live on its workspace page. `syros skills --workspace
-<name>` scopes the CLI.
+<name>` scopes both the CLI and where a push lands.
 
 ## Analysis
 

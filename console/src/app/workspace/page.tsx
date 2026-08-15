@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { FileEditor } from "@/components/file-editor";
 import { FileManager, type FileOps } from "@/components/file-manager";
 import { OptionsForm } from "@/components/options-form";
+import { SkillDropZone, SkillUpload } from "@/components/skill-upload";
 import { useAction, useNow, useSkills, useWorkspaceFiles, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime, shortId } from "@/lib/format";
@@ -278,7 +279,7 @@ function WorkspaceInner() {
  *  the same browse/edit/delete flows as the global skills pages. */
 function WorkspaceSkills({ workspace, now }: { workspace: string; now: number }) {
   const router = useRouter();
-  const skills = useSkills(workspace);
+  const { skills, refresh } = useSkills(workspace);
   const [flash, run] = useAction();
 
   const create = () => {
@@ -291,64 +292,69 @@ function WorkspaceSkills({ workspace, now }: { workspace: string; now: number })
     if (!confirm(`Delete the whole skill ${name}? Every file under it is removed.`)) return;
     run(async () => {
       await post(`/api/skills/${encodeURIComponent(name)}/delete`, { workspace });
+      refresh();
       return `deleted ${name}`;
     });
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          <div className="flex-1 space-y-1.5">
-            <CardTitle>Workspace skills</CardTitle>
-            <CardDescription>
-              Mounted into this workspace&apos;s sessions at run start, alongside the global skills.
-            </CardDescription>
+    <SkillDropZone workspace={workspace} onUploaded={refresh} run={run}>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 space-y-1.5">
+              <CardTitle>Workspace skills</CardTitle>
+              <CardDescription>
+                Mounted into this workspace&apos;s sessions at run start, alongside the global
+                skills.
+              </CardDescription>
+            </div>
+            {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
+            <SkillUpload workspace={workspace} onUploaded={refresh} run={run} />
+            <Button variant="outline" size="sm" onClick={create}>
+              <FilePlus2 /> New skill
+            </Button>
           </div>
-          {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
-          <Button variant="outline" size="sm" onClick={create}>
-            <FilePlus2 /> New skill
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="px-2 pb-2">
-        {skills === null ? (
-          <div className="space-y-2 p-2">
-            <Skeleton className="h-8" />
-            <Skeleton className="h-8" />
-          </div>
-        ) : skills.length === 0 ? (
-          <p className="p-4 text-center text-[13px] text-muted-foreground">
-            No workspace skills yet — create one and add its SKILL.md.
-          </p>
-        ) : (
-          <ul className="space-y-0.5">
-            {skills.map((skill) => (
-              <li key={skill.name} className="flex items-center gap-3 px-2">
-                <Link
-                  href={`/skill?name=${encodeURIComponent(skill.name)}&workspace=${encodeURIComponent(workspace)}`}
-                  className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium hover:underline"
-                >
-                  {skill.name}
-                </Link>
-                <span className="font-mono text-xs text-muted-foreground">
-                  {skill.file_count} file{skill.file_count === 1 ? "" : "s"} ·{" "}
-                  {bytes(skill.total_size)}
-                </span>
-                <span className="text-xs text-faint">{relTime(skill.updated, now)}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  title={`Delete ${skill.name}`}
-                  onClick={() => remove(skill.name)}
-                >
-                  <Trash2 />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+        </CardHeader>
+        <CardContent className="px-2 pb-2">
+          {skills === null ? (
+            <div className="space-y-2 p-2">
+              <Skeleton className="h-8" />
+              <Skeleton className="h-8" />
+            </div>
+          ) : skills.length === 0 ? (
+            <p className="p-4 text-center text-[13px] text-muted-foreground">
+              No workspace skills yet — upload a skill directory, or drop one here.
+            </p>
+          ) : (
+            <ul className="space-y-0.5">
+              {skills.map((skill) => (
+                <li key={skill.name} className="flex items-center gap-3 px-2">
+                  <Link
+                    href={`/skill?name=${encodeURIComponent(skill.name)}&workspace=${encodeURIComponent(workspace)}`}
+                    className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium hover:underline"
+                  >
+                    {skill.name}
+                  </Link>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {skill.file_count} file{skill.file_count === 1 ? "" : "s"} ·{" "}
+                    {bytes(skill.total_size)}
+                  </span>
+                  <span className="text-xs text-faint">{relTime(skill.updated, now)}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title={`Delete ${skill.name}`}
+                    onClick={() => remove(skill.name)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+    </SkillDropZone>
   );
 }

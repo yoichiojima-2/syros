@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { bytes, relTime } from "@/lib/format";
 import type { BulkFilesResponse, StoredFile } from "@/lib/types";
+import { entriesFromDrop, filesFromInput, readAsBase64, type PickedFile } from "@/lib/upload";
 import { cn } from "@/lib/utils";
 
 // Shared file management for the workspace editor and the artifacts page: a
@@ -68,43 +69,6 @@ function buildTree(files: StoredFile[]): TreeFolder {
   return root;
 }
 
-function readAsBase64(picked: File): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    // readAsDataURL gives "data:<type>;base64,<payload>" — we want the payload
-    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
-    reader.onerror = () => reject(new Error(`could not read ${picked.name}`));
-    reader.readAsDataURL(picked);
-  });
-}
-
-/** Walk a dropped file or directory entry, preserving relative paths. */
-async function walkEntry(
-  entry: FileSystemEntry,
-  prefix: string,
-): Promise<{ path: string; file: File }[]> {
-  if (entry.isFile) {
-    const file = await new Promise<File>((resolve, reject) =>
-      (entry as FileSystemFileEntry).file(resolve, reject),
-    );
-    return [{ path: prefix + entry.name, file }];
-  }
-  const reader = (entry as FileSystemDirectoryEntry).createReader();
-  const children: FileSystemEntry[] = [];
-  // readEntries returns batches; keep reading until an empty one
-  for (;;) {
-    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) =>
-      reader.readEntries(resolve, reject),
-    );
-    if (!batch.length) break;
-    children.push(...batch);
-  }
-  const nested = await Promise.all(
-    children.map((child) => walkEntry(child, `${prefix}${entry.name}/`)),
-  );
-  return nested.flat();
-}
-
 export function FileManager({
   files,
   selected,
@@ -135,7 +99,7 @@ export function FileManager({
   const dragDepth = useRef(0);
   const tree = useMemo(() => buildTree(files), [files]);
 
-  const upload = (picked: { path: string; file: File }[]) => {
+  const upload = (picked: PickedFile[]) => {
     if (!picked.length) return;
     run(async () => {
       for (const { path, file } of picked) {
@@ -244,17 +208,9 @@ export function FileManager({
     dragDepth.current = 0;
     setDragging(false);
     if (disabled) return;
-    const items = [...e.dataTransfer.items];
-    const entries = items
-      .map((item) => item.webkitGetAsEntry?.())
-      .filter((entry): entry is FileSystemEntry => !!entry);
-    if (entries.length) {
-      Promise.all(entries.map((entry) => walkEntry(entry, "")))
-        .then((nested) => upload(nested.flat()))
-        .catch(() => {});
-      return;
-    }
-    upload([...e.dataTransfer.files].map((file) => ({ path: file.name, file })));
+    entriesFromDrop(e)
+      .then(upload)
+      .catch(() => {});
   };
 
   const renderFolder = (node: TreeFolder, depth: number): React.ReactNode => (
@@ -413,10 +369,10 @@ export function FileManager({
           multiple
           className="hidden"
           onChange={(e) => {
-            const picked = [...(e.target.files ?? [])];
+            const picked = filesFromInput(e.target.files);
             // reset so re-picking the same file fires change again
             e.target.value = "";
-            upload(picked.map((file) => ({ path: file.name, file })));
+            upload(picked);
           }}
         />
       </div>
