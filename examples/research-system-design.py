@@ -15,6 +15,7 @@ async def main():
         ),
         # Same task as syros-document.py, but run as the stored "researcher"
         # agent instead of inline options — the persona supplies the defaults.
+        # Create it with `syros presets install researcher`.
         options=AgentOptions(agent="researcher", can_use_tool=approve),
     ):
         print(message)

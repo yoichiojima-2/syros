@@ -339,6 +339,33 @@ export interface SyncSkillsResponse {
   skipped: { skill: string; file: string; size: number }[];
 }
 
+/** One row of GET /api/presets — an example object the install can create.
+ * `name` addresses the preset; `object` is what it creates, which differs only
+ * where two presets create same-named objects in different scopes. */
+export interface PresetRow {
+  name: string;
+  kind: "workspace" | "skill" | "agent" | "workflow";
+  object: string;
+  workspace: string | null;
+  description: string;
+  requires: string[];
+  installed: boolean;
+}
+
+export interface PresetsResponse {
+  now: number;
+  presets: PresetRow[];
+}
+
+/** Reply shape of POST /api/presets/install. */
+export interface InstallPresetsResponse {
+  now: number;
+  ok: boolean;
+  installed: (Omit<PresetRow, "installed"> & { replaced: boolean })[];
+  skipped: (Omit<PresetRow, "installed"> & { reason: string })[];
+  files: number;
+}
+
 export interface SpaceSummary {
   name: string;
   file_count: number;
