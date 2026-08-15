@@ -3,7 +3,7 @@
 An agent is one Firestore document holding the same serialized `AgentOptions`
 subset a session stores: system prompt, model, tools, permission mode,
 workspace, artifact spaces, budgets. Referencing it (`AgentOptions(agent=...)`
-or a deployment's `agent` field) resolves the stored options as defaults, with
+or a workflow task's `agent` field) resolves the stored options as defaults, with
 any explicitly-set option on the caller's side overriding them. Resolution
 happens when a session is created and the merged result is snapshotted onto
 the session, so editing an agent changes future runs only — mirroring Claude

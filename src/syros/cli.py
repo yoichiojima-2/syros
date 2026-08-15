@@ -17,11 +17,12 @@ syros kill <session_id>                 flip the kill switch
 syros agents                            list stored agents (personas)
 syros agents create <name> --system-prompt "..." --allow Read --allow Bash [--bigquery]
 syros agents show|update|delete <name>
-syros deployments                         list deployments and their next run
-syros deployments create <name> --cron "0 9 * * *" --prompt "..." [--agent <name>] [--bigquery]
-syros deployments runs <name>             run history for one deployment
-syros deployments run|pause|resume|delete <name>
-syros tick                              fire every deployment that is due
+syros workflows                         list workflows and their next run
+syros workflows create <name> [--cron "0 9 * * *"] --prompt "..." [--agent <name>] [--bigquery]
+syros workflows create <name> --tasks tasks.json   define a chain (- for stdin)
+syros workflows runs <name>             run history for one workflow, task by task
+syros workflows show|run|pause|resume|delete <name>
+syros tick                              advance active runs, fire every due workflow
 syros artifacts                         list shared artifact spaces
 syros artifacts <space>                 list files in a space
 syros artifacts <space> push <path...>  upload local files/dirs into a space
@@ -967,7 +968,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     except SyrosError as exc:
-        # Bad cron, unknown deployment, unusable options: the user's problem to
+        # Bad cron, unknown workflow, unusable options: the user's problem to
         # fix, not a bug — print the message, skip the traceback.
         raise SystemExit(str(exc)) from exc
 
