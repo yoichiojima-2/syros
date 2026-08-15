@@ -14,8 +14,7 @@ import type { OkResponse } from "@/lib/types";
 import {
   entriesFromDrop,
   filesFromInput,
-  ignored,
-  MAX_UPLOAD_BYTES,
+  uploadable,
   readAsBase64,
   type PickedFile,
 } from "@/lib/upload";
@@ -67,35 +66,37 @@ function SkillInner() {
   // adds it as a subdirectory of that skill. Same filters as a skill upload:
   // tooling state never belongs in a skill, and an oversized file would 413
   // midway through the batch.
+  const doUpload = async (all: PickedFile[]): Promise<string | void> => {
+    if (!name || !all.length) return; // a dragged selection or link carries no files
+    const { keep, dropped } = uploadable(all);
+    if (!keep.length) throw new Error(`nothing to upload — ${dropped.length} file(s) skipped`);
+    let count = 0;
+    try {
+      for (const { path, file } of keep) {
+        await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
+          name: path,
+          content: await readAsBase64(file),
+          encoding: "base64",
+          ...(workspace ? { workspace } : {}),
+        });
+        count += 1;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`${reason} — ${count} of ${keep.length} file(s) uploaded`);
+    } finally {
+      refresh();
+    }
+    if (keep.length === 1) select(keep[0].path);
+    const tail = dropped.length ? `, ${dropped.length} skipped` : "";
+    return keep.length === 1
+      ? `uploaded ${keep[0].path}${tail}`
+      : `uploaded ${keep.length} files${tail}`;
+  };
+
   const upload = (all: PickedFile[]) => {
     if (!name || !all.length) return;
-    const picked = all.filter((f) => !ignored(f.path) && f.file.size <= MAX_UPLOAD_BYTES);
-    const dropped = all.length - picked.length;
-    if (!picked.length) {
-      run(async () => {
-        throw new Error(`nothing to upload — ${dropped} file(s) skipped`);
-      });
-      return;
-    }
-    run(async () => {
-      try {
-        for (const { path, file } of picked) {
-          await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
-            name: path,
-            content: await readAsBase64(file),
-            encoding: "base64",
-            ...(workspace ? { workspace } : {}),
-          });
-        }
-      } finally {
-        refresh();
-      }
-      if (picked.length === 1) select(picked[0].path);
-      const tail = dropped ? `, ${dropped} skipped` : "";
-      return picked.length === 1
-        ? `uploaded ${picked[0].path}${tail}`
-        : `uploaded ${picked.length} files${tail}`;
-    });
+    run(() => doUpload(all));
   };
 
   const create = () => {
@@ -163,9 +164,10 @@ function SkillInner() {
             e.preventDefault();
             dragDepth.current = 0;
             setDragging(false);
-            entriesFromDrop(e)
-              .then(upload)
-              .catch(() => {});
+            // read dataTransfer synchronously, await inside run so a failed
+            // walk reaches the flash instead of an empty catch
+            const picked = entriesFromDrop(e);
+            run(async () => doUpload(await picked));
           }}
         >
           {dragging && (

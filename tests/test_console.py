@@ -1238,13 +1238,16 @@ class FakeBlob:
 def test_descriptions_range_read_and_tolerate_failure():
     """Only the head of each SKILL.md is fetched, and one bad blob can't blank
     the listing — the page still has to render."""
+    from syros import skills
     from syros.console.objects import _descriptions
 
     good = FakeBlob(b"---\ndescription: Reads PDFs\n---\n" + b"z" * 99_000)
     described = _descriptions({"pdf": good, "broken": FakeBlob(boom=True)}, {})
 
     assert described == {"pdf": "Reads PDFs"}
-    assert good.asked == 4096  # a prefix, not the 99 KB body
+    # a prefix, not the 99 KB body — tied to the constant so tuning it is one edit
+    assert good.asked == skills.FRONTMATTER_BYTES
+    assert good.asked < len(good.data)
 
 
 def test_descriptions_cache_by_generation():

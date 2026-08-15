@@ -11,7 +11,13 @@ export interface PickedFile {
 
 /** Mirror of MAX_PREVIEW_BYTES in src/syros/console/objects.py — the server's
  *  per-file write cap. Checked here so one big file doesn't 413 midway through
- *  a batch, leaving half a directory uploaded. */
+ *  a batch, leaving half a directory uploaded.
+ *
+ *  Load-bearing: base64 inflates a body by 4/3, so this must stay comfortably
+ *  under MAX_BODY_BYTES in src/syros/console/server.py (16 MiB) or an upload
+ *  under the per-file cap still dies at the body cap — where the server closes
+ *  the socket mid-request and the browser reports a network error, not a 413.
+ *  10 MiB → ~13.3 MiB body, ~2.8 MiB of headroom. Raise both together. */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 /** Mirror of IGNORED in src/syros/skills.py: a skill folder usually sits in a
@@ -20,6 +26,44 @@ export function ignored(path: string): boolean {
   return path
     .split("/")
     .some((part) => part.startsWith(".") || part === "__pycache__" || part === "node_modules");
+}
+
+/** Junk by name, for the generic file manager. Deliberately NOT `ignored`'s
+ *  dot-prefix sweep: a workspace is a working directory, and the runner reads
+ *  its .claude/settings.json as project settings (setting_sources in runner.py),
+ *  so .claude/, .github/ and .gitignore have to survive an upload. Only the
+ *  tooling state nobody means to ship is dropped. */
+const JUNK = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".venv",
+  ".DS_Store",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".next",
+  "__pycache__",
+  "node_modules",
+]);
+
+export function ignoredInTree(path: string): boolean {
+  return path.split("/").some((part) => JUNK.has(part));
+}
+
+/** Split a pick into what to upload and what to drop — tooling state, and files
+ *  over the server's per-write cap. Both upload flows partition the same way so
+ *  a skipped file is reported rather than 413-ing midway through the batch. */
+export function uploadable(
+  picked: PickedFile[],
+  isIgnored: (path: string) => boolean = ignored,
+): { keep: PickedFile[]; dropped: PickedFile[] } {
+  const keep: PickedFile[] = [];
+  const dropped: PickedFile[] = [];
+  for (const item of picked) {
+    (isIgnored(item.path) || item.file.size > MAX_UPLOAD_BYTES ? dropped : keep).push(item);
+  }
+  return { keep, dropped };
 }
 
 export function readAsBase64(picked: File): Promise<string> {

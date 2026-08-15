@@ -28,6 +28,9 @@ OFFICIAL_SKILLS_TARBALL = "https://github.com/anthropics/skills/archive/refs/hea
 
 SKILL_MD = "SKILL.md"
 
+# GCS caps an object name at 1024 bytes; a POSIX path can be longer.
+MAX_OBJECT_NAME_BYTES = 1024
+
 # Directory names a push never uploads. A skill directory usually sits inside a
 # checkout, so a plain recursive walk would sweep up tooling state that is not
 # part of the skill. Anything dot-prefixed goes too (.git, .venv, .DS_Store).
@@ -35,9 +38,54 @@ IGNORED = ("__pycache__", "node_modules")
 
 # Frontmatter sits at the top of SKILL.md, so the console reads a prefix rather
 # than the whole file — canvas-design's is 5 MB and the description is line 3.
-FRONTMATTER_BYTES = 4096
+# Sized to clear a frontmatter block that lists allowed-tools or a license text
+# ahead of description: 4 KiB used to truncate mid-key and blank the description.
+FRONTMATTER_BYTES = 16384
 
 _BLOCK_SCALARS = frozenset(("", ">", "|", ">-", "|-", ">+", "|+"))
+
+
+def _unquote(value: str) -> str:
+    """A quoted YAML scalar's text, stopping at its closing quote so a trailing
+    comment never joins it. Honours both escape forms — a backslash inside
+    double quotes, a doubled quote inside single ones — so a description that
+    quotes something keeps all of it. An unterminated scalar (the console reads
+    a truncated prefix) yields what is there."""
+    quote, index, out = value[0], 1, []
+    while index < len(value):
+        char = value[index]
+        if quote == '"' and char == "\\" and index + 1 < len(value):
+            # only the two escapes that would otherwise end the scan early are
+            # resolved; anything else keeps its backslash, because this is a
+            # description to display, not a string to evaluate — swallowing the
+            # backslash would turn é into a literal "u00e9" in the console
+            following = value[index + 1]
+            if following in ('"', "\\"):
+                out.append(following)
+                index += 2
+                continue
+            out.append(char)
+            index += 1
+        elif char == quote:
+            if quote == "'" and value[index + 1 : index + 2] == "'":
+                out.append(quote)
+                index += 2
+                continue
+            return "".join(out)
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+def _strip_comment(value: str) -> str:
+    """Drop a YAML trailing comment from a plain scalar. A `#` opens a comment
+    only at the start or after whitespace, so `C#` and `issue#42` keep their
+    hash while `fix #42` loses the tail — the same cut a real parser makes."""
+    for index, char in enumerate(value):
+        if char == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index]
+    return value
 
 
 def parse_description(data: bytes) -> str | None:
@@ -48,7 +96,10 @@ def parse_description(data: bytes) -> str | None:
     small hand parser and not a YAML dependency: `data` may be a truncated
     prefix of the file, which a real parser would reject outright.
     """
-    lines = data.decode("utf-8", "replace").splitlines()
+    # utf-8-sig: an editor-written SKILL.md may carry a BOM, and a leading
+    # ﻿ is not whitespace to strip() — it would fail the `---` test below
+    # and blank the description of a perfectly good skill.
+    lines = data.decode("utf-8-sig", "replace").splitlines()
     if not lines or lines[0].strip() != "---":
         return None
 
@@ -70,8 +121,10 @@ def parse_description(data: bytes) -> str | None:
                     break
                 continuation.append(follower.strip())
             value = " ".join(part for part in continuation if part)
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+        elif value[:1] in ("'", '"'):
+            value = _unquote(value)
+        else:
+            value = _strip_comment(value)
         return " ".join(value.split()) or None
     return None
 
@@ -130,6 +183,46 @@ def delete_skill(project: str, bucket_name: str, name: str, workspace: str | Non
     return len(blobs)
 
 
+def _too_long(prefix: str, file_name: str) -> bool:
+    """Whether the object name would exceed what GCS stores. A name rglob had to
+    surrogate-escape (a latin-1 filename out of an unzipped archive) has no UTF-8
+    encoding at all, so the bucket cannot hold it either — report it the same way
+    rather than letting the codec error abort the whole push."""
+    try:
+        return len((prefix + file_name).encode()) > MAX_OBJECT_NAME_BYTES
+    except UnicodeEncodeError:
+        return True
+
+
+def _require_skill_md(
+    path: Path, uploads: list[tuple[str, Path]], skipped: list[dict[str, Any]], max_bytes: int
+) -> None:
+    """Raise unless the walk actually picked SKILL.md up.
+
+    `push` promises a pushed skill is a mountable skill, and only an *uploaded*
+    SKILL.md delivers that — a local one the walk then drops (symlink, oversize,
+    wrong case) would leave a skill that lists fine and never fires. Worse, under
+    --replace it is absent from `keep`, so the prune deletes the bucket's copy;
+    when it is the only entry `keep` is empty and the prune takes the whole
+    skill. Raising here, before the first write and the prune, makes every one of
+    those paths a no-op. The message names the reason the walk saw.
+    """
+    if SKILL_MD in {file_name for file_name, _ in uploads}:
+        return
+    entry = next((s for s in skipped if s["file"] == SKILL_MD), None)
+    if entry is not None:
+        why = entry.get("reason") or f"{entry['size']} bytes, over the {max_bytes} limit"
+        raise ValueError(
+            f"{path}: {SKILL_MD} was skipped ({why}) — a skill must upload its {SKILL_MD}"
+        )
+    variant = next(
+        (name for name, _ in uploads if name.lower() == SKILL_MD.lower() and name != SKILL_MD), None
+    )
+    if variant is not None:
+        raise ValueError(f"{path}: has {variant}, not {SKILL_MD} — the bucket is case-sensitive")
+    raise ValueError(f"{path} has no {SKILL_MD} — a skill directory must carry one")
+
+
 def push(
     project: str,
     bucket_name: str,
@@ -156,31 +249,57 @@ def push(
     if not path.is_dir():
         raise NotADirectoryError(f"{path} is not a directory — a skill is a directory")
     skill = validate_name("skill", name if name is not None else path.name)
+    prefix = skill_prefix(skill, workspace)
+    # Cheap pre-flight for the common mistake of pointing push at the wrong
+    # directory, so we don't rglob a whole checkout to say so. It is not the
+    # guarantee: is_file() follows symlinks and says nothing about size, so the
+    # real check is _require_skill_md() below, after the walk. Keep both.
     if not (path / SKILL_MD).is_file():
         raise ValueError(f"{path} has no {SKILL_MD} — a skill directory must carry one")
     uploads: list[tuple[str, Path]] = []
     skipped: list[dict[str, Any]] = []
     for file in sorted(path.rglob("*")):
-        if not file.is_file() or file.is_symlink():
-            continue  # symlinks/devices don't belong in a skill upload
+        if not file.is_file():
+            continue  # directories, devices, and links that dangle
         relative = file.relative_to(path)
         if any(part.startswith(".") or part in IGNORED for part in relative.parts):
-            continue
+            continue  # tooling state: --replace prunes the bucket's copy too
+        file_name = relative.as_posix()
         size = file.stat().st_size
-        if size > max_bytes:
-            skipped.append({"file": relative.as_posix(), "size": size})
+        # Everything below is recorded in `skipped` rather than dropped, because
+        # `keep` is built from it: a file the walk declines but the directory
+        # still carries must survive the prune, or --replace deletes the bucket's
+        # only copy. Only the ignore rules above prune, and they do so by design.
+        if file.is_symlink():
+            skipped.append({"file": file_name, "size": size, "reason": "a symlink is not followed"})
             continue
-        uploads.append((relative.as_posix(), file))
+        # GCS rejects these names outright and validate_file does not, so the
+        # upload loop below would die partway and leave a half-written skill.
+        # Skipped rather than fatal, the same bargain oversized files get: the
+        # bucket could never hold this name, so refusing the whole push would
+        # make an otherwise fine directory permanently unpushable and preserve
+        # nothing. SKILL.md is a fixed short name, so it can never land here.
+        if "\r" in file_name or "\n" in file_name or _too_long(prefix, file_name):
+            skipped.append(
+                {"file": file_name, "size": size, "reason": "the bucket rejects the name"}
+            )
+            continue
+        if size > max_bytes:
+            skipped.append({"file": file_name, "size": size})
+            continue
+        uploads.append((file_name, file))
+    _require_skill_md(path, uploads, skipped, max_bytes)
     for file_name, file in uploads:
         write_file(project, bucket_name, skill, file_name, file.read_bytes(), workspace)
     deleted = 0
     if replace:
         # Prune after uploading, never before: clearing the prefix first would
         # leave the skill missing if an upload failed, and would delete the
-        # bucket's copy of a file this walk skipped for being oversized. Keep
-        # everything the directory still carries, skipped files included.
+        # bucket's copy of a file this walk declined to upload. Keep everything
+        # the directory still carries — every skipped file included, whatever the
+        # reason — so only what the directory really dropped is pruned. Files the
+        # ignore rules excluded are not in `skipped` and are pruned, by design.
         keep = {file_name for file_name, _ in uploads} | {s["file"] for s in skipped}
-        prefix = skill_prefix(skill, workspace)
         for blob in _bucket(project, bucket_name).list_blobs(prefix=prefix):
             if blob.name[len(prefix) :] not in keep:
                 blob.delete()

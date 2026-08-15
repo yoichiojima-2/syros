@@ -355,7 +355,7 @@ stays deleted.
 
 ```
 syros skills                         # list skills in the bucket
-syros skills push ./my-skill         # upload a local skill directory
+syros skills push ./skills/*         # upload one or more local skill directories
 syros skills files pdf               # list one skill's files
 syros skills cat pdf SKILL.md        # print one skill file
 syros skills sync                    # seed skills/ from the official anthropics/skills repo
@@ -364,10 +364,14 @@ syros skills sync                    # seed skills/ from the official anthropics
 A skill is a directory, so uploading one is how you create one. `push` walks the
 directory, names the skill after its basename (`--name` overrides), and requires a
 `SKILL.md` at the root — without one nothing would discover the skill, so a push that
-found no SKILL.md would report success and mount nothing. Tooling state (`.git/`,
-`__pycache__/`, `node_modules/`, dotfiles) and symlinks are skipped, and files over
-10 MiB are skipped and reported so everything a push writes stays console-editable.
-Pushes merge; `--replace` clears the skill first, so files deleted locally are dropped.
+found no SKILL.md would report success and mount nothing. That `SKILL.md` has to be a
+real file, named exactly, and under the size limit: a symlinked, oversized, or
+differently-cased one is refused rather than uploaded without it. Tooling state
+(`.git/`, `__pycache__/`, `node_modules/`, dotfiles) is ignored outright. Symlinks,
+files over 10 MiB, and names the bucket cannot store are skipped and reported, so
+everything a push writes stays console-editable. Pushes merge; `--replace` prunes
+afterwards, deleting bucket files the directory no longer carries — every skipped file
+is kept, since the directory still carries it, while ignored tooling state is pruned.
 The console does the same thing from the browser: drop a folder onto the Skills page
 (or a workspace's skills card), or use the folder picker.
 
@@ -376,7 +380,8 @@ tarball and copies each skill into the bucket — Anthropic's skills are fetched
 vendored, and the copies are editable snapshots: re-syncing overwrites official files but
 never touches skills (or files) the tarball doesn't carry. (The two skills under
 [Presets](#presets) are the exception: those are syros' own, so they ship as package data
-rather than being fetched — same editable-copy semantics once installed.) Skills come in
+rather than being fetched — same editable-copy semantics once installed.) `sync` always
+seeds the global prefix, so it takes no `--workspace`. Skills come in
 two scopes: global (`skills/`, mounted into every run) and per-workspace
 (`workspaces/{name}/skills/`, mounted only for that workspace's sessions, shadowing a
 same-named global). The console has a Skills view with the same surface as workspaces —
