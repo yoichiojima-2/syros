@@ -3,8 +3,9 @@
 The sandbox work dir contains ws/ (the agent's working directory) and home/
 (HOME for the harness, so claude_agent_sdk transcripts checkpoint too,
 enabling resume). home/ always syncs to a per-session prefix; ws/ syncs to the
-session prefix, or to a shared workspaces/{name}/ prefix when the session
-names a workspace. Synchronous on purpose — callers wrap in asyncio.to_thread.
+session prefix, or to the workspace's shared directory when the session names
+a workspace. Prefixes come from `layout.py`. Synchronous on purpose — callers
+wrap in asyncio.to_thread.
 
 (This module does the GCS file operations; the sibling `workspaces.py`,
 plural, manages workspace documents in Firestore.)
@@ -15,7 +16,8 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 
-from .names import validate_file, validate_name, validate_tags
+from .layout import workspace_prefix
+from .names import validate_file, validate_tags
 
 # GCS custom-metadata key holding a file's tags, comma-joined. Tag names are
 # comma-free by validation, so the join is unambiguous.
@@ -26,14 +28,6 @@ def _bucket(project: str, bucket_name: str):
     from google.cloud import storage
 
     return storage.Client(project=project).bucket(bucket_name)
-
-
-def session_prefix(session_id: str, subdir: str) -> str:
-    return f"sessions/{session_id}/state/{subdir}/"
-
-
-def workspace_prefix(name: str) -> str:
-    return f"workspaces/{validate_name('workspace', name)}/"
 
 
 def restore(project: str, bucket_name: str, prefix: str, root: Path) -> int:

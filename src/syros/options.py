@@ -197,12 +197,6 @@ def options_from_doc(doc: dict[str, Any]) -> AgentOptions:
     untrusted input takes when the console defines a deployment, and an option
     that quietly did nothing would be worse than a rejected form.
     """
-    # Sessions serialized while the workspace concept was called "team" stored
-    # "team"; same semantics, new name — accept it so resume keeps working.
-    if "team" in doc:
-        doc = dict(doc)
-        doc["workspace"] = doc.get("workspace") or doc.pop("team")
-        doc.pop("team", None)
     unknown = sorted(set(doc) - set(_SERIALIZED_FIELDS))
     if unknown:
         raise OptionsError(f"unknown option(s): {', '.join(unknown)}")

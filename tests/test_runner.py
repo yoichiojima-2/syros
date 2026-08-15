@@ -212,10 +212,10 @@ async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gc
 
     await run(SID)
 
-    checkpointed = [("workspaces/shared/", "ws"), (f"sessions/{SID}/state/home/", "home")]
+    checkpointed = [("workspaces/shared/ws/", "ws"), (f"sessions/{SID}/state/home/", "home")]
     assert gcs_sync["restore"] == checkpointed + [
         ("skills/", "skills"),
-        ("team-skills/shared/", "skills"),
+        ("workspaces/shared/skills/", "skills"),
     ]
     assert gcs_sync["checkpoint"] == checkpointed
     # claimed during the run, released after

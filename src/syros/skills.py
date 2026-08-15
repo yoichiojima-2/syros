@@ -1,12 +1,13 @@
 """Agent Skills: a skills/ prefix in the session bucket, mounted into every run.
 
 A skill is a directory (SKILL.md plus resources) under skills/{name}/ in the
-bucket the sessions already use. The runner restores the whole prefix into the
-sandbox HOME's .claude/skills/ so claude_agent_sdk discovers them; the console
-edits them like workspace files. Official Anthropic skills are not vendored —
-sync_official() pulls the GitHub tarball and seeds the prefix with editable
-copies. Synchronous on purpose — callers wrap in asyncio.to_thread (same
-contract as workspace.py / artifacts.py).
+bucket the sessions already use, or under a workspace's own
+workspaces/{workspace}/skills/{name}/ (see layout.py). The runner restores the
+whole prefix into the sandbox HOME's .claude/skills/ so claude_agent_sdk
+discovers them; the console edits them like workspace files. Official Anthropic
+skills are not vendored — sync_official() pulls the GitHub tarball and seeds
+the global prefix with editable copies. Synchronous on purpose — callers wrap
+in asyncio.to_thread (same contract as workspace.py / artifacts.py).
 """
 
 from __future__ import annotations
@@ -18,22 +19,11 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
-from .names import NAME, validate_file, validate_name
+from .layout import skill_prefix
+from .names import NAME, validate_file
 from .workspace import _bucket
 
 OFFICIAL_SKILLS_TARBALL = "https://github.com/anthropics/skills/archive/refs/heads/main.tar.gz"
-
-
-def skill_prefix(name: str, workspace: str | None = None) -> str:
-    """Global skills live under skills/{name}/; workspace skills under their
-    own top-level team-skills/{workspace}/{name}/ prefix (the GCS prefix keeps
-    its pre-rename name), so workspace and global names can never collide in
-    GCS. A workspace skill shadows a same-named global at mount."""
-    if workspace:
-        return (
-            f"team-skills/{validate_name('workspace', workspace)}/{validate_name('skill', name)}/"
-        )
-    return f"skills/{validate_name('skill', name)}/"
 
 
 def read_file(

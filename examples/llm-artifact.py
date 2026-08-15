@@ -15,7 +15,7 @@ async def main():
             allowed_tools=["Write", "Read", "Edit", "WebSearch"],
             permission_mode="default",
             can_use_tool=approve,
-            artifacts={"team": "rw"},
+            artifacts={"reports": "rw"},
         ),
     ):
         print(message)

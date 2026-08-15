@@ -306,9 +306,9 @@ Semantics, all inherited from today's deployments:
   is a task list linking to each task's ordinary session page. `types.ts`
   mirrors the new shapes.
 - Firestore: `deployments/*` documents are dropped, not migrated
-  (experimental stage; the teams→workspaces read-through pattern exists if we
-  regret this). Sessions' historical `deployment` field stays on old docs and
-  is simply no longer queried.
+  (experimental stage; `migrate.py` is the pattern if we regret this).
+  Sessions' historical `deployment` field stays on old docs and is simply no
+  longer queried.
 
 ## Industry survey
 

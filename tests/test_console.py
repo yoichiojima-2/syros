@@ -21,8 +21,7 @@ from syros.console.api import (
 from syros.errors import OptionsError, SyrosError
 from syros.names import validate_file
 from syros.options import AgentOptions
-from syros.skills import skill_prefix
-from syros.workspace import workspace_prefix
+from syros.layout import skill_prefix, workspace_prefix
 
 from .fakes import FakeStore, append_message
 
@@ -629,7 +628,7 @@ async def test_workspaces_merges_gcs_leases_and_sessions():
 async def test_workspaces_lists_derived_members():
     store = FakeStore()
     await store.create_agent("writer", {"options": {"workspace": "shared"}})
-    await store.create_agent("critic", {"options": {"team": "shared"}})  # pre-rename doc
+    await store.create_agent("critic", {"options": {"workspace": "shared"}})
     await store.create_agent("loner", {"options": {}})
     objects = FakeObjects(workspaces={"shared": {"a.md": b"a"}})
 
@@ -1316,3 +1315,58 @@ async def test_static_serving_next_export():
         assert status == 404 and b"error" in body
     finally:
         server.shutdown()
+
+
+# --- GCS listing aggregation (the real objects.py helpers, not FakeObjects) ---
+
+
+class _Blob:
+    def __init__(self, name, size=1, updated=None):
+        self.name = name
+        self.size = size
+        self.updated = updated
+
+
+def test_workspace_stats_counts_the_shared_directory_only():
+    from syros.console.objects import _workspace_stats
+
+    stats = _workspace_stats(
+        [
+            _Blob("workspaces/shared/ws/report.md", size=10),
+            _Blob("workspaces/shared/ws/sub/a.md", size=5),
+            # a workspace's skills are its own listing, not its file count
+            _Blob("workspaces/shared/skills/pdf/SKILL.md", size=100),
+            _Blob("workspaces/skills-only/skills/pdf/SKILL.md", size=7),
+            _Blob("workspaces/shared/", size=0),  # prefix marker
+        ]
+    )
+
+    assert stats["shared"] == {"file_count": 2, "total_size": 15, "updated": None}
+    # a workspace holding nothing but skills still exists, with no files
+    assert stats["skills-only"] == {"file_count": 0, "total_size": 0, "updated": None}
+
+
+async def test_deleting_a_workspace_takes_its_skills_with_it(monkeypatch):
+    """GcsObjects targets the whole workspace prefix when no subpath is given —
+    otherwise a deleted workspace would leave orphaned skills behind."""
+    from syros import artifacts, workspace
+    from syros.console.objects import GcsObjects
+
+    from .test_workspace import FakeBucket
+
+    fake = FakeBucket(
+        {
+            "workspaces/shared/ws/report.md": (b"r", None),
+            "workspaces/shared/skills/pdf/SKILL.md": (b"s", None),
+            "workspaces/other/ws/keep.md": (b"k", None),
+        }
+    )
+    for module in (artifacts, workspace):
+        monkeypatch.setattr(module, "_bucket", lambda project, bucket_name: fake)
+    objects = GcsObjects("proj", "bkt")
+
+    # a subpath scopes to a folder inside the shared directory
+    assert await objects.delete_workspace_prefix("shared", "nope/", 10) == 0
+
+    assert await objects.delete_workspace_prefix("shared", None, 10) == 2
+    assert list(fake.objects) == ["workspaces/other/ws/keep.md"]

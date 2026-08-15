@@ -218,14 +218,3 @@ def test_connectors_mcp_server_collision_rejected():
     )
     with pytest.raises(OptionsError):
         options.validate()
-
-
-def test_options_from_doc_maps_legacy_team_to_workspace():
-    # Pre-rename session docs stored "team"; resume must keep working.
-    restored = options_from_doc({"team": "shared"})
-    assert restored.workspace == "shared"
-    original = {"team": "shared"}
-    options_from_doc(original)
-    assert original == {"team": "shared"}  # caller's dict untouched
-    # Canonical key wins when both are present.
-    assert options_from_doc({"workspace": "new", "team": "old"}).workspace == "new"

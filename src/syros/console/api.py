@@ -122,7 +122,7 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
-            "workspace": options.get("workspace") or options.get("team"),
+            "workspace": options.get("workspace"),
             "title": session.get("title"),
             "summary": session.get("summary"),
             "created_by": session.get("created_by"),
@@ -639,7 +639,7 @@ class ConsoleAPI:
         by_workspace: dict[str, list[dict[str, Any]]] = {}
         for session in sessions:
             options = session.get("options") or {}
-            name = options.get("workspace") or options.get("team") or None
+            name = options.get("workspace") or None
             if name:
                 by_workspace.setdefault(name, []).append(
                     {

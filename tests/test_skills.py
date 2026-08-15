@@ -7,13 +7,15 @@ import pytest
 
 from syros import skills
 from syros.errors import OptionsError
+from syros.layout import skill_prefix
 
 
 def test_skill_prefix():
-    assert skills.skill_prefix("pdf") == "skills/pdf/"
+    assert skill_prefix("pdf") == "skills/pdf/"
+    assert skill_prefix("pdf", "shared") == "workspaces/shared/skills/pdf/"
     for name in ("", "Upper", "a/b", "../etc"):
         with pytest.raises(OptionsError):
-            skills.skill_prefix(name)
+            skill_prefix(name)
 
 
 def make_tarball(files: dict[str, bytes]) -> bytes:

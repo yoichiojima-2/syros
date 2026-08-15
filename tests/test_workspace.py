@@ -2,7 +2,15 @@ import pytest
 
 from syros import workspace
 from syros.errors import OptionsError
-from syros.workspace import session_prefix, workspace_prefix
+from syros.layout import (
+    session_prefix,
+    skill_prefix,
+    skills_root,
+    space_prefix,
+    workspace_prefix,
+    workspace_root,
+    workspace_skills_root,
+)
 
 
 def test_session_prefix():
@@ -10,16 +18,25 @@ def test_session_prefix():
     assert session_prefix("sess_x", "home") == "sessions/sess_x/state/home/"
 
 
-def test_workspace_prefix():
-    assert workspace_prefix("data") == "workspaces/data/"
+def test_workspace_owns_one_prefix_holding_its_files_and_its_skills():
+    assert workspace_root("data") == "workspaces/data/"
+    assert workspace_prefix("data") == "workspaces/data/ws/"
+    assert workspace_skills_root("data") == "workspaces/data/skills/"
+    assert skill_prefix("pdf", "data") == "workspaces/data/skills/pdf/"
+    # a workspace's skills sit beside its files, never inside the agent's cwd
+    assert not skills_root("data").startswith(workspace_prefix("data"))
 
 
-def test_workspace_prefix_rejects_bad_names():
+def test_prefix_builders_reject_bad_names():
     # the console takes the name from a URL segment or a JSON body, so the
     # prefix builder is the last place that can catch a path
     for bad in ("/tmp", "a/b", "../x", "", "Upper", ".", "a" * 65):
-        with pytest.raises(OptionsError):
-            workspace_prefix(bad)
+        for build in (workspace_root, workspace_prefix, workspace_skills_root, space_prefix):
+            with pytest.raises(OptionsError):
+                build(bad)
+        if bad:  # an empty workspace means "global", the same as None
+            with pytest.raises(OptionsError):
+                skill_prefix("pdf", bad)
 
 
 # --- blob-level ops against an in-memory bucket ---
@@ -87,8 +104,8 @@ class FakeBucket:
 def bucket(monkeypatch):
     fake = FakeBucket(
         {
-            "workspaces/workspace/a.md": (b"aa", {"syros-tags": "draft"}),
-            "workspaces/workspace/sub/b.md": (b"bb", None),
+            "workspaces/workspace/ws/a.md": (b"aa", {"syros-tags": "draft"}),
+            "workspaces/workspace/ws/sub/b.md": (b"bb", None),
         }
     )
     monkeypatch.setattr(workspace, "_bucket", lambda project, bucket_name: fake)
@@ -99,20 +116,20 @@ def test_checkpoint_preserves_tags(bucket, tmp_path):
     (tmp_path / "a.md").write_bytes(b"rewritten")
     (tmp_path / "new.md").write_bytes(b"new")
 
-    count = workspace.checkpoint("proj", "bkt", "workspaces/workspace/", tmp_path)
+    count = workspace.checkpoint("proj", "bkt", "workspaces/workspace/ws/", tmp_path)
 
     assert count == 2
-    assert bucket.objects["workspaces/workspace/a.md"] == {
+    assert bucket.objects["workspaces/workspace/ws/a.md"] == {
         "data": b"rewritten",
         "metadata": {"syros-tags": "draft"},
     }
-    assert bucket.objects["workspaces/workspace/new.md"]["metadata"] is None
+    assert bucket.objects["workspaces/workspace/ws/new.md"]["metadata"] is None
 
 
 def test_rename_file(bucket):
     workspace.rename_file("proj", "bkt", "workspace", "a.md", "docs/a.md")
-    assert "workspaces/workspace/a.md" not in bucket.objects
-    assert bucket.objects["workspaces/workspace/docs/a.md"] == {
+    assert "workspaces/workspace/ws/a.md" not in bucket.objects
+    assert bucket.objects["workspaces/workspace/ws/docs/a.md"] == {
         "data": b"aa",
         "metadata": {"syros-tags": "draft"},
     }
@@ -127,10 +144,10 @@ def test_rename_file(bucket):
 
 def test_set_tags(bucket):
     workspace.set_tags("proj", "bkt", "workspace", "sub/b.md", ["x", "y"])
-    assert bucket.objects["workspaces/workspace/sub/b.md"]["metadata"] == {"syros-tags": "x,y"}
+    assert bucket.objects["workspaces/workspace/ws/sub/b.md"]["metadata"] == {"syros-tags": "x,y"}
 
     workspace.set_tags("proj", "bkt", "workspace", "a.md", [])
-    assert bucket.objects["workspaces/workspace/a.md"]["metadata"] is None
+    assert bucket.objects["workspaces/workspace/ws/a.md"]["metadata"] is None
 
     with pytest.raises(FileNotFoundError):
         workspace.set_tags("proj", "bkt", "workspace", "gone.md", ["x"])
@@ -140,10 +157,10 @@ def test_set_tags(bucket):
 
 def test_delete_prefix(bucket):
     with pytest.raises(ValueError, match="limit"):
-        workspace.delete_prefix("proj", "bkt", "workspaces/workspace/", max_files=1)
+        workspace.delete_prefix("proj", "bkt", "workspaces/workspace/ws/", max_files=1)
 
-    assert workspace.delete_prefix("proj", "bkt", "workspaces/workspace/sub/", max_files=10) == 1
-    assert workspace.delete_prefix("proj", "bkt", "workspaces/workspace/", max_files=10) == 1
+    assert workspace.delete_prefix("proj", "bkt", "workspaces/workspace/ws/sub/", max_files=10) == 1
+    assert workspace.delete_prefix("proj", "bkt", "workspaces/workspace/ws/", max_files=10) == 1
     assert bucket.objects == {}
 
 
@@ -152,7 +169,7 @@ def test_workspace_members_derived_from_agent_docs():
 
     agent_docs = [
         {"name": "writer", "options": {"workspace": "shared"}},
-        {"name": "critic", "options": {"team": "shared"}},  # pre-rename agent doc
+        {"name": "critic", "options": {"workspace": "shared"}},
         {"name": "loner", "options": {}},
         {"name": "other", "options": {"workspace": "elsewhere"}},
     ]
