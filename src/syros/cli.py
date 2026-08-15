@@ -336,79 +336,116 @@ async def _agents(args) -> None:
     )
 
 
-async def _deployments(args) -> None:
-    from . import deployments
+def _parse_tasks(args) -> list[dict] | None:
+    """--tasks tasks.json (or `-` for stdin): the chain; --prompt: one task."""
+    if not args.tasks:
+        return None
+    import sys as _sys
+
+    raw = _sys.stdin.read() if args.tasks == "-" else open(args.tasks).read()
+    tasks = json.loads(raw)
+    if isinstance(tasks, dict):
+        tasks = tasks.get("tasks")
+    return tasks
+
+
+async def _workflows(args) -> None:
+    from . import workflows
 
     options = _options(args)
     store = _store(args)
 
     if args.action == "list":
-        for deployment in await deployments.list_all(store=store):
-            timezone = deployment.get("timezone") or deployments.DEFAULT_TIMEZONE
-            state = "paused" if not deployment.get("enabled") else "on"
-            print(
-                f"{deployment['name']:<24}  {deployment.get('cron', ''):<16}  {state:<7}"
-                f"  next {_local(deployment.get('next_run_at'), timezone)} {timezone}"
-                f"  {deployment.get('runs') or 0} runs"
-                f"  {deployment.get('last_session_id') or ''}"
+        for workflow in await workflows.list_all(store=store):
+            schedule = workflow.get("schedule") or {}
+            timezone = schedule.get("timezone") or workflows.DEFAULT_TIMEZONE
+            state = "paused" if not workflow.get("enabled") else "on"
+            when = (
+                f"next {_local(workflow.get('next_run_at'), timezone)} {timezone}"
+                if schedule.get("cron")
+                else "manual"
             )
-            if deployment.get("last_error"):
-                print(f"    error: {deployment['last_error']}")
+            print(
+                f"{workflow['name']:<24}  {schedule.get('cron') or '-':<16}  {state:<7}"
+                f"  {len(workflow.get('tasks') or []):>2} tasks  {when}"
+                f"  {workflow.get('run_count') or 0} runs"
+            )
+            if workflow.get("last_error"):
+                print(f"    error: {workflow['last_error']}")
         return
 
     if not args.name:
-        raise SystemExit(f"deployments {args.action} requires a name")
+        raise SystemExit(f"workflows {args.action} requires a name")
 
     if args.action == "create":
-        if not args.cron or not args.prompt:
-            raise SystemExit("create requires --cron and --prompt")
-        deployment = await deployments.create(
+        tasks = _parse_tasks(args)
+        if not tasks and not args.prompt:
+            raise SystemExit("create requires --prompt (one task) or --tasks tasks.json (a chain)")
+        workflow = await workflows.create(
             args.name,
-            args.cron,
-            args.prompt,
-            _run_options(args),
+            tasks,
+            # Option flags land as workflow-level defaults either way; the
+            # single-task shorthand only adds the prompt and agent binding.
+            **({} if tasks else {"prompt": args.prompt, "agent": args.agent}),
+            defaults=_run_options(args),
             options=options,
-            agent=args.agent,
+            cron_expression=args.cron,
             timezone=args.tz,
             created_by=getpass.getuser(),
             store=store,
         )
-        print(f"created {args.name}: {deployment['cron']} ({args.tz})")
-        print(f"    next run {_local(deployment['next_run_at'], args.tz)} {args.tz}")
+        schedule = workflow.get("schedule") or {}
+        if schedule.get("cron"):
+            print(f"created {args.name}: {schedule['cron']} ({args.tz})")
+            print(f"    next run {_local(workflow['next_run_at'], args.tz)} {args.tz}")
+        else:
+            print(f"created {args.name} (manual-only; fire it with `syros workflows run`)")
         return
 
     if args.action in ("pause", "resume"):
-        deployment = await deployments.set_enabled(args.name, args.action == "resume", store=store)
+        workflow = await workflows.set_enabled(args.name, args.action == "resume", store=store)
         print(f"{args.action}d {args.name}")
-        if args.action == "resume":
-            timezone = deployment.get("timezone") or deployments.DEFAULT_TIMEZONE
-            print(f"    next run {_local(deployment['next_run_at'], timezone)} {timezone}")
+        schedule = workflow.get("schedule") or {}
+        if args.action == "resume" and schedule.get("cron"):
+            timezone = schedule.get("timezone") or workflows.DEFAULT_TIMEZONE
+            print(f"    next run {_local(workflow['next_run_at'], timezone)} {timezone}")
         return
 
     if args.action == "delete":
-        await deployments.delete(args.name, store=store)
-        print(f"deleted {args.name}  (its past runs stay in `syros sessions`)")
+        await workflows.delete(args.name, store=store)
+        print(f"deleted {args.name}  (its task sessions stay in `syros sessions`)")
         return
 
     if args.action == "run":
-        session_id = await deployments.run_now(
+        run_id = await workflows.run_now(
             args.name, options=options, store=store, created_by=getpass.getuser()
         )
-        print(f"started {session_id}")
+        print(f"started {run_id}")
         return
 
-    # runs: the deployment's own history
-    from .store import runtime
-
-    for session in await deployments.runs(args.name, limit=args.limit, store=store):
-        state = runtime(session)
+    if args.action == "show":
+        workflow = await workflows.get(args.name, store=store)
+        if workflow is None:
+            raise SystemExit(f"no such workflow: {args.name}")
         print(
-            f"{session['id']}  {state.get('status'):<10}"
-            f"  {session.get('trigger') or '':<9}"
-            f"  ${float(session.get('cost_usd') or 0):.4f}"
-            f"  {state.get('stop_reason') or '':<22}"
-            f"  {_local(_epoch(session.get('created_at')))}"
+            json.dumps(
+                {k: v for k, v in workflow.items() if k not in ("created_at", "updated_at")},
+                indent=2,
+                default=str,
+            )
         )
+        return
+
+    # runs: the workflow's own history, one line per run plus a line per task
+    for run in await workflows.runs(args.name, limit=args.limit, store=store):
+        print(
+            f"{run['id']}  {run.get('status'):<10}  {run.get('trigger') or '':<9}"
+            f"  {_local(_epoch(run.get('started_at')))}"
+        )
+        for task_id, task in (run.get("tasks") or {}).items():
+            print(f"    {task_id:<20}  {task.get('status'):<10}  {task.get('session_id') or ''}")
+            if task.get("error"):
+                print(f"        error: {task['error']}")
 
 
 def _epoch(value) -> float | None:
@@ -418,15 +455,15 @@ def _epoch(value) -> float | None:
 
 
 async def _tick(args) -> None:
-    from . import deployments
+    from . import workflows
 
-    result = await deployments.tick(_options(args), store=_store(args))
+    result = await workflows.tick(_options(args), store=_store(args))
     for run in result["fired"]:
-        print(f"fired    {run['deployment']}  {run['session_id']}")
+        print(f"fired    {run['workflow']}  {run['run_id']}")
     for run in result["skipped"]:
-        print(f"skipped  {run['deployment']}  (previous run {run['session_id']} still active)")
+        print(f"skipped  {run['workflow']}  (previous run {run['run_id']} still active)")
     for failure in result["errors"]:
-        print(f"error    {failure['deployment']}  {failure['error']}")
+        print(f"error    {failure['workflow']}  {failure['error']}")
     if not any((result["fired"], result["skipped"], result["errors"])):
         print("nothing due")
 
@@ -833,25 +870,30 @@ def main() -> None:
     _run_option_flags(agents)
     agents.set_defaults(func=_agents)
 
-    deployments = sub.add_parser("deployments")
-    deployments.add_argument(
+    workflows = sub.add_parser("workflows")
+    workflows.add_argument(
         "action",
         nargs="?",
         default="list",
-        choices=["list", "create", "pause", "resume", "delete", "run", "runs"],
+        choices=["list", "create", "show", "pause", "resume", "delete", "run", "runs"],
     )
-    deployments.add_argument("name", nargs="?")
-    deployments.add_argument("--cron", default=None, help="5-field cron, or an @alias")
-    deployments.add_argument("--tz", default="UTC", help="IANA timezone the cron is read in")
-    deployments.add_argument("--prompt", default=None)
-    deployments.add_argument("--agent", default=None, help="stored agent the runs default to")
-    _run_option_flags(deployments)
-    deployments.add_argument("--limit", type=int, default=50, help="runs to list")
-    deployments.add_argument("--region", default=None)
-    deployments.add_argument("--job", default=None)
-    deployments.set_defaults(func=_deployments)
+    workflows.add_argument("name", nargs="?")
+    workflows.add_argument(
+        "--cron", default=None, help="5-field cron or an @alias; omit for manual-only"
+    )
+    workflows.add_argument("--tz", default="UTC", help="IANA timezone the cron is read in")
+    workflows.add_argument("--prompt", default=None, help="single-task shorthand")
+    workflows.add_argument("--agent", default=None, help="stored agent the single task runs as")
+    workflows.add_argument(
+        "--tasks", default=None, help="JSON file with the task chain (- for stdin)"
+    )
+    _run_option_flags(workflows)
+    workflows.add_argument("--limit", type=int, default=50, help="runs to list")
+    workflows.add_argument("--region", default=None)
+    workflows.add_argument("--job", default=None)
+    workflows.set_defaults(func=_workflows)
 
-    tick = sub.add_parser("tick", help="fire due deployments; the scheduler job's entrypoint")
+    tick = sub.add_parser("tick", help="advance and fire due workflows; the scheduler entrypoint")
     tick.add_argument("--region", default=None)
     tick.add_argument("--job", default=None)
     tick.set_defaults(func=_tick)

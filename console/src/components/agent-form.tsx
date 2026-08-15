@@ -69,7 +69,7 @@ export function AgentForm({
       <CardHeader>
         <CardTitle>{agent ? `Edit ${agent.name}` : "New agent"}</CardTitle>
         <CardDescription>
-          A stored run configuration: sessions and deployments that reference it get these options
+          A stored run configuration: sessions and workflow tasks that reference it get these options
           as defaults. Edits apply to future runs only.
         </CardDescription>
       </CardHeader>

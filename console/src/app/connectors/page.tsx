@@ -16,7 +16,7 @@ import { relTime } from "@/lib/format";
 
 // A connector is an official, vendor-hosted remote MCP server plus one
 // credential in Secret Manager (syros-connector-{name}). Sessions opt in with
-// connectors=["slack", ...] on an agent, deployment, or run; every tool call
+// connectors=["slack", ...] on an agent, workflow, or run; every tool call
 // still flows through the audit trail and the approval gate. Credentials are
 // written from an operator's machine — `syros connectors auth <name>` (OAuth)
 // or `set` (static tokens) — never through this console.

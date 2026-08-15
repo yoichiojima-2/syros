@@ -165,17 +165,18 @@ export function SessionDetail({ sid }: { sid: string }) {
         {session && (
           <>
             <StateBadge state={session.state} />
-            {/* a scheduled run is an ordinary session; say which deployment owns
-                it so the transcript links back to its history */}
-            {session.deployment && (
+            {/* a task run is an ordinary session; say which workflow (and task)
+                owns it so the transcript links back to its run history */}
+            {session.workflow && (
               <Link
-                href={`/deployment?name=${encodeURIComponent(session.deployment)}`}
+                href={`/workflow?name=${encodeURIComponent(session.workflow)}`}
                 className="hover:opacity-80"
-                title={`Run of deployment ${session.deployment} (${session.trigger})`}
+                title={`Task ${session.task ?? "?"} of workflow ${session.workflow} (${session.trigger})`}
               >
                 <Badge className="font-mono">
                   <CalendarClock className="size-3" />
-                  {session.deployment}
+                  {session.workflow}
+                  {session.task && <span className="text-muted-foreground">/{session.task}</span>}
                 </Badge>
               </Link>
             )}

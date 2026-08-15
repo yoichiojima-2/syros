@@ -2,7 +2,7 @@
 
 A connector mounts a platform's *official, vendor-hosted* remote MCP server into a
 session — the same idea as connectors in the Claude app: authorize a platform once,
-then any session, agent, or deployment can use its tools by name. syros ships no
+then any session, agent, or workflow can use its tools by name. syros ships no
 integration code of its own; a connector is a catalog entry (the vendor's hosted MCP
 URL) plus one credential in Secret Manager.
 
@@ -11,7 +11,7 @@ The workflow is three steps:
 1. **Authorize once** — `syros connectors auth <name>` (or `set` for static tokens).
 2. **Verify** — `syros connectors test <name>`.
 3. **Attach anywhere** — `--connector` on the CLI, `connectors=[...]` in Python, or the
-   connector picker in the console's session / agent / deployment forms.
+   connector picker in the console's session / agent / workflow forms.
 
 ## How it works
 
@@ -114,11 +114,11 @@ status is nonzero on any failure — usable in CI or a cron.
 
 ## Attaching connectors
 
-CLI — agents and deployments take `--connector` (repeatable or comma-separated):
+CLI — agents and workflows take `--connector` (repeatable or comma-separated):
 
 ```
 syros agents create researcher --connector slack --connector github
-syros deployments create digest --cron "0 9 * * *" --prompt "..." --connector slack,google
+syros workflows create digest --cron "0 9 * * *" --prompt "..." --connector slack,google
 ```
 
 Python:
@@ -127,7 +127,7 @@ Python:
 AgentOptions(connectors=["slack", "github"])   # tools arrive as mcp__slack__*, mcp__github__*
 ```
 
-Console — the session, agent, and deployment forms all have a **Connectors** chip
+Console — the session, agent, and workflow forms all have a **Connectors** chip
 picker. Unconfigured connectors show `∅` and stay selectable: the credential can be
 stored later, any time before the run.
 
