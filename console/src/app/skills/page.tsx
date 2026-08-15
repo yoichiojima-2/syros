@@ -98,7 +98,7 @@ export default function SkillsPage() {
                 </p>
               ) : (
                 <>
-                  <Section title="Global" />
+                  {global.length > 0 && <Section title="Global" />}
                   {global.map((skill) => (
                     <SkillRow
                       key={skill.name}

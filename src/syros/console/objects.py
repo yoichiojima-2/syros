@@ -76,28 +76,51 @@ def _stats(blobs, prefix: str) -> dict[str, dict[str, Any]]:
     return stats
 
 
-def _descriptions(targets: dict[Any, Any]) -> dict[Any, str]:
+def _descriptions(
+    targets: dict[Any, Any], cache: dict[Any, tuple[Any, str | None]]
+) -> dict[Any, str]:
     """key -> SKILL.md description, for a key -> blob mapping of SKILL.md blobs.
 
     A ranged read per skill rather than a full download, run in a small pool so
     listing skills stays responsive as the prefix grows. A skill whose SKILL.md
     is unreadable or carries no description simply has none — the page still
     has to render.
+
+    The console polls this listing every 8s and a description only changes when
+    SKILL.md is rewritten, so results are cached against the blob generation:
+    a steady prefix re-reads nothing, an edited skill re-reads on the next poll.
+    Read failures are deliberately not cached — a transient GCS error must not
+    hide a description until the next write.
     """
-    if not targets:
-        return {}
+    found: dict[Any, str] = {}
+    misses: dict[Any, Any] = {}
+    for key, blob in targets.items():
+        cached = cache.get(key)
+        if cached is not None and cached[0] == blob.generation:
+            if cached[1]:
+                found[key] = cached[1]
+        else:
+            misses[key] = blob
 
     def read(item):
         key, blob = item
         try:
             data = blob.download_as_bytes(end=skills.FRONTMATTER_BYTES)
         except Exception:
-            return key, None
-        return key, skills.parse_description(data)
+            return key, None, False
+        return key, skills.parse_description(data), True
 
-    with futures.ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
-        found = pool.map(read, targets.items())
-        return {key: text for key, text in found if text}
+    if misses:
+        with futures.ThreadPoolExecutor(max_workers=min(8, len(misses))) as pool:
+            for key, text, ok in pool.map(read, misses.items()):
+                if ok:
+                    cache[key] = (misses[key].generation, text)
+                if text:
+                    found[key] = text
+
+    for gone in set(cache) - set(targets):
+        del cache[gone]  # a deleted skill must not pin its entry forever
+    return found
 
 
 def _tags(blob) -> list[str]:
@@ -122,6 +145,13 @@ class GcsObjects:
     def __init__(self, project: str, bucket: str) -> None:
         self._project = project
         self._bucket = bucket
+        # SKILL.md descriptions, one cache per listed prefix so each prunes
+        # against its own listing. ConsoleAPI holds this object for the life of
+        # the process, so the caches outlive a request — see _descriptions.
+        self._described: dict[str, dict[Any, tuple[Any, str | None]]] = {}
+
+    def _describe(self, root: str, targets: dict[Any, Any]) -> dict[Any, str]:
+        return _descriptions(targets, self._described.setdefault(root, {}))
 
     def _list(self, prefix: str):
         return artifacts._bucket(self._project, self._bucket).list_blobs(prefix=prefix)
@@ -213,7 +243,7 @@ class GcsObjects:
                 for blob in blobs
                 if blob.name[len(root) :].partition("/")[2] == skills.SKILL_MD
             }
-            for name, text in _descriptions(targets).items():
+            for name, text in self._describe(root, targets).items():
                 if name in stats:
                     stats[name]["description"] = text
             return stats
@@ -247,7 +277,7 @@ class GcsObjects:
                     row["updated"] = blob.updated
                 if file == skills.SKILL_MD:
                     targets[(owner, skill)] = blob
-            for (owner, skill), text in _descriptions(targets).items():
+            for (owner, skill), text in self._describe(root, targets).items():
                 stats[owner][skill]["description"] = text
             return stats
 

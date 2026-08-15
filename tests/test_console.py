@@ -1364,23 +1364,50 @@ async def test_static_serving_next_export():
         server.shutdown()
 
 
+class FakeBlob:
+    def __init__(self, data=None, boom=False, generation=1):
+        self.data, self.boom, self.generation = data, boom, generation
+        self.reads = 0
+
+    def download_as_bytes(self, end=None):
+        self.reads += 1
+        if self.boom:
+            raise RuntimeError("gone")
+        self.asked = end
+        return self.data[: (end or len(self.data))]
+
+
 def test_descriptions_range_read_and_tolerate_failure():
     """Only the head of each SKILL.md is fetched, and one bad blob can't blank
     the listing — the page still has to render."""
     from syros.console.objects import _descriptions
 
-    class FakeBlob:
-        def __init__(self, data=None, boom=False):
-            self.data, self.boom, self.asked = data, boom, None
-
-        def download_as_bytes(self, end=None):
-            if self.boom:
-                raise RuntimeError("gone")
-            self.asked = end
-            return self.data[: (end or len(self.data))]
-
     good = FakeBlob(b"---\ndescription: Reads PDFs\n---\n" + b"z" * 99_000)
-    described = _descriptions({"pdf": good, "broken": FakeBlob(boom=True)})
+    described = _descriptions({"pdf": good, "broken": FakeBlob(boom=True)}, {})
 
     assert described == {"pdf": "Reads PDFs"}
     assert good.asked == 4096  # a prefix, not the 99 KB body
+
+
+def test_descriptions_cache_by_generation():
+    """The console polls this every 8s; a description only moves when SKILL.md
+    is rewritten, so a steady prefix must stop re-reading."""
+    from syros.console.objects import _descriptions
+
+    blob = FakeBlob(b"---\ndescription: First\n---\n")
+    cache: dict = {}
+
+    assert _descriptions({"pdf": blob}, cache) == {"pdf": "First"}
+    assert _descriptions({"pdf": blob}, cache) == {"pdf": "First"}
+    assert blob.reads == 1  # second poll served from cache
+
+    edited = FakeBlob(b"---\ndescription: Second\n---\n", generation=2)
+    assert _descriptions({"pdf": edited}, cache) == {"pdf": "Second"}
+
+    # a failed read must not be cached, or a blip hides the text until the
+    # next write; and a deleted skill must not pin its entry
+    flaky = FakeBlob(boom=True, generation=3)
+    assert _descriptions({"pdf": flaky}, cache) == {}
+    assert _descriptions({"pdf": flaky}, cache) == {}
+    assert flaky.reads == 2
+    assert _descriptions({}, cache) == {} and cache == {}
