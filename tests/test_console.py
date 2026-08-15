@@ -470,7 +470,7 @@ async def test_workspaces_merges_gcs_leases_and_sessions():
 async def test_workspaces_lists_derived_members():
     store = FakeStore()
     await store.create_agent("writer", {"options": {"workspace": "shared"}})
-    await store.create_agent("critic", {"options": {"team": "shared"}})  # pre-rename doc
+    await store.create_agent("critic", {"options": {"workspace": "shared"}})
     await store.create_agent("loner", {"options": {}})
     objects = FakeObjects(workspaces={"shared": {"a.md": b"a"}})
 
@@ -1269,3 +1269,91 @@ def test_descriptions_cache_by_generation():
     assert _descriptions({"pdf": flaky}, cache) == {}
     assert flaky.reads == 2
     assert _descriptions({}, cache) == {} and cache == {}
+
+
+# --- GCS listing aggregation (the real objects.py helpers, not FakeObjects) ---
+
+
+class _Blob:
+    def __init__(self, name, size=1, updated=None):
+        self.name = name
+        self.size = size
+        self.updated = updated
+
+
+def test_workspace_stats_counts_the_shared_directory_only():
+    from syros.console.objects import _workspace_stats
+
+    stats = _workspace_stats(
+        [
+            _Blob("workspaces/shared/ws/report.md", size=10),
+            _Blob("workspaces/shared/ws/sub/a.md", size=5),
+            # a workspace's skills are its own listing, not its file count
+            _Blob("workspaces/shared/skills/pdf/SKILL.md", size=100),
+            _Blob("workspaces/skills-only/skills/pdf/SKILL.md", size=7),
+            _Blob("workspaces/shared/", size=0),  # prefix marker
+        ]
+    )
+
+    assert stats["shared"] == {"file_count": 2, "total_size": 15, "updated": None}
+    # a workspace holding nothing but skills still exists, with no files
+    assert stats["skills-only"] == {"file_count": 0, "total_size": 0, "updated": None}
+
+
+async def test_deleting_a_workspace_takes_its_skills_with_it(monkeypatch):
+    """GcsObjects targets the whole workspace prefix when no subpath is given —
+    otherwise a deleted workspace would leave orphaned skills behind."""
+    from syros import artifacts, workspace
+    from syros.console.objects import GcsObjects
+
+    from .test_workspace import FakeBucket
+
+    fake = FakeBucket(
+        {
+            "workspaces/shared/ws/report.md": (b"r", None),
+            "workspaces/shared/skills/pdf/SKILL.md": (b"s", None),
+            "workspaces/other/ws/keep.md": (b"k", None),
+        }
+    )
+    for module in (artifacts, workspace):
+        monkeypatch.setattr(module, "_bucket", lambda project, bucket_name: fake)
+    objects = GcsObjects("proj", "bkt")
+
+    # a subpath scopes to a folder inside the shared directory
+    assert await objects.delete_workspace_prefix("shared", "nope/", 10) == 0
+
+    assert await objects.delete_workspace_prefix("shared", None, 10) == 2
+    assert list(fake.objects) == ["workspaces/other/ws/keep.md"]
+
+
+async def test_workspace_skill_stats_reads_only_the_skills_subdirectory(monkeypatch):
+    """One listing of workspaces/ serves every workspace's skills; the shared
+    directory sits under the same prefix and must not leak into it."""
+    from syros import artifacts
+    from syros.console.objects import GcsObjects
+
+    blobs = [
+        _Blob("workspaces/research/skills/brief/SKILL.md", size=10),
+        _Blob("workspaces/research/skills/brief/ref/notes.md", size=5),
+        _Blob("workspaces/research/skills/pdf/SKILL.md", size=3),
+        _Blob("workspaces/research/ws/report.md", size=99),  # shared dir, not a skill
+        _Blob("workspaces/research/skills/brief/", size=0),  # prefix marker
+        _Blob("workspaces/research/", size=0),
+        _Blob("workspaces/other/ws/a.md", size=1),  # no skills at all
+    ]
+    monkeypatch.setattr(
+        artifacts,
+        "_bucket",
+        lambda project, bucket: type("B", (), {"list_blobs": lambda s, prefix: blobs})(),
+    )
+    objects = GcsObjects("proj", "bkt")
+    monkeypatch.setattr(objects, "_describe", lambda root, targets: {})
+
+    stats = await objects.workspace_skill_stats()
+
+    assert stats == {
+        "research": {
+            "brief": {"file_count": 2, "total_size": 15, "updated": None},
+            "pdf": {"file_count": 1, "total_size": 3, "updated": None},
+        }
+    }

@@ -6,15 +6,14 @@ singular, does the GCS file operations for a workspace's directory.)
 
 A workspace is one Firestore document (`workspaces/{name}`) holding the same
 serialized `AgentOptions` subset an agent stores, alongside the exclusive
-lease on the workspace's shared working directory (`workspaces/{name}/` in
-the bucket). Sessions run under a workspace (`AgentOptions(workspace=...)`)
+lease on the workspace's shared working directory (`workspaces/{name}/ws/` in
+the bucket; its skills sit alongside under `workspaces/{name}/skills/` — see
+layout.py). Sessions run under a workspace (`AgentOptions(workspace=...)`)
 share that directory one-at-a-time, mount the workspace's skills, and inherit
 the workspace's stored options as defaults — under any named agent, over
 global settings. Its members are derived, not stored: the agents whose saved
 options name this workspace. A workspace with no stored doc still works: the
-directory and lease are keyed by name alone. Docs written before the rename
-live in the legacy `teams/{name}` collection; the store reads through and
-migrates them forward on write.
+directory and lease are keyed by name alone.
 
     workspaces/{name}
         options            the serialized AgentOptions defaults subset
@@ -135,13 +134,12 @@ async def delete(
 
 
 def members(name: str, agent_docs: list[dict[str, Any]]) -> list[str]:
-    """The workspace's members, derived: agents whose stored options name it
-    (canonical "workspace" key, or legacy "team" from pre-rename docs)."""
-    found = []
-    for agent in agent_docs:
-        options = agent.get("options") or {}
-        if (options.get("workspace") or options.get("team")) == name:
-            found.append(agent.get("name"))
+    """The workspace's members, derived: agents whose stored options name it."""
+    found = [
+        agent.get("name")
+        for agent in agent_docs
+        if (agent.get("options") or {}).get("workspace") == name
+    ]
     return sorted(n for n in found if n)
 
 

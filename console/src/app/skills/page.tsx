@@ -14,7 +14,7 @@ import { bytes, relTime } from "@/lib/format";
 import type { SkillSummary } from "@/lib/types";
 import type { SyncSkillsResponse } from "@/lib/types";
 
-// Skills live under skills/{name}/ (global) and team-skills/{workspace}/{name}/
+// Skills live under skills/{name}/ (global) and workspaces/{workspace}/skills/{name}/
 // in the bucket, and are mounted into a session's HOME at run start, so what
 // this page shows is exactly what the next run will discover. A skill is a
 // directory, so uploading one is how you create one — drop a folder anywhere on
@@ -134,7 +134,7 @@ export default function SkillsPage() {
                       <p className="px-3.5 pt-0.5 pb-3 text-[12.5px] text-muted-foreground">
                         None yet — a workspace skill lives under{" "}
                         <code className="font-mono text-[11.5px] text-faint">
-                          team-skills/&#123;workspace&#125;/
+                          workspaces/&#123;workspace&#125;/skills/
                         </code>{" "}
                         and mounts only for that workspace, shadowing a global of the same name.
                       </p>

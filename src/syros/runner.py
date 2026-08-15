@@ -31,7 +31,7 @@ from .options import (
 )
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import analytics, artifacts, bigquery, connectors, titles, workflows, workspace
+from . import analytics, artifacts, bigquery, connectors, layout, titles, workflows, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -211,8 +211,6 @@ async def run(session_id: str) -> None:
     if session is None:
         return  # another execution holds the lease, or the session is gone/terminated
 
-    # Through options_from_doc, not the raw constructor: pre-rename session
-    # docs store "team", which only the deserializer maps to workspace.
     options = options_from_doc(dict(session["options"]))
     options.project = config.project
 
@@ -362,11 +360,11 @@ async def run(session_id: str) -> None:
         ws.mkdir(parents=True, exist_ok=True)
         home.mkdir(parents=True, exist_ok=True)
         ws_prefix = (
-            workspace.workspace_prefix(options.workspace)
+            layout.workspace_prefix(options.workspace)
             if options.workspace
-            else workspace.session_prefix(session_id, "ws")
+            else layout.session_prefix(session_id, "ws")
         )
-        home_prefix = workspace.session_prefix(session_id, "home")
+        home_prefix = layout.session_prefix(session_id, "home")
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
         # Mount skills into HOME after the home restore, so the live prefixes
@@ -375,14 +373,18 @@ async def run(session_id: str) -> None:
         # shadows a same-named global one. The SDK finds them via
         # setting_sources=["user"] below.
         await asyncio.to_thread(
-            workspace.restore, config.project, config.bucket, "skills/", home / ".claude" / "skills"
+            workspace.restore,
+            config.project,
+            config.bucket,
+            layout.skills_root(),
+            home / ".claude" / "skills",
         )
         if options.workspace:
             await asyncio.to_thread(
                 workspace.restore,
                 config.project,
                 config.bucket,
-                f"team-skills/{options.workspace}/",
+                layout.skills_root(options.workspace),
                 home / ".claude" / "skills",
             )
         # Mount artifact spaces after the ws restore so the space's content wins.

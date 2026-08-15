@@ -46,6 +46,7 @@ syros connectors set <name> [--token X | --file p]
 syros connectors remove <name>          destroy the stored credential
 syros console                           serve the web console (localhost or Cloud Run)
 syros export                            snapshot Firestore into BigQuery for analysis
+syros migrate [--dry-run] [--force]     move an old installation onto the current data layout
 """
 
 from __future__ import annotations
@@ -105,7 +106,7 @@ async def _sessions(args) -> None:
             f"  ${float(session.get('cost_usd') or 0):.4f}"
             f"  {state.get('stop_reason') or '':<14}"
             f"  {'' if published is None else f'{published} published':<14}"
-            f"  {(session.get('options') or {}).get('workspace') or (session.get('options') or {}).get('team') or ''}"
+            f"  {(session.get('options') or {}).get('workspace') or ''}"
         )
 
 
@@ -478,7 +479,7 @@ async def _tick(args) -> None:
 async def _artifacts(args) -> None:
     from pathlib import Path
 
-    from . import artifacts, workspace
+    from . import artifacts, layout
 
     project = _project(args)
     bucket = env.default_bucket(args.bucket, project)
@@ -507,9 +508,7 @@ async def _artifacts(args) -> None:
     if not session:
         raise SystemExit(f"no such session: {session_id}")
     shared = (session.get("options") or {}).get("workspace")
-    source = (
-        workspace.workspace_prefix(shared) if shared else workspace.session_prefix(session_id, "ws")
-    )
+    source = layout.workspace_prefix(shared) if shared else layout.session_prefix(session_id, "ws")
     count = await asyncio.to_thread(artifacts.publish, project, bucket, args.space, source, names)
     print(f"published {count} file(s) from {session_id} to {args.space}")
 
@@ -866,6 +865,37 @@ async def _export(args) -> None:
         print(f"{project}.{args.dataset}.{name}  {count} rows")
 
 
+async def _migrate(args) -> None:
+    from . import migrate
+
+    project = _project(args)
+    result = await migrate.run(
+        project,
+        env.default_bucket(args.bucket, project),
+        dry_run=args.dry_run,
+        force=args.force,
+    )
+    for move in result["moved"]:
+        print(f"move     {move['from']}  ->  {move['to']}")
+    for name in result["adopted"]:
+        print(f"adopt    teams/{name}  ->  workspaces/{name}")
+    for name in result["skipped"]:
+        print(f"drop     teams/{name}  (workspaces/{name} already exists)")
+    for path in result["rewritten"]:
+        print(f"rewrite  {path}  options.team -> options.workspace")
+    for name in result["unmovable"]:
+        print(f"skip     {name}  (not a name syros would have written; move it by hand)")
+    counts = (
+        f"{len(result['moved'])} object(s), {len(result['adopted'])} workspace doc(s),"
+        f" {len(result['rewritten'])} option dict(s)"
+    )
+    print(f"{'would migrate' if result['dry_run'] else 'migrated'} {counts}")
+    if result["in_place"]:
+        print(f"{result['in_place']} object(s) already under a workspace ws/ or skills/ prefix")
+    if result["busy"]:
+        print(f"warning: live workspace lease(s): {', '.join(result['busy'])}")
+
+
 async def _console(args) -> None:
     from .console.api import ConsoleAPI
     from .console.server import run
@@ -890,7 +920,7 @@ def _run_option_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
     parser.add_argument("--permission-mode", default=None)
-    parser.add_argument("--workspace", "--team", dest="workspace", default=None)
+    parser.add_argument("--workspace", default=None)
     parser.add_argument("--artifacts", default=None, metavar="SPACE")
     parser.add_argument("--max-turns", type=int, default=None)
     parser.add_argument("--max-budget-usd", type=float, default=None)
@@ -908,7 +938,7 @@ def main() -> None:
 
     sub.add_parser("sessions").set_defaults(func=_sessions)
 
-    workspaces = sub.add_parser("workspaces", aliases=["teams"])
+    workspaces = sub.add_parser("workspaces")
     workspaces.add_argument(
         "action",
         nargs="?",
@@ -1002,13 +1032,7 @@ def main() -> None:
     )
     skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
-    skills.add_argument(
-        "--workspace",
-        "--team",
-        dest="workspace",
-        default=None,
-        help="operate on a workspace's skills",
-    )
+    skills.add_argument("--workspace", default=None, help="operate on a workspace's skills")
     skills.add_argument(
         "--name", default=None, help="push: skill name (default: the directory's basename)"
     )
@@ -1050,6 +1074,16 @@ def main() -> None:
     export = sub.add_parser("export")
     export.add_argument("--dataset", default=env.dataset())
     export.set_defaults(func=_export)
+
+    migrate = sub.add_parser(
+        "migrate", help="move an installation deployed before the workspace layout onto it"
+    )
+    migrate.add_argument("--bucket", default=None)
+    migrate.add_argument("--dry-run", action="store_true", help="report the plan, change nothing")
+    migrate.add_argument(
+        "--force", action="store_true", help="migrate even while a workspace lease is live"
+    )
+    migrate.set_defaults(func=_migrate)
 
     console = sub.add_parser("console")
     console.add_argument("--host", default="127.0.0.1")

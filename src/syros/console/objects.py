@@ -11,8 +11,7 @@ import asyncio
 from concurrent import futures
 from typing import Any, Protocol, runtime_checkable
 
-from .. import artifacts, skills, workspace
-from ..names import validate_name
+from .. import artifacts, layout, skills, workspace
 
 # One artifact preview per request; anything bigger is a download, not a view.
 # Doubles as the ceiling on a workspace file the console will open for editing.
@@ -59,6 +58,17 @@ class ObjectStoreProtocol(Protocol):
     async def sync_official_skills(self) -> dict[str, Any]: ...
 
 
+def _row() -> dict[str, Any]:
+    return {"file_count": 0, "total_size": 0, "updated": None}
+
+
+def _count(row: dict[str, Any], blob) -> None:
+    row["file_count"] += 1
+    row["total_size"] += blob.size or 0
+    if blob.updated and (row["updated"] is None or blob.updated > row["updated"]):
+        row["updated"] = blob.updated
+
+
 def _stats(blobs, prefix: str) -> dict[str, dict[str, Any]]:
     """Aggregate one full listing under prefix into per-name {file_count,
     total_size, updated} — a single GCS call instead of one per name."""
@@ -67,12 +77,26 @@ def _stats(blobs, prefix: str) -> dict[str, dict[str, Any]]:
         rest = blob.name[len(prefix) :]
         if "/" not in rest:
             continue
-        name = rest.split("/", 1)[0]
-        row = stats.setdefault(name, {"file_count": 0, "total_size": 0, "updated": None})
-        row["file_count"] += 1
-        row["total_size"] += blob.size or 0
-        if blob.updated and (row["updated"] is None or blob.updated > row["updated"]):
-            row["updated"] = blob.updated
+        _count(stats.setdefault(rest.split("/", 1)[0], _row()), blob)
+    return stats
+
+
+def _workspace_stats(blobs) -> dict[str, dict[str, Any]]:
+    """Per-workspace stats over the whole workspaces/ tree.
+
+    A workspace owns two subdirectories (see layout.py); only the shared
+    directory's files are counted, so a workspace's skills never inflate its
+    file count. Every name under the prefix still gets a row — a workspace
+    holding nothing but skills exists, it just has no files.
+    """
+    stats: dict[str, dict[str, Any]] = {}
+    for blob in blobs:
+        parts = blob.name[len(layout.WORKSPACES) :].split("/", 2)
+        if len(parts) < 3 or not parts[2]:
+            continue
+        row = stats.setdefault(parts[0], _row())
+        if parts[1] == layout.WS_SUBDIR:
+            _count(row, blob)
     return stats
 
 
@@ -157,10 +181,10 @@ class GcsObjects:
         return artifacts._bucket(self._project, self._bucket).list_blobs(prefix=prefix)
 
     async def workspace_stats(self) -> dict[str, dict[str, Any]]:
-        return await asyncio.to_thread(lambda: _stats(self._list("workspaces/"), "workspaces/"))
+        return await asyncio.to_thread(lambda: _workspace_stats(self._list(layout.WORKSPACES)))
 
     async def workspace_files(self, name: str) -> list[dict[str, Any]]:
-        prefix = workspace.workspace_prefix(name)
+        prefix = layout.workspace_prefix(name)
         return await asyncio.to_thread(lambda: _files(self._list(prefix), prefix))
 
     async def read_workspace_file(self, name: str, file: str) -> tuple[bytes, str]:
@@ -186,16 +210,23 @@ class GcsObjects:
         await asyncio.to_thread(workspace.set_tags, self._project, self._bucket, name, file, tags)
 
     async def delete_workspace_prefix(self, name: str, subpath: str | None, max_files: int) -> int:
-        prefix = workspace.workspace_prefix(name) + (subpath or "")
+        # A subpath names a folder inside the shared directory; no subpath means
+        # the whole workspace — its skills included, so deleting a workspace
+        # leaves nothing behind under its prefix.
+        prefix = (
+            (layout.workspace_prefix(name) + subpath) if subpath else layout.workspace_root(name)
+        )
         return await asyncio.to_thread(
             workspace.delete_prefix, self._project, self._bucket, prefix, max_files=max_files
         )
 
     async def space_stats(self) -> dict[str, dict[str, Any]]:
-        return await asyncio.to_thread(lambda: _stats(self._list("artifacts/"), "artifacts/"))
+        return await asyncio.to_thread(
+            lambda: _stats(self._list(layout.ARTIFACTS), layout.ARTIFACTS)
+        )
 
     async def list_artifacts(self, space: str) -> list[dict[str, Any]]:
-        prefix = artifacts.space_prefix(space)
+        prefix = layout.space_prefix(space)
         return await asyncio.to_thread(lambda: _files(self._list(prefix), prefix))
 
     async def read_artifact(self, space: str, name: str) -> tuple[bytes, str]:
@@ -227,13 +258,13 @@ class GcsObjects:
         )
 
     async def delete_artifact_prefix(self, space: str, subpath: str | None, max_files: int) -> int:
-        prefix = artifacts.space_prefix(space) + (subpath or "")
+        prefix = layout.space_prefix(space) + (subpath or "")
         return await asyncio.to_thread(
             workspace.delete_prefix, self._project, self._bucket, prefix, max_files=max_files
         )
 
     async def skill_stats(self, workspace: str | None = None) -> dict[str, dict[str, Any]]:
-        root = f"team-skills/{validate_name('workspace', workspace)}/" if workspace else "skills/"
+        root = layout.skills_root(workspace)
 
         def work() -> dict[str, dict[str, Any]]:
             blobs = list(self._list(root))
@@ -253,28 +284,25 @@ class GcsObjects:
     async def workspace_skill_stats(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Every workspace's skills, keyed workspace -> name -> stat.
 
-        One listing of the whole team-skills/ prefix rather than one per
+        One listing of the whole workspaces/ tree rather than one call per
         workspace, so the console can show workspace-scoped skills beside the
-        globals without knowing which workspaces exist.
+        globals without knowing which workspaces exist. A workspace's shared
+        directory sits under the same prefix, so only the skills/ subdirectory
+        is read (see layout.py).
         """
-        root = "team-skills/"
+        root = layout.WORKSPACES
 
         def work() -> dict[str, dict[str, dict[str, Any]]]:
             blobs = list(self._list(root))
             stats: dict[str, dict[str, dict[str, Any]]] = {}
             targets: dict[tuple[str, str], Any] = {}
             for blob in blobs:
-                owner, _, rest = blob.name[len(root) :].partition("/")
-                skill, _, file = rest.partition("/")
-                if not skill or not file:
+                owner, subdir, skill, file = (blob.name[len(root) :].split("/", 3) + ["", "", ""])[
+                    :4
+                ]
+                if subdir != layout.SKILLS_SUBDIR or not skill or not file:
                     continue
-                row = stats.setdefault(owner, {}).setdefault(
-                    skill, {"file_count": 0, "total_size": 0, "updated": None}
-                )
-                row["file_count"] += 1
-                row["total_size"] += blob.size or 0
-                if blob.updated and (row["updated"] is None or blob.updated > row["updated"]):
-                    row["updated"] = blob.updated
+                _count(stats.setdefault(owner, {}).setdefault(skill, _row()), blob)
                 if file == skills.SKILL_MD:
                     targets[(owner, skill)] = blob
             for (owner, skill), text in self._describe(root, targets).items():
@@ -284,7 +312,7 @@ class GcsObjects:
         return await asyncio.to_thread(work)
 
     async def skill_files(self, name: str, workspace: str | None = None) -> list[dict[str, Any]]:
-        prefix = skills.skill_prefix(name, workspace)
+        prefix = layout.skill_prefix(name, workspace)
         return await asyncio.to_thread(lambda: _files(self._list(prefix), prefix))
 
     async def read_skill_file(

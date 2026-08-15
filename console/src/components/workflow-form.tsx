@@ -65,7 +65,6 @@ const DRAFT_FIELDS = new Set([
   "model",
   "permission_mode",
   "workspace",
-  "team",
   "artifacts",
   "allowed_tools",
   "connectors",

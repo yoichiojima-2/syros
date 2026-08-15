@@ -160,12 +160,12 @@ def test_run_log_row_matches_declared_schema():
     assert row["released_at"] == "2023-11-14T22:13:20+00:00"
 
 
-def test_run_log_row_reads_legacy_team_as_workspace():
+def test_run_log_row_reads_the_workspace_off_the_stored_options():
     from syros.analytics import run_log_row
 
     row = run_log_row(
-        "sess_old",
-        {"options": {"team": "legacy"}},
+        "sess_1",
+        {"options": {"workspace": "shared"}},
         branch="main",
         stop_reason="success",
         run_cost_usd=0.0,
@@ -173,7 +173,7 @@ def test_run_log_row_reads_legacy_team_as_workspace():
         seq_head=1,
         released_at=1700000000.0,
     )
-    assert row["workspace"] == "legacy"
+    assert row["workspace"] == "shared"
 
 
 def test_run_log_insert_id_separates_branches():

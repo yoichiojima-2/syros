@@ -36,13 +36,17 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
 - Workspaces (`workspaces.py`, `workspaces/{name}` in Firestore) are shared
   directories with members: one doc holds stored option defaults AND the exclusive
   lease; members are derived (agents whose stored options name the workspace),
-  never stored. Legacy docs live in `teams/{name}` — the store reads through and
-  migrates them forward on write. The shared directory keeps the
-  `workspaces/{name}/` GCS prefix. A workspace's `CLAUDE.md` sits at that root and
+  never stored. A workspace's `CLAUDE.md` sits at its shared-directory root and
   loads as project memory (runner passes `setting_sources=["user", "project"]`).
-- Skills are GCS prefixes, two scopes: `skills/` (global, mounted everywhere) and
-  `team-skills/{workspace}/` (prefix keeps its pre-rename name; mounted for that
-  workspace, shadows same-named globals).
+- `layout.py` is the one map of the GCS bucket — every prefix builder lives there,
+  nowhere else. Everything a workspace owns nests under `workspaces/{name}/`:
+  `ws/` (the shared directory) and `skills/`. Skills have two scopes: `skills/`
+  (global, mounted everywhere) and a workspace's own (mounted for that workspace,
+  shadowing same-named globals).
+- `migrate.py` + `syros migrate` move an installation deployed before that layout
+  onto it (old `team-skills/`, `teams/`, and `"team"` option keys). It is the only
+  code that knows those names — nothing reads them as a fallback. Delete both once
+  every installation has run it.
 - Presets (`presets/__init__.py`, data under `presets/data/`) are example objects
   installed through the ordinary `create()` calls — nothing about an installed
   preset is special afterwards, and no doc points back at the catalog. Install
