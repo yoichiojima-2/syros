@@ -10,7 +10,8 @@ artifacts), `/approvals` (global pending queue), `/agents` + `/agent` (stored
 personas), `/deployments` + `/deployment` (cron runs, outcome/duration bars),
 `/connectors` (catalog + credential status), `/workspaces` + `/workspace`
 (shared working directories, file editing), `/artifacts` (shared spaces),
-`/skills` + `/skill` (bucket-backed Agent Skills, file editing). Endpoints
+`/skills` + `/skill` (bucket-backed Agent Skills: drop a skill directory to
+create one, then edit its files in place). Endpoints
 live in `src/syros/console/api.py`.
 
 The session page includes a Claude-style artifact panel: files the agent

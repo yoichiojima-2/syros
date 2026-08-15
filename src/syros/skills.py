@@ -16,12 +16,18 @@ import mimetypes
 import tarfile
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from .names import NAME, validate_file, validate_name
 from .workspace import _bucket
 
 OFFICIAL_SKILLS_TARBALL = "https://github.com/anthropics/skills/archive/refs/heads/main.tar.gz"
+
+# Directory names a push never uploads. A skill directory usually sits inside a
+# checkout, so a plain recursive walk would sweep up tooling state that is not
+# part of the skill. Anything dot-prefixed goes too (.git, .venv, .DS_Store).
+IGNORED = ("__pycache__", "node_modules")
 
 
 def skill_prefix(name: str, workspace: str | None = None) -> str:
@@ -88,6 +94,57 @@ def delete_skill(project: str, bucket_name: str, name: str, workspace: str | Non
     for blob in blobs:
         blob.delete()
     return len(blobs)
+
+
+def push(
+    project: str,
+    bucket_name: str,
+    path: Path,
+    *,
+    max_bytes: int,
+    name: str | None = None,
+    workspace: str | None = None,
+    replace: bool = False,
+) -> dict[str, Any]:
+    """Upload a local skill directory — SKILL.md plus resources — as one skill.
+
+    The directory's basename is the skill name unless `name` overrides it. A
+    SKILL.md at the root is required: without one claude_agent_sdk never
+    discovers the skill, so pushing the wrong directory would otherwise report
+    success and mount nothing. Oversized files are skipped and reported rather
+    than fatal — the same bargain sync_official makes, keeping everything a
+    push writes console-editable. Merges by default (like artifacts.push);
+    `replace` clears the prefix first so a re-push drops files deleted locally.
+    """
+    path = path.resolve()  # so `push .` names the skill after the directory, not ""
+    if not path.exists():
+        raise FileNotFoundError(path)
+    if not path.is_dir():
+        raise NotADirectoryError(f"{path} is not a directory — a skill is a directory")
+    skill = validate_name("skill", name if name is not None else path.name)
+    if not (path / "SKILL.md").is_file():
+        raise ValueError(f"{path} has no SKILL.md — a skill directory must carry one")
+    uploads: list[tuple[str, Path]] = []
+    skipped: list[dict[str, Any]] = []
+    for file in sorted(path.rglob("*")):
+        if not file.is_file() or file.is_symlink():
+            continue  # symlinks/devices don't belong in a skill upload
+        relative = file.relative_to(path)
+        if any(part.startswith(".") or part in IGNORED for part in relative.parts):
+            continue
+        size = file.stat().st_size
+        if size > max_bytes:
+            skipped.append({"file": relative.as_posix(), "size": size})
+            continue
+        uploads.append((relative.as_posix(), file))
+    if replace:
+        try:
+            delete_skill(project, bucket_name, skill, workspace)
+        except FileNotFoundError:
+            pass  # nothing there yet, so replacing is just a first push
+    for file_name, file in uploads:
+        write_file(project, bucket_name, skill, file_name, file.read_bytes(), workspace)
+    return {"skill": skill, "files": len(uploads), "skipped": skipped}
 
 
 def _fetch_official() -> bytes:

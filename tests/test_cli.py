@@ -1,10 +1,11 @@
 """CLI option assembly — the flags that become AgentOptions for agents/workflows."""
 
+import sys
 from types import SimpleNamespace
 
 import pytest
 
-from syros.cli import _run_options
+from syros.cli import _run_options, main
 from syros.errors import OptionsError
 
 
@@ -62,3 +63,12 @@ def test_connector_flag_unknown_name_rejected_by_validate():
     options.project = "p"
     with pytest.raises(OptionsError, match="jira"):
         options.validate()
+
+
+def test_skills_push_without_a_path_is_a_usage_error(monkeypatch, capsys):
+    """The one arity check argparse can't express: `args` is a catch-all nargs="*"."""
+    monkeypatch.setattr(sys, "argv", ["syros", "skills", "push"])
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert excinfo.value.code == 2
+    assert "push requires a skill directory" in capsys.readouterr().err

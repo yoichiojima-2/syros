@@ -29,6 +29,8 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
+syros skills push <dir> [--name X] [--replace]
+                                        upload a local skill directory (SKILL.md plus resources)
 syros skills files <name>               list one skill's files (--workspace for workspace skills)
 syros skills cat <name> <file>          print one skill file's content
 syros skills sync                       seed skills/ from the official anthropics/skills repo
@@ -521,6 +523,27 @@ async def _skills(args) -> None:
         for skipped in summary["skipped"]:
             print(f"    skipped {skipped['skill']}/{skipped['file']} ({skipped['size']} bytes)")
         return
+    if args.action == "push":
+        from pathlib import Path
+
+        try:
+            summary = await asyncio.to_thread(
+                skills.push,
+                project,
+                bucket,
+                Path(args.args[0]),
+                max_bytes=MAX_PREVIEW_BYTES,
+                name=args.name,
+                workspace=args.workspace,
+                replace=args.replace,
+            )
+        except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        scope = f" in workspace {args.workspace}" if args.workspace else ""
+        print(f"pushed {summary['files']} file(s) to skill {summary['skill']}{scope}")
+        for skipped in summary["skipped"]:
+            print(f"    skipped {skipped['file']} ({skipped['size']} bytes)")
+        return
     if args.action == "files":
         if not args.args:
             raise SystemExit("usage: syros skills files <name>")
@@ -909,7 +932,7 @@ def main() -> None:
 
     skills = sub.add_parser("skills")
     skills.add_argument(
-        "action", nargs="?", default="list", choices=["list", "files", "cat", "sync"]
+        "action", nargs="?", default="list", choices=["list", "push", "files", "cat", "sync"]
     )
     skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
@@ -919,6 +942,14 @@ def main() -> None:
         dest="workspace",
         default=None,
         help="operate on a workspace's skills",
+    )
+    skills.add_argument(
+        "--name", default=None, help="push: skill name (default: the directory's basename)"
+    )
+    skills.add_argument(
+        "--replace",
+        action="store_true",
+        help="push: clear the skill first, so files deleted locally are dropped",
     )
     skills.set_defaults(func=_skills)
 
@@ -962,6 +993,8 @@ def main() -> None:
             parser.error("push requires at least one path")
         if args.action == "publish" and len(args.args) < 2:
             parser.error("publish requires a session_id and at least one file")
+    if args.command == "skills" and args.action == "push" and not args.args:
+        parser.error("push requires a skill directory")
     try:
         asyncio.run(args.func(args))
     except KeyboardInterrupt:

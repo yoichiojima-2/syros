@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { SkillDropZone, SkillUpload } from "@/components/skill-upload";
 import { useAction, useNow, useSkillFiles, useSkills } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime } from "@/lib/format";
@@ -22,11 +23,13 @@ import { cn } from "@/lib/utils";
 
 // Skills live under skills/{name}/ in the bucket and are mounted into every
 // session's HOME at run start, so what this page shows is exactly what the
-// next run will discover. "Sync official skills" seeds the prefix with
-// editable copies of github.com/anthropics/skills.
+// next run will discover. A skill is a directory, so uploading one is how you
+// create one — drop a folder anywhere on the list, or use the picker. "Sync
+// official skills" seeds the prefix with editable copies of
+// github.com/anthropics/skills.
 
 export default function SkillsPage() {
-  const skills = useSkills();
+  const { skills, refresh } = useSkills();
   const now = useNow();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [flash, run] = useAction();
@@ -35,6 +38,7 @@ export default function SkillsPage() {
     run(async () => {
       const result = await post<SyncSkillsResponse>("/api/skills/sync");
       const skipped = result.skipped.length ? `, ${result.skipped.length} skipped (too large)` : "";
+      refresh();
       return `synced ${result.files} file(s) across ${result.skills.length} skill(s)${skipped}`;
     });
 
@@ -43,49 +47,53 @@ export default function SkillsPage() {
       <div className="flex items-center gap-3">
         <h1 className="flex-1 font-serif text-2xl tracking-tight">Skills</h1>
         {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
+        <SkillUpload onUploaded={refresh} run={run} />
         <Button variant="outline" size="sm" onClick={sync}>
           <DownloadCloud /> Sync official skills
         </Button>
       </div>
-      <Card>
-        <CardContent className="px-2 py-2">
-          {skills === null ? (
-            <div className="space-y-2 p-2">
-              <Skeleton className="h-8" />
-              <Skeleton className="h-8" />
-            </div>
-          ) : skills.length === 0 ? (
-            <p className="p-6 text-center text-[13px] text-muted-foreground">
-              No skills yet — sync the official Anthropic skills above, or upload your own from a
-              skill&apos;s page. Every session mounts all skills at start.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead />
-                  <TableHead>Name</TableHead>
-                  <TableHead className="text-right">Files</TableHead>
-                  <TableHead className="text-right">Size</TableHead>
-                  <TableHead className="text-right">Updated</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {skills.map((skill) => (
-                  <SkillRow
-                    key={skill.name}
-                    skill={skill}
-                    now={now}
-                    expanded={expanded === skill.name}
-                    onToggle={() => setExpanded(expanded === skill.name ? null : skill.name)}
-                  />
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <SkillDropZone onUploaded={refresh} run={run}>
+        <Card>
+          <CardContent className="px-2 py-2">
+            {skills === null ? (
+              <div className="space-y-2 p-2">
+                <Skeleton className="h-8" />
+                <Skeleton className="h-8" />
+              </div>
+            ) : skills.length === 0 ? (
+              <p className="p-6 text-center text-[13px] text-muted-foreground">
+                No skills yet — drop a skill directory here (a folder with a SKILL.md in it), or
+                sync the official Anthropic skills above. Every session mounts all skills at start.
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead />
+                    <TableHead>Name</TableHead>
+                    <TableHead className="text-right">Files</TableHead>
+                    <TableHead className="text-right">Size</TableHead>
+                    <TableHead className="text-right">Updated</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {skills.map((skill) => (
+                    <SkillRow
+                      key={skill.name}
+                      skill={skill}
+                      now={now}
+                      expanded={expanded === skill.name}
+                      onToggle={() => setExpanded(expanded === skill.name ? null : skill.name)}
+                      onDeleted={refresh}
+                    />
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      </SkillDropZone>
     </div>
   );
 }
@@ -95,11 +103,13 @@ function SkillRow({
   now,
   expanded,
   onToggle,
+  onDeleted,
 }: {
   skill: SkillSummary;
   now: number;
   expanded: boolean;
   onToggle: () => void;
+  onDeleted: () => void;
 }) {
   const [flash, run] = useAction();
   const Chevron = expanded ? ChevronDown : ChevronRight;
@@ -108,6 +118,7 @@ function SkillRow({
     if (!confirm(`Delete the whole skill ${skill.name}? Every file under it is removed.`)) return;
     run(async () => {
       await post(`/api/skills/${encodeURIComponent(skill.name)}/delete`);
+      onDeleted();
       return `deleted ${skill.name}`;
     });
   };

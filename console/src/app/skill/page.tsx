@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useRef } from "react";
+import { Suspense, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, FilePlus2, FileText, Upload } from "lucide-react";
@@ -11,6 +11,7 @@ import { useAction, useNow, useSkillFiles } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime } from "@/lib/format";
 import type { OkResponse } from "@/lib/types";
+import { entriesFromDrop, filesFromInput, readAsBase64, type PickedFile } from "@/lib/upload";
 import { cn } from "@/lib/utils";
 
 // One skill (skills/{name}/ in the bucket, or a workspace's own set with ?workspace=),
@@ -44,6 +45,8 @@ function SkillInner() {
   const now = useNow();
   const [flash, run] = useAction();
   const uploadRef = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
 
   const select = (nextFile: string | null) => {
     if (!name) return;
@@ -53,25 +56,24 @@ function SkillInner() {
     router.replace(`/skill?${query}`);
   };
 
-  const upload = (picked: File) => {
-    if (!name) return;
+  // Files land at their relative path, so dropping a folder onto an open skill
+  // adds it as a subdirectory of that skill.
+  const upload = (picked: PickedFile[]) => {
+    if (!name || !picked.length) return;
     run(async () => {
-      const content = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        // readAsDataURL gives "data:<type>;base64,<payload>" — we want the payload
-        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
-        reader.onerror = () => reject(new Error(`could not read ${picked.name}`));
-        reader.readAsDataURL(picked);
-      });
-      await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
-        name: picked.name,
-        content,
-        encoding: "base64",
-        ...(workspace ? { workspace } : {}),
-      });
+      for (const { path, file } of picked) {
+        await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
+          name: path,
+          content: await readAsBase64(file),
+          encoding: "base64",
+          ...(workspace ? { workspace } : {}),
+        });
+      }
       refresh();
-      select(picked.name);
-      return `uploaded ${picked.name}`;
+      if (picked.length === 1) select(picked[0].path);
+      return picked.length === 1
+        ? `uploaded ${picked[0].path}`
+        : `uploaded ${picked.length} files`;
     });
   };
 
@@ -124,62 +126,91 @@ function SkillInner() {
           </p>
         </div>
 
-        <div className="flex gap-1.5 px-1">
-          <Button variant="outline" size="sm" onClick={create} className="flex-1">
-            <FilePlus2 /> New
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => uploadRef.current?.click()}
-            className="flex-1"
-          >
-            <Upload /> Upload
-          </Button>
-          <input
-            ref={uploadRef}
-            type="file"
-            className="hidden"
-            onChange={(e) => {
-              const picked = e.target.files?.[0];
-              // reset so re-picking the same file fires change again
-              e.target.value = "";
-              if (picked) upload(picked);
-            }}
-          />
-        </div>
-
-        <div className="min-h-0">
-          {files === null ? (
-            <div className="space-y-2">
-              <Skeleton className="h-7" />
-              <Skeleton className="h-7" />
+        <div
+          className="relative flex flex-col gap-3"
+          onDragEnter={(e) => {
+            e.preventDefault();
+            dragDepth.current += 1;
+            setDragging(true);
+          }}
+          onDragLeave={() => {
+            dragDepth.current -= 1;
+            if (dragDepth.current <= 0) setDragging(false);
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            dragDepth.current = 0;
+            setDragging(false);
+            entriesFromDrop(e)
+              .then(upload)
+              .catch(() => {});
+          }}
+        >
+          {dragging && (
+            <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-lg border-2 border-dashed border-primary bg-primary-soft/80">
+              <p className="text-[12px] font-medium">Drop to upload</p>
             </div>
-          ) : files.length === 0 ? (
-            <p className="px-1 text-[12px] text-muted-foreground">empty</p>
-          ) : (
-            <ul className="space-y-0.5">
-              {files.map((f) => (
-                <li key={f.name}>
-                  <button
-                    onClick={() => select(f.name)}
-                    title={f.name}
-                    className={cn(
-                      "flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left font-mono text-[12px] transition-colors",
-                      f.name === file
-                        ? "bg-primary-soft font-medium"
-                        : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
-                    )}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                    <span className="shrink-0 text-[10px] text-faint">
-                      {relTime(f.updated, now) || bytes(f.size)}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
           )}
+          <div className="flex gap-1.5 px-1">
+            <Button variant="outline" size="sm" onClick={create} className="flex-1">
+              <FilePlus2 /> New
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              title="Upload files (or drag and drop a file or folder)"
+              onClick={() => uploadRef.current?.click()}
+              className="flex-1"
+            >
+              <Upload /> Upload
+            </Button>
+            <input
+              ref={uploadRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const picked = filesFromInput(e.target.files);
+                // reset so re-picking the same file fires change again
+                e.target.value = "";
+                upload(picked);
+              }}
+            />
+          </div>
+
+          <div className="min-h-0">
+            {files === null ? (
+              <div className="space-y-2">
+                <Skeleton className="h-7" />
+                <Skeleton className="h-7" />
+              </div>
+            ) : files.length === 0 ? (
+              <p className="px-1 text-[12px] text-muted-foreground">empty</p>
+            ) : (
+              <ul className="space-y-0.5">
+                {files.map((f) => (
+                  <li key={f.name}>
+                    <button
+                      onClick={() => select(f.name)}
+                      title={f.name}
+                      className={cn(
+                        "flex w-full items-baseline gap-2 rounded-lg px-2 py-1.5 text-left font-mono text-[12px] transition-colors",
+                        f.name === file
+                          ? "bg-primary-soft font-medium"
+                          : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                      <span className="shrink-0 text-[10px] text-faint">
+                        {relTime(f.updated, now) || bytes(f.size)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
         {flash && <p className="px-1 text-[11px] text-muted-foreground">{flash}</p>}
       </aside>
