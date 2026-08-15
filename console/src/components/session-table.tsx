@@ -86,7 +86,7 @@ export function SessionTable({
           <TableHead>Session</TableHead>
           <TableHead>State</TableHead>
           {!compact && <TableHead>Model</TableHead>}
-          {!compact && <TableHead>Team</TableHead>}
+          {!compact && <TableHead>Workspace</TableHead>}
           <TableHead className="text-right">Cost</TableHead>
           {!compact && <TableHead className="text-right">Journal</TableHead>}
           <TableHead className="text-right">Updated</TableHead>
@@ -135,7 +135,7 @@ export function SessionTable({
             )}
             {!compact && (
               <TableCell className="font-mono text-xs text-muted-foreground">
-                {s.team || "—"}
+                {s.workspace || "—"}
               </TableCell>
             )}
             <TableCell className="text-right font-mono text-xs tabular-nums">

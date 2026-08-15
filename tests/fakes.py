@@ -33,7 +33,8 @@ class FakeStore:
         self.events: dict[str, dict[str, dict[str, Any]]] = {}  # sid -> uuid -> event
         self.inbox: dict[str, list[dict[str, Any]]] = {}
         self.approvals: dict[str, dict[str, dict[str, Any]]] = {}
-        self.teams: dict[str, dict[str, Any]] = {}
+        self.workspaces: dict[str, dict[str, Any]] = {}
+        self.legacy_teams: dict[str, dict[str, Any]] = {}  # pre-rename teams/ docs
         self.settings: dict[str, Any] | None = None
         self.deployments: dict[str, dict[str, Any]] = {}
         self.agents: dict[str, dict[str, Any]] = {}
@@ -260,42 +261,49 @@ class FakeStore:
         rows = [e for e in self.events.get(session_id, {}).values() if e.get("type") == "tool_call"]
         return [_tool_call_row(e) for e in sorted(rows, key=lambda e: e["ts"])]
 
-    async def claim_team(self, name, session_id, ttl_seconds):
-        doc = self.teams.get(name)
-        if (
-            doc
-            and float(doc.get("lease_expires") or 0) > time.time()
-            and doc.get("lease_session_id") != session_id
-        ):
-            return False
-        self.teams.setdefault(name, {}).update(
+    async def claim_workspace(self, name, session_id, ttl_seconds):
+        for doc in (self.workspaces.get(name), self.legacy_teams.get(name)):
+            if (
+                doc
+                and float(doc.get("lease_expires") or 0) > time.time()
+                and doc.get("lease_session_id") != session_id
+            ):
+                return False
+        if name not in self.workspaces and name in self.legacy_teams:
+            self.workspaces[name] = dict(self.legacy_teams[name])
+        self.workspaces.setdefault(name, {}).update(
             lease_session_id=session_id,
             lease_expires=time.time() + ttl_seconds,
         )
         return True
 
-    async def release_team(self, name, session_id):
-        doc = self.teams.get(name)
-        if doc and doc.get("lease_session_id") == session_id:
-            doc.update(lease_session_id=None, lease_expires=0.0)
+    async def release_workspace(self, name, session_id):
+        for doc in (self.workspaces.get(name), self.legacy_teams.get(name)):
+            if doc and doc.get("lease_session_id") == session_id:
+                doc.update(lease_session_id=None, lease_expires=0.0)
 
-    async def create_team(self, name, doc):
-        if name in self.teams:
-            raise ValueError(f"team {name} exists")
-        self.teams[name] = {**doc, "created_at": time.time(), "updated_at": time.time()}
+    async def create_workspace(self, name, doc):
+        if name in self.workspaces:
+            raise ValueError(f"workspace {name} exists")
+        self.workspaces[name] = {**doc, "created_at": time.time(), "updated_at": time.time()}
 
-    async def get_team(self, name):
-        team = self.teams.get(name)
-        return {"name": name, **team} if team else None
+    async def get_workspace(self, name):
+        doc = self.workspaces.get(name) or self.legacy_teams.get(name)
+        return {"name": name, **doc} if doc else None
 
-    async def update_team(self, name, **fields):
-        self.teams[name].update(fields, updated_at=time.time())
+    async def update_workspace(self, name, **fields):
+        if name not in self.workspaces and name in self.legacy_teams:
+            self.workspaces[name] = dict(self.legacy_teams[name])
+        self.workspaces[name].update(fields, updated_at=time.time())
 
-    async def list_teams(self):
-        return [{"name": k, **v} for k, v in self.teams.items()]
+    async def list_workspaces(self):
+        docs = {k: {"name": k, **v} for k, v in self.legacy_teams.items()}
+        docs.update({k: {"name": k, **v} for k, v in self.workspaces.items()})
+        return list(docs.values())
 
-    async def delete_team(self, name):
-        self.teams.pop(name, None)
+    async def delete_workspace(self, name):
+        self.workspaces.pop(name, None)
+        self.legacy_teams.pop(name, None)
 
     async def get_settings(self):
         return self.settings

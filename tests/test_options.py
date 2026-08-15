@@ -79,17 +79,17 @@ def test_machine_local_options_are_type_errors():
         AgentOptions(hooks={})
 
 
-def test_team_valid_names():
+def test_workspace_valid_names():
     for name in ("data-pipeline", "a", "a" * 64, "snake_case-1"):
-        AgentOptions(project="p", team=name).validate()
+        AgentOptions(project="p", workspace=name).validate()
 
 
-def test_team_path_like_is_rejected():
+def test_workspace_path_like_is_rejected():
     # Path-shaped values stay eager errors, before any GCP call — the spirit
     # of the old TypeError on workspace, now with a helpful message.
     for name in ("/tmp", "a/b", "../x", "", "Upper", ".", "a" * 65):
-        with pytest.raises(OptionsError, match="team"):
-            AgentOptions(project="p", team=name).validate()
+        with pytest.raises(OptionsError, match="workspace"):
+            AgentOptions(project="p", workspace=name).validate()
 
 
 def test_serialize_round_trip_subset():
@@ -99,12 +99,12 @@ def test_serialize_round_trip_subset():
         allowed_tools=["Read"],
         max_turns=5,
         max_budget_usd=1.5,
-        team="shared-ws",
+        workspace="shared-ws",
         can_use_tool=lambda *a: None,  # callables never serialize
     )
     doc = options.serialize()
     assert doc["system_prompt"] == "be careful"
-    assert doc["team"] == "shared-ws"
+    assert doc["workspace"] == "shared-ws"
     assert doc["max_budget_usd"] == 1.5
     assert "can_use_tool" not in doc
     assert "sandbox" not in doc
@@ -173,26 +173,26 @@ def test_model_env_ignores_ambient_key_on_vertex_backend(monkeypatch):
 
 
 def test_artifacts_str_means_one_rw_space():
-    options = AgentOptions(project="proj-1", artifacts="team")
+    options = AgentOptions(project="proj-1", artifacts="workspace")
     options.validate()
-    assert options.resolved_artifacts() == {"team": "rw"}
-    assert options.serialize()["artifacts"] == "team"
+    assert options.resolved_artifacts() == {"workspace": "rw"}
+    assert options.serialize()["artifacts"] == "workspace"
 
 
 def test_artifacts_dict_modes():
-    options = AgentOptions(project="proj-1", artifacts={"team": "rw", "inputs": "ro"})
+    options = AgentOptions(project="proj-1", artifacts={"workspace": "rw", "inputs": "ro"})
     options.validate()
-    assert options.resolved_artifacts() == {"team": "rw", "inputs": "ro"}
+    assert options.resolved_artifacts() == {"workspace": "rw", "inputs": "ro"}
 
 
 def test_artifacts_bad_name_raises():
     with pytest.raises(OptionsError, match="artifact space"):
-        AgentOptions(project="proj-1", artifacts="Team/Reports").validate()
+        AgentOptions(project="proj-1", artifacts="Workspace/Reports").validate()
 
 
 def test_artifacts_bad_mode_raises():
     with pytest.raises(OptionsError, match="mode must be"):
-        AgentOptions(project="proj-1", artifacts={"team": "write"}).validate()
+        AgentOptions(project="proj-1", artifacts={"workspace": "write"}).validate()
 
 
 def test_connectors_serialize_and_validate():
@@ -220,10 +220,12 @@ def test_connectors_mcp_server_collision_rejected():
         options.validate()
 
 
-def test_options_from_doc_maps_legacy_workspace_to_team():
-    # Pre-teams session docs stored "workspace"; resume must keep working.
-    restored = options_from_doc({"workspace": "shared"})
-    assert restored.team == "shared"
-    original = {"workspace": "shared"}
+def test_options_from_doc_maps_legacy_team_to_workspace():
+    # Pre-rename session docs stored "team"; resume must keep working.
+    restored = options_from_doc({"team": "shared"})
+    assert restored.workspace == "shared"
+    original = {"team": "shared"}
     options_from_doc(original)
-    assert original == {"workspace": "shared"}  # caller's dict untouched
+    assert original == {"team": "shared"}  # caller's dict untouched
+    # Canonical key wins when both are present.
+    assert options_from_doc({"workspace": "new", "team": "old"}).workspace == "new"

@@ -9,7 +9,7 @@ import { CopyButton, download } from "@/components/artifact-viewer";
 import { useAction } from "@/lib/hooks";
 import type { StoredFile } from "@/lib/types";
 
-// Shared bucket-file text editor for the team workspace and skill pages: the
+// Shared bucket-file text editor for the workspace and skill pages: the
 // page supplies the raw-bytes GET url and the save/delete calls, this owns the
 // saved/draft state, the binary sniff and the toolbar. Pages that gate writes
 // behind a lease pass busy/lockedBy; the server is the actual guard.

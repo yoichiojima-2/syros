@@ -20,12 +20,14 @@ Layout:
     sessions/{sid}/approvals/{hash}   {tool_name, input, status, ...} — the
                                       operational approval queue; the journal
                                       carries mirror "approval" records
-    teams/{name}                      {options, description, lease_session_id,
-                                      lease_expires, ...} — a team's stored option
-                                      defaults plus the exclusive lease on its
-                                      shared workspace
+    workspaces/{name}                 {options, description, lease_session_id,
+                                      lease_expires, ...} — a workspace's stored
+                                      option defaults plus the exclusive lease on
+                                      its shared directory (legacy docs live in
+                                      teams/{name}; reads fall back, writes
+                                      migrate forward)
     settings/global                   {options} — option defaults inherited by
-                                      every team and session
+                                      every workspace and session
     deployments/{name}                  {cron, timezone, prompt, options, enabled,
                                       next_run_at, ...} — a cron that fires runs
     agents/{name}                     {options, description, ...} — a stored,
@@ -197,13 +199,13 @@ class StoreProtocol(Protocol):
     async def list_approvals(self, session_id: str) -> list[dict[str, Any]]: ...
     async def list_all_pending_approvals(self) -> list[dict[str, Any]]: ...
     async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]: ...
-    async def claim_team(self, name: str, session_id: str, ttl_seconds: float) -> bool: ...
-    async def release_team(self, name: str, session_id: str) -> None: ...
-    async def create_team(self, name: str, doc: dict[str, Any]) -> None: ...
-    async def get_team(self, name: str) -> dict[str, Any] | None: ...
-    async def update_team(self, name: str, **fields: Any) -> None: ...
-    async def list_teams(self) -> list[dict[str, Any]]: ...
-    async def delete_team(self, name: str) -> None: ...
+    async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool: ...
+    async def release_workspace(self, name: str, session_id: str) -> None: ...
+    async def create_workspace(self, name: str, doc: dict[str, Any]) -> None: ...
+    async def get_workspace(self, name: str) -> dict[str, Any] | None: ...
+    async def update_workspace(self, name: str, **fields: Any) -> None: ...
+    async def list_workspaces(self) -> list[dict[str, Any]]: ...
+    async def delete_workspace(self, name: str) -> None: ...
     async def get_settings(self) -> dict[str, Any] | None: ...
     async def update_settings(self, doc: dict[str, Any]) -> None: ...
     async def create_deployment(self, name: str, doc: dict[str, Any]) -> None: ...
@@ -684,24 +686,35 @@ class Store:
         # predate the journal and want tool_name/input/decision at top level.
         return [_tool_call_row(s.to_dict()) async for s in query.stream()]
 
-    # --- teams (shared ws/ + option defaults; one doc holds config and lease) ---
+    # --- workspaces (shared ws/ + option defaults; one doc holds config and
+    # lease). Docs written before the rename live in the legacy teams/{name}
+    # collection: reads fall back to it, writes migrate the doc forward. ---
 
-    def _team(self, name: str):
+    def _workspace(self, name: str):
+        return self._db.collection("workspaces").document(name)
+
+    def _legacy_team(self, name: str):
         return self._db.collection("teams").document(name)
 
-    async def claim_team(self, name: str, session_id: str, ttl_seconds: float) -> bool:
-        """Atomically take the team's workspace lease. One live execution per
-        team; the holder is the session, so the same session re-claims."""
+    async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool:
+        """Atomically take the workspace lease. One live execution per
+        workspace; the holder is the session, so the same session re-claims."""
         transaction = self._db.transaction()
-        reference = self._team(name)
+        reference = self._workspace(name)
+        legacy_reference = self._legacy_team(name)
         firestore = self._firestore
 
         @firestore.async_transactional
         async def _claim(transaction):
+            # Read both docs inside the transaction: a live lease still being
+            # renewed on the legacy teams/{name} doc must register as busy.
             snapshot = await reference.get(transaction=transaction)
+            legacy_snapshot = await legacy_reference.get(transaction=transaction)
             doc = snapshot.to_dict() if snapshot.exists else None
-            if lease_active(doc) and doc.get("lease_session_id") != session_id:
-                return False
+            legacy_doc = legacy_snapshot.to_dict() if legacy_snapshot.exists else None
+            for candidate in (doc, legacy_doc):
+                if lease_active(candidate) and candidate.get("lease_session_id") != session_id:
+                    return False
             fields = {
                 "lease_session_id": session_id,
                 "lease_expires": time.time() + ttl_seconds,
@@ -710,37 +723,46 @@ class Store:
             if snapshot.exists:
                 transaction.update(reference, fields)
             else:
-                transaction.set(reference, {**fields, "created_at": firestore.SERVER_TIMESTAMP})
+                # First claim since the rename: carry the legacy config forward.
+                base = {k: v for k, v in (legacy_doc or {}).items() if k != "created_at"}
+                transaction.set(
+                    reference, {**base, **fields, "created_at": firestore.SERVER_TIMESTAMP}
+                )
             return True
 
         return await _claim(transaction)
 
-    async def release_team(self, name: str, session_id: str) -> None:
+    async def release_workspace(self, name: str, session_id: str) -> None:
         """Drop the lease, but only if this session still holds it — an
-        expired-and-reclaimed team must not be released by the old runner."""
+        expired-and-reclaimed workspace must not be released by the old
+        runner. Checks the legacy teams/{name} doc too, so a lease taken
+        before the rename still releases."""
         transaction = self._db.transaction()
-        reference = self._team(name)
+        references = [self._workspace(name), self._legacy_team(name)]
         firestore = self._firestore
 
         @firestore.async_transactional
         async def _release(transaction):
-            snapshot = await reference.get(transaction=transaction)
-            if not snapshot.exists or snapshot.to_dict().get("lease_session_id") != session_id:
-                return
-            transaction.update(
-                reference,
-                {
-                    "lease_session_id": None,
-                    "lease_expires": 0.0,
-                    "updated_at": firestore.SERVER_TIMESTAMP,
-                },
-            )
+            snapshots = [await ref.get(transaction=transaction) for ref in references]
+            for reference, snapshot in zip(references, snapshots):
+                if not snapshot.exists or snapshot.to_dict().get("lease_session_id") != session_id:
+                    continue
+                transaction.update(
+                    reference,
+                    {
+                        "lease_session_id": None,
+                        "lease_expires": 0.0,
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                    },
+                )
 
         await _release(transaction)
 
-    async def create_team(self, name: str, doc: dict[str, Any]) -> None:
-        """Create; the document id is the name, so this fails on a duplicate."""
-        await self._team(name).create(
+    async def create_workspace(self, name: str, doc: dict[str, Any]) -> None:
+        """Create; the document id is the name, so this fails on a duplicate.
+        (Duplicates against a legacy teams/ doc are rejected by callers, which
+        check get_workspace first.)"""
+        await self._workspace(name).create(
             {
                 **doc,
                 "created_at": self._firestore.SERVER_TIMESTAMP,
@@ -748,22 +770,48 @@ class Store:
             }
         )
 
-    async def get_team(self, name: str) -> dict[str, Any] | None:
-        snapshot = await self._team(name).get()
+    async def get_workspace(self, name: str) -> dict[str, Any] | None:
+        snapshot = await self._workspace(name).get()
+        if not snapshot.exists:
+            snapshot = await self._legacy_team(name).get()
         return {"name": name, **snapshot.to_dict()} if snapshot.exists else None
 
-    async def update_team(self, name: str, **fields: Any) -> None:
+    async def update_workspace(self, name: str, **fields: Any) -> None:
         fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
-        await self._team(name).update(fields)
+        snapshot = await self._workspace(name).get()
+        if snapshot.exists:
+            await self._workspace(name).update(fields)
+            return
+        legacy_snapshot = await self._legacy_team(name).get()
+        if legacy_snapshot.exists:
+            # Migrate the legacy doc forward with the update applied.
+            base = {k: v for k, v in legacy_snapshot.to_dict().items() if k != "created_at"}
+            await self._workspace(name).set(
+                {**base, **fields, "created_at": self._firestore.SERVER_TIMESTAMP}
+            )
+            return
+        await self._workspace(name).update(fields)  # raises NotFound, like before
 
-    async def list_teams(self) -> list[dict[str, Any]]:
-        """Every team doc, config and lease state together."""
-        return [{"name": s.id, **s.to_dict()} async for s in self._db.collection("teams").stream()]
+    async def list_workspaces(self) -> list[dict[str, Any]]:
+        """Every workspace doc, config and lease state together. Merges the
+        legacy teams/ collection; a migrated doc's new copy wins."""
+        docs = {
+            s.id: {"name": s.id, **s.to_dict()} async for s in self._db.collection("teams").stream()
+        }
+        docs.update(
+            {
+                s.id: {"name": s.id, **s.to_dict()}
+                async for s in self._db.collection("workspaces").stream()
+            }
+        )
+        return list(docs.values())
 
-    async def delete_team(self, name: str) -> None:
-        """Remove the team doc; no-op when absent. The caller (console/CLI) has
-        already deleted the GCS prefix and verified no live lease."""
-        await self._team(name).delete()
+    async def delete_workspace(self, name: str) -> None:
+        """Remove the workspace doc (both collections); no-op when absent. The
+        caller (console/CLI) has already deleted the GCS prefix and verified
+        no live lease."""
+        await self._workspace(name).delete()
+        await self._legacy_team(name).delete()
 
     # --- global settings (option defaults inherited by everything) ---
 

@@ -30,10 +30,10 @@ from .fakes import FakeStore, append_message
 class FakeObjects:
     """Implements syros.console.objects.ObjectStoreProtocol over a name->bytes dict."""
 
-    def __init__(self, teams=None, spaces=None, skills=None, team_skills=None):
-        # teams' shared directories live under the workspaces/ GCS prefix
-        self.teams: dict[str, dict[str, bytes]] = teams or {}
-        self.team_skills: dict[str, dict[str, dict[str, bytes]]] = team_skills or {}
+    def __init__(self, workspaces=None, spaces=None, skills=None, workspace_skills=None):
+        # workspaces' shared directories live under the workspaces/ GCS prefix
+        self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
+        self.workspace_skills: dict[str, dict[str, dict[str, bytes]]] = workspace_skills or {}
         self.spaces: dict[str, dict[str, bytes]] = spaces or {}
         self.skills: dict[str, dict[str, bytes]] = skills or {}
         # tags live beside the bytes, keyed (kind, owner, file) — mirrors GCS
@@ -49,10 +49,10 @@ class FakeObjects:
         }
 
     async def workspace_stats(self):
-        return {name: self._stats(files) for name, files in self.teams.items()}
+        return {name: self._stats(files) for name, files in self.workspaces.items()}
 
     async def workspace_files(self, name):
-        files = self.teams.get(name, {})
+        files = self.workspaces.get(name, {})
         return [
             {"name": n, "size": len(b), "updated": None, "tags": self.tags.get(("ws", name, n), [])}
             for n, b in files.items()
@@ -69,7 +69,7 @@ class FakeObjects:
         import mimetypes
 
         self._check(name, file)
-        files = self.teams.get(name, {})
+        files = self.workspaces.get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         if len(files[file]) > 100:
@@ -78,11 +78,11 @@ class FakeObjects:
 
     async def write_workspace_file(self, name, file, data):
         self._check(name, file)
-        self.teams.setdefault(name, {})[file] = data
+        self.workspaces.setdefault(name, {})[file] = data
 
     async def delete_workspace_file(self, name, file):
         self._check(name, file)
-        files = self.teams.get(name, {})
+        files = self.workspaces.get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         del files[file]
@@ -109,17 +109,17 @@ class FakeObjects:
     async def rename_workspace_file(self, name, src, dst):
         self._check(name, src)
         validate_file("workspace file", dst)
-        self._rename("ws", self.teams.get(name, {}), name, src, dst)
+        self._rename("ws", self.workspaces.get(name, {}), name, src, dst)
 
     async def set_workspace_tags(self, name, file, tags):
         self._check(name, file)
-        if file not in self.teams.get(name, {}):
+        if file not in self.workspaces.get(name, {}):
             raise FileNotFoundError(file)
         self.tags[("ws", name, file)] = tags
 
     async def delete_workspace_prefix(self, name, subpath, max_files):
         workspace_prefix(name)
-        return self._delete_prefix(self.teams.get(name, {}), "ws", name, subpath, max_files)
+        return self._delete_prefix(self.workspaces.get(name, {}), "ws", name, subpath, max_files)
 
     async def space_stats(self):
         return {name: self._stats(files) for name, files in self.spaces.items()}
@@ -180,44 +180,44 @@ class FakeObjects:
         skill_prefix(name)
         validate_file("skill file", file)
 
-    def _skill_pool(self, team):
-        if team is None:
+    def _skill_pool(self, workspace):
+        if workspace is None:
             return self.skills
-        return self.team_skills.setdefault(team, {})
+        return self.workspace_skills.setdefault(workspace, {})
 
-    async def skill_stats(self, team=None):
-        pool = self._skill_pool(team)
+    async def skill_stats(self, workspace=None):
+        pool = self._skill_pool(workspace)
         return {name: self._stats(files) for name, files in pool.items()}
 
-    async def skill_files(self, name, team=None):
-        files = self._skill_pool(team).get(name, {})
+    async def skill_files(self, name, workspace=None):
+        files = self._skill_pool(workspace).get(name, {})
         return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
 
-    async def read_skill_file(self, name, file, team=None):
+    async def read_skill_file(self, name, file, workspace=None):
         import mimetypes
 
         self._check_skill(name, file)
-        files = self._skill_pool(team).get(name, {})
+        files = self._skill_pool(workspace).get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         if len(files[file]) > 100:
             raise ValueError("too large")
         return files[file], mimetypes.guess_type(file)[0] or "application/octet-stream"
 
-    async def write_skill_file(self, name, file, data, team=None):
+    async def write_skill_file(self, name, file, data, workspace=None):
         self._check_skill(name, file)
-        self._skill_pool(team).setdefault(name, {})[file] = data
+        self._skill_pool(workspace).setdefault(name, {})[file] = data
 
-    async def delete_skill_file(self, name, file, team=None):
+    async def delete_skill_file(self, name, file, workspace=None):
         self._check_skill(name, file)
-        files = self._skill_pool(team).get(name, {})
+        files = self._skill_pool(workspace).get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         del files[file]
 
-    async def delete_skill(self, name, team=None):
+    async def delete_skill(self, name, workspace=None):
         skill_prefix(name)
-        files = self._skill_pool(team).pop(name, None)
+        files = self._skill_pool(workspace).pop(name, None)
         if not files:
             raise FileNotFoundError(name)
         return len(files)
@@ -279,7 +279,7 @@ async def test_poll_events_after_cursor_and_approval_deadline():
 
     assert [e["seq"] for e in result["events"]] == [2, 3]
     assert result["session"]["model"] == "claude-sonnet-5"
-    assert result["session"]["team"] is None
+    assert result["session"]["workspace"] is None
     assert result["session"]["state"] == "queued"
     (approval,) = result["approvals"]
     assert approval["tool_name"] == "Bash"
@@ -344,7 +344,11 @@ async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
     result = await api(store).create_session(
         {
             "prompt": "profile the CSVs",
-            "options": {"model": "claude-sonnet-5", "team": "team", "allowed_tools": ["Read"]},
+            "options": {
+                "model": "claude-sonnet-5",
+                "workspace": "workspace",
+                "allowed_tools": ["Read"],
+            },
         }
     )
 
@@ -352,7 +356,7 @@ async def test_create_session_queues_prompt_and_triggers_job(no_job_trigger):
     assert result["ok"] is True
     session = store.sessions[sid]
     assert session["options"]["model"] == "claude-sonnet-5"
-    assert session["options"]["team"] == "team"
+    assert session["options"]["workspace"] == "workspace"
     assert session["options"]["allowed_tools"] == ["Read"]
     assert session["trigger"] == "console"
     assert session["created_by"]
@@ -439,7 +443,7 @@ async def test_create_session_rejects_unknown_option(no_job_trigger):
 async def test_create_session_rejects_invalid_option(no_job_trigger):
     store = FakeStore()
     with pytest.raises(OptionsError):
-        await api(store).create_session({"prompt": "go", "options": {"team": "../escape"}})
+        await api(store).create_session({"prompt": "go", "options": {"workspace": "../escape"}})
     assert store.sessions == {}
 
 
@@ -600,240 +604,253 @@ async def test_delete_many_rejects_oversized_batch():
 # --- workspaces ---
 
 
-async def test_teams_merges_gcs_leases_and_sessions():
+async def test_workspaces_merges_gcs_leases_and_sessions():
     store = FakeStore()
-    await store.create_session("sess_1", {"team": "team"})
-    await store.claim_team("team", "sess_1", ttl_seconds=60)
-    await store.claim_team("stale", "sess_2", ttl_seconds=-1)  # expired lease
-    objects = FakeObjects(teams={"team": {"a.md": b"aa"}, "orphan": {"b.md": b"b"}})
+    await store.create_session("sess_1", {"workspace": "workspace"})
+    await store.claim_workspace("workspace", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("stale", "sess_2", ttl_seconds=-1)  # expired lease
+    objects = FakeObjects(workspaces={"workspace": {"a.md": b"aa"}, "orphan": {"b.md": b"b"}})
 
-    result = await api(store, objects=objects).teams()
+    result = await api(store, objects=objects).workspaces()
 
-    rows = {w["name"]: w for w in result["teams"]}
-    assert set(rows) == {"team", "stale", "orphan"}
-    assert rows["team"]["busy"] is True
-    assert rows["team"]["lease_session_id"] == "sess_1"
-    assert rows["team"]["file_count"] == 1
-    assert rows["team"]["total_size"] == 2
-    assert [s["id"] for s in rows["team"]["sessions"]] == ["sess_1"]
+    rows = {w["name"]: w for w in result["workspaces"]}
+    assert set(rows) == {"workspace", "stale", "orphan"}
+    assert rows["workspace"]["busy"] is True
+    assert rows["workspace"]["lease_session_id"] == "sess_1"
+    assert rows["workspace"]["file_count"] == 1
+    assert rows["workspace"]["total_size"] == 2
+    assert [s["id"] for s in rows["workspace"]["sessions"]] == ["sess_1"]
     assert rows["stale"]["busy"] is False
     assert rows["stale"]["lease_session_id"] is None
     assert rows["orphan"]["busy"] is False
     assert rows["orphan"]["sessions"] == []
 
 
-async def test_team_files_and_unknown():
+async def test_workspaces_lists_derived_members():
     store = FakeStore()
-    objects = FakeObjects(teams={"team": {"b.md": b"bb", "a.md": b"a"}})
+    await store.create_agent("writer", {"options": {"workspace": "shared"}})
+    await store.create_agent("critic", {"options": {"team": "shared"}})  # pre-rename doc
+    await store.create_agent("loner", {"options": {}})
+    objects = FakeObjects(workspaces={"shared": {"a.md": b"a"}})
+
+    rows = {w["name"]: w for w in (await api(store, objects=objects).workspaces())["workspaces"]}
+    assert rows["shared"]["members"] == ["critic", "writer"]
+
+
+async def test_workspace_files_and_unknown():
+    store = FakeStore()
+    objects = FakeObjects(workspaces={"workspace": {"b.md": b"bb", "a.md": b"a"}})
     console = api(store, objects=objects)
 
-    result = await console.team_files("team")
+    result = await console.workspace_files("workspace")
     assert [f["name"] for f in result["files"]] == ["a.md", "b.md"]
 
     with pytest.raises(NotFound):
-        await console.team_files("nope")
+        await console.workspace_files("nope")
 
     # a leased-but-empty workspace exists
-    await store.claim_team("empty", "sess_1", ttl_seconds=60)
-    assert (await console.team_files("empty"))["files"] == []
+    await store.claim_workspace("empty", "sess_1", ttl_seconds=60)
+    assert (await console.workspace_files("empty"))["files"] == []
 
 
-async def test_team_file_read_write_delete():
+async def test_workspace_file_read_write_delete():
     import mimetypes
 
-    objects = FakeObjects(teams={"team": {"notes.md": b"hello"}})
+    objects = FakeObjects(workspaces={"workspace": {"notes.md": b"hello"}})
     console = api(FakeStore(), objects=objects)
 
-    data, content_type = await console.team_file("team", "notes.md")
+    data, content_type = await console.workspace_file("workspace", "notes.md")
     assert data == b"hello"
     assert content_type == mimetypes.guess_type("notes.md")[0]
 
-    result = await console.write_team_file("team", "notes.md", "goodbye")
+    result = await console.write_workspace_file("workspace", "notes.md", "goodbye")
     assert result["ok"] is True and result["size"] == 7
-    assert objects.teams["team"]["notes.md"] == b"goodbye"
+    assert objects.workspaces["workspace"]["notes.md"] == b"goodbye"
 
     # creates as well as overwrites, and nested paths are ordinary names here
-    await console.write_team_file("team", "sub/new.txt", "fresh")
-    assert objects.teams["team"]["sub/new.txt"] == b"fresh"
+    await console.write_workspace_file("workspace", "sub/new.txt", "fresh")
+    assert objects.workspaces["workspace"]["sub/new.txt"] == b"fresh"
 
-    await console.delete_team_file("team", "notes.md")
-    assert "notes.md" not in objects.teams["team"]
+    await console.delete_workspace_file("workspace", "notes.md")
+    assert "notes.md" not in objects.workspaces["workspace"]
 
     with pytest.raises(NotFound):
-        await console.delete_team_file("team", "notes.md")
+        await console.delete_workspace_file("workspace", "notes.md")
     with pytest.raises(NotFound):
-        await console.team_file("team", "gone.md")
+        await console.workspace_file("workspace", "gone.md")
 
 
-async def test_team_writes_blocked_while_leased():
+async def test_workspace_writes_blocked_while_leased():
     store = FakeStore()
-    objects = FakeObjects(teams={"team": {"notes.md": b"hello"}})
+    objects = FakeObjects(workspaces={"workspace": {"notes.md": b"hello"}})
     console = api(store, objects=objects)
-    await store.claim_team("team", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("workspace", "sess_1", ttl_seconds=60)
 
     with pytest.raises(Conflict, match="busy"):
-        await console.write_team_file("team", "notes.md", "edited")
+        await console.write_workspace_file("workspace", "notes.md", "edited")
     with pytest.raises(Conflict, match="busy"):
-        await console.delete_team_file("team", "notes.md")
+        await console.delete_workspace_file("workspace", "notes.md")
 
     # reads stay open while a run holds the lease — only writes would be clobbered
-    assert (await console.team_file("team", "notes.md"))[0] == b"hello"
+    assert (await console.workspace_file("workspace", "notes.md"))[0] == b"hello"
 
-    await store.release_team("team", "sess_1")
-    await console.write_team_file("team", "notes.md", "edited")
-    assert objects.teams["team"]["notes.md"] == b"edited"
+    await store.release_workspace("workspace", "sess_1")
+    await console.write_workspace_file("workspace", "notes.md", "edited")
+    assert objects.workspaces["workspace"]["notes.md"] == b"edited"
 
 
-async def test_team_write_encodings_and_limits(monkeypatch):
+async def test_workspace_write_encodings_and_limits(monkeypatch):
     objects = FakeObjects()
     console = api(FakeStore(), objects=objects)
 
-    await console.write_team_file(
-        "team", "logo.bin", base64.b64encode(b"\xff\xfe\x00").decode(), "base64"
+    await console.write_workspace_file(
+        "workspace", "logo.bin", base64.b64encode(b"\xff\xfe\x00").decode(), "base64"
     )
-    assert objects.teams["team"]["logo.bin"] == b"\xff\xfe\x00"
+    assert objects.workspaces["workspace"]["logo.bin"] == b"\xff\xfe\x00"
 
     with pytest.raises(ValueError, match="base64"):
-        await console.write_team_file("team", "x.bin", "not base64!", "base64")
+        await console.write_workspace_file("workspace", "x.bin", "not base64!", "base64")
     with pytest.raises(ValueError, match="encoding"):
-        await console.write_team_file("team", "x.bin", "hi", "rot13")
+        await console.write_workspace_file("workspace", "x.bin", "hi", "rot13")
 
     monkeypatch.setattr("syros.console.api.MAX_PREVIEW_BYTES", 4)
     with pytest.raises(TooLarge):
-        await console.write_team_file("team", "big.txt", "toolong")
+        await console.write_workspace_file("workspace", "big.txt", "toolong")
 
 
-async def test_team_file_rejects_bad_names():
-    console = api(FakeStore(), objects=FakeObjects(teams={"team": {"a.md": b"a"}}))
+async def test_workspace_file_rejects_bad_names():
+    console = api(FakeStore(), objects=FakeObjects(workspaces={"workspace": {"a.md": b"a"}}))
 
     for workspace in ("../etc", "Upper", "a/b", ""):
         with pytest.raises(OptionsError):
-            await console.team_file(workspace, "a.md")
+            await console.workspace_file(workspace, "a.md")
 
     for file in ("", "/abs", "../escape", "sub/../../escape"):
         with pytest.raises(OptionsError):
-            await console.write_team_file("team", file, "x")
+            await console.write_workspace_file("workspace", file, "x")
 
 
-async def test_team_file_rename():
+async def test_workspace_file_rename():
     store = FakeStore()
-    objects = FakeObjects(teams={"team": {"a.md": b"aa", "b.md": b"bb"}})
+    objects = FakeObjects(workspaces={"workspace": {"a.md": b"aa", "b.md": b"bb"}})
     console = api(store, objects=objects)
-    objects.tags[("ws", "team", "a.md")] = ["keep-me"]
+    objects.tags[("ws", "workspace", "a.md")] = ["keep-me"]
 
-    result = await console.rename_team_file("team", "a.md", "sub/a.md")
+    result = await console.rename_workspace_file("workspace", "a.md", "sub/a.md")
     assert result["ok"] is True and result["file"] == "sub/a.md"
-    assert objects.teams["team"]["sub/a.md"] == b"aa"
-    assert "a.md" not in objects.teams["team"]
-    assert objects.tags[("ws", "team", "sub/a.md")] == ["keep-me"]
+    assert objects.workspaces["workspace"]["sub/a.md"] == b"aa"
+    assert "a.md" not in objects.workspaces["workspace"]
+    assert objects.tags[("ws", "workspace", "sub/a.md")] == ["keep-me"]
 
     with pytest.raises(NotFound):
-        await console.rename_team_file("team", "gone.md", "x.md")
+        await console.rename_workspace_file("workspace", "gone.md", "x.md")
     with pytest.raises(Conflict, match="destination"):
-        await console.rename_team_file("team", "sub/a.md", "b.md")
+        await console.rename_workspace_file("workspace", "sub/a.md", "b.md")
 
-    await store.claim_team("team", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("workspace", "sess_1", ttl_seconds=60)
     with pytest.raises(Conflict, match="busy"):
-        await console.rename_team_file("team", "b.md", "c.md")
+        await console.rename_workspace_file("workspace", "b.md", "c.md")
 
 
-async def test_team_file_tags():
+async def test_workspace_file_tags():
     store = FakeStore()
-    objects = FakeObjects(teams={"team": {"a.md": b"aa"}})
+    objects = FakeObjects(workspaces={"workspace": {"a.md": b"aa"}})
     console = api(store, objects=objects)
 
-    result = await console.set_team_file_tags("team", "a.md", ["draft", "q3"])
+    result = await console.set_workspace_file_tags("workspace", "a.md", ["draft", "q3"])
     assert result["tags"] == ["draft", "q3"]
-    files = (await console.team_files("team"))["files"]
+    files = (await console.workspace_files("workspace"))["files"]
     assert files[0]["tags"] == ["draft", "q3"]
 
     # empty list clears; duplicates collapse
-    await console.set_team_file_tags("team", "a.md", ["x", "x"])
-    assert objects.tags[("ws", "team", "a.md")] == ["x"]
-    await console.set_team_file_tags("team", "a.md", [])
-    assert objects.tags[("ws", "team", "a.md")] == []
+    await console.set_workspace_file_tags("workspace", "a.md", ["x", "x"])
+    assert objects.tags[("ws", "workspace", "a.md")] == ["x"]
+    await console.set_workspace_file_tags("workspace", "a.md", [])
+    assert objects.tags[("ws", "workspace", "a.md")] == []
 
     with pytest.raises(OptionsError):
-        await console.set_team_file_tags("team", "a.md", ["Bad Tag"])
+        await console.set_workspace_file_tags("workspace", "a.md", ["Bad Tag"])
     with pytest.raises(OptionsError):
-        await console.set_team_file_tags("team", "a.md", [f"t{i}" for i in range(17)])
+        await console.set_workspace_file_tags("workspace", "a.md", [f"t{i}" for i in range(17)])
     with pytest.raises(NotFound):
-        await console.set_team_file_tags("team", "gone.md", ["x"])
+        await console.set_workspace_file_tags("workspace", "gone.md", ["x"])
 
-    await store.claim_team("team", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("workspace", "sess_1", ttl_seconds=60)
     with pytest.raises(Conflict, match="busy"):
-        await console.set_team_file_tags("team", "a.md", ["x"])
+        await console.set_workspace_file_tags("workspace", "a.md", ["x"])
 
 
-async def test_team_bulk_delete():
+async def test_workspace_bulk_delete():
     store = FakeStore()
-    objects = FakeObjects(teams={"team": {"a.md": b"a", "b.md": b"b"}})
+    objects = FakeObjects(workspaces={"workspace": {"a.md": b"a", "b.md": b"b"}})
     console = api(store, objects=objects)
 
-    result = await console.delete_team_files("team", ["a.md", "a.md", "gone.md"])
+    result = await console.delete_workspace_files("workspace", ["a.md", "a.md", "gone.md"])
     assert result["deleted"] == ["a.md"]
     assert result["ok"] is False
     assert [f["name"] for f in result["failed"]] == ["gone.md"]
-    assert objects.teams["team"] == {"b.md": b"b"}
+    assert objects.workspaces["workspace"] == {"b.md": b"b"}
 
     with pytest.raises(ValueError, match="list of strings"):
-        await console.delete_team_files("team", "a.md")
+        await console.delete_workspace_files("workspace", "a.md")
     with pytest.raises(ValueError, match="too many"):
-        await console.delete_team_files("team", [f"f{i}" for i in range(51)])
+        await console.delete_workspace_files("workspace", [f"f{i}" for i in range(51)])
 
-    await store.claim_team("team", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("workspace", "sess_1", ttl_seconds=60)
     with pytest.raises(Conflict, match="busy"):
-        await console.delete_team_files("team", ["b.md"])
+        await console.delete_workspace_files("workspace", ["b.md"])
 
 
-async def test_team_folder_delete(monkeypatch):
+async def test_workspace_folder_delete(monkeypatch):
     objects = FakeObjects(
-        teams={"team": {"docs/.keep": b"", "docs/a.md": b"a", "docs/sub/b.md": b"b", "c.md": b"c"}}
+        workspaces={
+            "workspace": {"docs/.keep": b"", "docs/a.md": b"a", "docs/sub/b.md": b"b", "c.md": b"c"}
+        }
     )
     console = api(FakeStore(), objects=objects)
 
-    result = await console.delete_team_folder("team", "docs/")
+    result = await console.delete_workspace_folder("workspace", "docs/")
     assert result["count"] == 3
-    assert objects.teams["team"] == {"c.md": b"c"}
+    assert objects.workspaces["workspace"] == {"c.md": b"c"}
 
     with pytest.raises(NotFound):
-        await console.delete_team_folder("team", "docs")
+        await console.delete_workspace_folder("workspace", "docs")
     with pytest.raises(ValueError):
-        await console.delete_team_folder("team", "/")
+        await console.delete_workspace_folder("workspace", "/")
 
     monkeypatch.setattr("syros.console.api.MAX_PREFIX_DELETE", 1)
-    objects.teams["team"] = {"big/a": b"a", "big/b": b"b"}
+    objects.workspaces["workspace"] = {"big/a": b"a", "big/b": b"b"}
     with pytest.raises(ValueError, match="limit"):
-        await console.delete_team_folder("team", "big")
+        await console.delete_workspace_folder("workspace", "big")
 
 
-async def test_create_and_delete_team():
+async def test_create_and_delete_workspace():
     store = FakeStore()
-    objects = FakeObjects(teams={"team": {"a.md": b"a"}})
+    objects = FakeObjects(workspaces={"workspace": {"a.md": b"a"}})
     console = api(store, objects=objects)
 
-    result = await console.create_team({"name": "fresh"})
+    result = await console.create_workspace({"name": "fresh"})
     assert result["ok"] is True
-    assert objects.teams["fresh"] == {".keep": b""}
+    assert objects.workspaces["fresh"] == {".keep": b""}
 
     with pytest.raises(Conflict, match="exists"):
-        await console.create_team({"name": "team"})
+        await console.create_workspace({"name": "workspace"})
     # a lease doc alone also reserves the name
-    await store.claim_team("leased-only", "sess_1", ttl_seconds=-1)
+    await store.claim_workspace("leased-only", "sess_1", ttl_seconds=-1)
     with pytest.raises(Conflict, match="exists"):
-        await console.create_team({"name": "leased-only"})
+        await console.create_workspace({"name": "leased-only"})
     with pytest.raises(OptionsError):
-        await console.create_team({"name": "Bad Name"})
+        await console.create_workspace({"name": "Bad Name"})
 
-    await store.claim_team("team", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("workspace", "sess_1", ttl_seconds=60)
     with pytest.raises(Conflict, match="busy"):
-        await console.delete_team("team")
-    await store.release_team("team", "sess_1")
+        await console.delete_workspace("workspace")
+    await store.release_workspace("workspace", "sess_1")
 
-    result = await console.delete_team("team")
+    result = await console.delete_workspace("workspace")
     assert result["count"] == 1
-    assert objects.teams["team"] == {}
-    assert "team" not in {w["name"] for w in await store.list_teams()}
+    assert objects.workspaces["workspace"] == {}
+    assert "workspace" not in {w["name"] for w in await store.list_workspaces()}
 
 
 # --- artifact spaces ---
@@ -873,7 +890,7 @@ async def test_artifact_write_delete_rename_tags():
     console = api(store, objects=objects)
 
     # no lease concept: writes go through even while sessions run
-    await store.claim_team("reports", "sess_1", ttl_seconds=60)
+    await store.claim_workspace("reports", "sess_1", ttl_seconds=60)
     result = await console.write_artifact("reports", "new.csv", "1,2")
     assert result["ok"] is True
     assert objects.spaces["reports"]["new.csv"] == b"1,2"
@@ -1062,12 +1079,12 @@ async def test_http_smoke():
         server.shutdown()
 
 
-async def test_http_artifact_and_team_routes():
+async def test_http_artifact_and_workspace_routes():
     from syros.console.server import create_server
 
     store = FakeStore()
     objects = FakeObjects(
-        teams={"team": {"notes.md": b"nn"}},
+        workspaces={"workspace": {"notes.md": b"nn"}},
         spaces={"reports": {"sub/r.html": b"<h1>hi</h1>", "big.bin": b"x" * 200}},
         skills={"pdf": {"SKILL.md": b"# pdf"}},
     )
@@ -1088,35 +1105,37 @@ async def test_http_artifact_and_team_routes():
         return response.status, response.read()
 
     try:
-        status, body, _ = await asyncio.to_thread(fetch, "/api/teams")
+        status, body, _ = await asyncio.to_thread(fetch, "/api/workspaces")
         assert status == 200
-        assert [w["name"] for w in json.loads(body)["teams"]] == ["team"]
+        assert [w["name"] for w in json.loads(body)["workspaces"]] == ["workspace"]
 
-        status, body, _ = await asyncio.to_thread(fetch, "/api/teams/team/files")
+        status, body, _ = await asyncio.to_thread(fetch, "/api/workspaces/workspace/files")
         assert status == 200
         assert [f["name"] for f in json.loads(body)["files"]] == ["notes.md"]
 
-        status, body, _ = await asyncio.to_thread(fetch, "/api/teams/team/file?name=notes.md")
+        status, body, _ = await asyncio.to_thread(
+            fetch, "/api/workspaces/workspace/file?name=notes.md"
+        )
         assert status == 200 and body == b"nn"
 
         status, body = await asyncio.to_thread(
-            post, "/api/teams/team/file", {"name": "notes.md", "content": "edited"}
+            post, "/api/workspaces/workspace/file", {"name": "notes.md", "content": "edited"}
         )
         assert status == 200 and json.loads(body)["ok"] is True
-        assert objects.teams["team"]["notes.md"] == b"edited"
+        assert objects.workspaces["workspace"]["notes.md"] == b"edited"
 
-        await store.claim_team("team", "sess_1", ttl_seconds=60)
+        await store.claim_workspace("workspace", "sess_1", ttl_seconds=60)
         status, body = await asyncio.to_thread(
-            post, "/api/teams/team/file", {"name": "notes.md", "content": "again"}
+            post, "/api/workspaces/workspace/file", {"name": "notes.md", "content": "again"}
         )
         assert status == 409 and "busy" in json.loads(body)["error"]
-        await store.release_team("team", "sess_1")
+        await store.release_workspace("workspace", "sess_1")
 
         status, body = await asyncio.to_thread(
-            post, "/api/teams/team/file/delete", {"name": "notes.md"}
+            post, "/api/workspaces/workspace/file/delete", {"name": "notes.md"}
         )
         assert status == 200
-        assert "notes.md" not in objects.teams["team"]
+        assert "notes.md" not in objects.workspaces["workspace"]
 
         status, body, _ = await asyncio.to_thread(fetch, "/api/artifacts")
         assert status == 200
@@ -1141,26 +1160,28 @@ async def test_http_artifact_and_team_routes():
         assert status == 413
 
         # new management routes: rename, tags, bulk, folder, create/delete
-        objects.teams["team"]["notes.md"] = b"nn"
+        objects.workspaces["workspace"]["notes.md"] = b"nn"
         status, body = await asyncio.to_thread(
-            post, "/api/teams/team/file/rename", {"from": "notes.md", "to": "sub/notes.md"}
+            post,
+            "/api/workspaces/workspace/file/rename",
+            {"from": "notes.md", "to": "sub/notes.md"},
         )
-        assert status == 200 and "sub/notes.md" in objects.teams["team"]
+        assert status == 200 and "sub/notes.md" in objects.workspaces["workspace"]
 
         status, body = await asyncio.to_thread(
-            post, "/api/teams/team/file/tags", {"name": "sub/notes.md", "tags": ["draft"]}
+            post, "/api/workspaces/workspace/file/tags", {"name": "sub/notes.md", "tags": ["draft"]}
         )
         assert status == 200 and json.loads(body)["tags"] == ["draft"]
 
         status, body = await asyncio.to_thread(
-            post, "/api/teams/team/folder/delete", {"folder": "sub"}
+            post, "/api/workspaces/workspace/folder/delete", {"folder": "sub"}
         )
         assert status == 200 and json.loads(body)["count"] == 1
 
-        status, body = await asyncio.to_thread(post, "/api/teams", {"name": "fresh"})
-        assert status == 200 and objects.teams["fresh"] == {".keep": b""}
-        status, body = await asyncio.to_thread(post, "/api/teams/fresh/delete", {})
-        assert status == 200 and objects.teams["fresh"] == {}
+        status, body = await asyncio.to_thread(post, "/api/workspaces", {"name": "fresh"})
+        assert status == 200 and objects.workspaces["fresh"] == {".keep": b""}
+        status, body = await asyncio.to_thread(post, "/api/workspaces/fresh/delete", {})
+        assert status == 200 and objects.workspaces["fresh"] == {}
 
         status, body = await asyncio.to_thread(
             post, "/api/artifacts/reports/file", {"name": "new.txt", "content": "hi"}

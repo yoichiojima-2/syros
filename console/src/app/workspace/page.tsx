@@ -11,13 +11,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { FileEditor } from "@/components/file-editor";
 import { FileManager, type FileOps } from "@/components/file-manager";
 import { OptionsForm } from "@/components/options-form";
-import { useAction, useNow, useSkills, useTeamFiles, useTeams } from "@/lib/hooks";
+import { useAction, useNow, useSkills, useWorkspaceFiles, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime, shortId } from "@/lib/format";
 import type { BulkFilesResponse, OkResponse } from "@/lib/types";
 
-// One team: a shared workspace (teams/{name}/ in the bucket) plus stored
-// option defaults, a description and the team's own skills. The file editor is
+// One workspace: a shared workspace (workspaces/{name}/ in the bucket) plus stored
+// option defaults, a description and the workspace's own skills. The file editor is
 // the only surface where a human can change what a session will see on its
 // next restore, and the only one that can delete a file at all — checkpoint()
 // never removes blobs, so a file dropped inside a run comes back until someone
@@ -28,43 +28,43 @@ import type { BulkFilesResponse, OkResponse } from "@/lib/types";
 
 const CLAUDE_MD = "CLAUDE.md";
 
-function fileUrl(team: string, file: string): string {
-  return `/api/teams/${encodeURIComponent(team)}/file?name=${encodeURIComponent(file)}`;
+function fileUrl(workspace: string, file: string): string {
+  return `/api/workspaces/${encodeURIComponent(workspace)}/file?name=${encodeURIComponent(file)}`;
 }
 
-export default function TeamPage() {
+export default function WorkspacePage() {
   // useSearchParams requires a Suspense boundary under static export
   return (
     <Suspense>
-      <TeamInner />
+      <WorkspaceInner />
     </Suspense>
   );
 }
 
-function TeamInner() {
+function WorkspaceInner() {
   const router = useRouter();
   const params = useSearchParams();
   const name = params.get("name");
   const file = params.get("file");
-  const teams = useTeams();
-  const { files, refresh } = useTeamFiles(name);
+  const workspaces = useWorkspaces();
+  const { files, refresh } = useWorkspaceFiles(name);
   const now = useNow();
   const [flash, run] = useAction();
 
-  const summary = teams?.find((t) => t.name === name) ?? null;
+  const summary = workspaces?.find((t) => t.name === name) ?? null;
   const busy = summary?.busy ?? false;
   const lockedBy = busy
-    ? `a run holds this team's workspace (${shortId(summary?.lease_session_id || "unknown")})`
+    ? `a run holds this workspace (${shortId(summary?.lease_session_id || "unknown")})`
     : undefined;
 
   const select = (nextFile: string | null) => {
     if (!name) return;
     const query = new URLSearchParams({ name });
     if (nextFile) query.set("file", nextFile);
-    router.replace(`/team?${query}`);
+    router.replace(`/workspace?${query}`);
   };
 
-  const base = name ? `/api/teams/${encodeURIComponent(name)}` : "";
+  const base = name ? `/api/workspaces/${encodeURIComponent(name)}` : "";
   const ops = useMemo<FileOps>(
     () => ({
       write: (file, content, encoding = "utf-8") =>
@@ -80,10 +80,10 @@ function TeamInner() {
   if (!name) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-        <p className="text-[13px]">No team selected.</p>
+        <p className="text-[13px]">No workspace selected.</p>
         <Button variant="outline" size="sm" asChild>
-          <Link href="/teams">
-            <ArrowLeft /> All teams
+          <Link href="/workspaces">
+            <ArrowLeft /> All workspaces
           </Link>
         </Button>
       </div>
@@ -107,10 +107,10 @@ function TeamInner() {
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
       <div>
         <Link
-          href="/teams"
+          href="/workspaces"
           className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft className="size-3" /> Teams
+          <ArrowLeft className="size-3" /> Workspaces
         </Link>
         <div className="flex flex-wrap items-center gap-2.5 pt-1">
           <h1 className="font-mono text-2xl font-semibold tracking-tight break-all">{name}</h1>
@@ -150,10 +150,10 @@ function TeamInner() {
 
       <Card>
         <CardHeader>
-          <CardTitle>CLAUDE.md — how the agent works for this team</CardTitle>
+          <CardTitle>CLAUDE.md — how the agent works for this workspace</CardTitle>
           <CardDescription>
             An ordinary workspace file the agent reads at run start; edit it to shape how every
-            session on this team behaves.
+            session on this workspace behaves.
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
@@ -192,7 +192,7 @@ function TeamInner() {
         <CardHeader>
           <CardTitle>Files</CardTitle>
           <CardDescription>
-            The shared workspace every session on this team restores at start and checkpoints when
+            The shared workspace every session on this workspace restores at start and checkpoints when
             it goes idle.
           </CardDescription>
         </CardHeader>
@@ -235,13 +235,13 @@ function TeamInner() {
         </CardContent>
       </Card>
 
-      <TeamSkills team={name} now={now} />
+      <WorkspaceSkills workspace={name} now={now} />
 
       <Card>
         <CardHeader>
-          <CardTitle>Team settings</CardTitle>
+          <CardTitle>Workspace settings</CardTitle>
           <CardDescription>
-            Stored option defaults every session on this team inherits — a run&apos;s explicit
+            Stored option defaults every session on this workspace inherits — a run&apos;s explicit
             options override them field by field. Edits apply to future runs only.
           </CardDescription>
         </CardHeader>
@@ -258,9 +258,9 @@ function TeamInner() {
               stored={summary.options}
               description={summary.description}
               showDescription
-              submitLabel="Save team"
+              submitLabel="Save workspace"
               onSave={async (options, description) => {
-                await post<OkResponse>(`/api/teams/${encodeURIComponent(name)}/update`, {
+                await post<OkResponse>(`/api/workspaces/${encodeURIComponent(name)}/update`, {
                   options,
                   description,
                 });
@@ -274,23 +274,23 @@ function TeamInner() {
   );
 }
 
-/** The team's own skills (skills scoped under the team in the bucket), with
+/** The workspace's own skills (skills scoped under the workspace in the bucket), with
  *  the same browse/edit/delete flows as the global skills pages. */
-function TeamSkills({ team, now }: { team: string; now: number }) {
+function WorkspaceSkills({ workspace, now }: { workspace: string; now: number }) {
   const router = useRouter();
-  const skills = useSkills(team);
+  const skills = useSkills(workspace);
   const [flash, run] = useAction();
 
   const create = () => {
     const name = prompt("New skill name (lowercase, [a-z0-9_-])");
     if (!name) return;
-    router.push(`/skill?name=${encodeURIComponent(name)}&team=${encodeURIComponent(team)}`);
+    router.push(`/skill?name=${encodeURIComponent(name)}&workspace=${encodeURIComponent(workspace)}`);
   };
 
   const remove = (name: string) => {
     if (!confirm(`Delete the whole skill ${name}? Every file under it is removed.`)) return;
     run(async () => {
-      await post(`/api/skills/${encodeURIComponent(name)}/delete`, { team });
+      await post(`/api/skills/${encodeURIComponent(name)}/delete`, { workspace });
       return `deleted ${name}`;
     });
   };
@@ -300,9 +300,9 @@ function TeamSkills({ team, now }: { team: string; now: number }) {
       <CardHeader>
         <div className="flex items-center gap-3">
           <div className="flex-1 space-y-1.5">
-            <CardTitle>Team skills</CardTitle>
+            <CardTitle>Workspace skills</CardTitle>
             <CardDescription>
-              Mounted into this team&apos;s sessions at run start, alongside the global skills.
+              Mounted into this workspace&apos;s sessions at run start, alongside the global skills.
             </CardDescription>
           </div>
           {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
@@ -319,14 +319,14 @@ function TeamSkills({ team, now }: { team: string; now: number }) {
           </div>
         ) : skills.length === 0 ? (
           <p className="p-4 text-center text-[13px] text-muted-foreground">
-            No team skills yet — create one and add its SKILL.md.
+            No workspace skills yet — create one and add its SKILL.md.
           </p>
         ) : (
           <ul className="space-y-0.5">
             {skills.map((skill) => (
               <li key={skill.name} className="flex items-center gap-3 px-2">
                 <Link
-                  href={`/skill?name=${encodeURIComponent(skill.name)}&team=${encodeURIComponent(team)}`}
+                  href={`/skill?name=${encodeURIComponent(skill.name)}&workspace=${encodeURIComponent(workspace)}`}
                   className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium hover:underline"
                 >
                   {skill.name}

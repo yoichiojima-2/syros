@@ -75,27 +75,27 @@ async def test_mark_starting_skips_live_and_dead_sessions():
     await store.mark_starting("sess_missing")  # no such session: a no-op, not an error
 
 
-async def test_team_lease_claim_and_contend():
+async def test_workspace_lease_claim_and_contend():
     store = FakeStore()
-    assert await store.claim_team("ws", "sess_a", 60) is True
-    assert await store.claim_team("ws", "sess_a", 60) is True  # re-entrant for the holder
-    assert await store.claim_team("ws", "sess_b", 60) is False
+    assert await store.claim_workspace("ws", "sess_a", 60) is True
+    assert await store.claim_workspace("ws", "sess_a", 60) is True  # re-entrant for the holder
+    assert await store.claim_workspace("ws", "sess_b", 60) is False
 
 
-async def test_team_lease_expiry_reclaimable():
+async def test_workspace_lease_expiry_reclaimable():
     store = FakeStore()
-    await store.claim_team("ws", "sess_a", -1)  # already expired
-    assert await store.claim_team("ws", "sess_b", 60) is True
+    await store.claim_workspace("ws", "sess_a", -1)  # already expired
+    assert await store.claim_workspace("ws", "sess_b", 60) is True
 
 
-async def test_team_release_only_by_holder():
+async def test_workspace_release_only_by_holder():
     store = FakeStore()
-    await store.claim_team("ws", "sess_a", 60)
-    await store.release_team("ws", "sess_b")  # no-op
-    assert store.teams["ws"]["lease_session_id"] == "sess_a"
-    await store.release_team("ws", "sess_a")
-    assert store.teams["ws"]["lease_session_id"] is None
-    assert store.teams["ws"]["lease_expires"] == 0.0
+    await store.claim_workspace("ws", "sess_a", 60)
+    await store.release_workspace("ws", "sess_b")  # no-op
+    assert store.workspaces["ws"]["lease_session_id"] == "sess_a"
+    await store.release_workspace("ws", "sess_a")
+    assert store.workspaces["ws"]["lease_session_id"] is None
+    assert store.workspaces["ws"]["lease_expires"] == 0.0
 
 
 async def test_runtime_map_reads():
@@ -205,3 +205,47 @@ def test_fake_store_satisfies_protocol():
     # The contract test: FakeStore must expose every StoreProtocol method,
     # so the suite can't quietly test against a drifted fake.
     assert isinstance(FakeStore(), StoreProtocol)
+
+
+# --- legacy teams/ docs (pre-rename): read fallback + migrate-on-write ---
+
+
+async def test_workspace_reads_fall_back_to_legacy_team_doc():
+    store = FakeStore()
+    store.legacy_teams["ws"] = {"options": {"model": "opus"}, "description": "old"}
+    doc = await store.get_workspace("ws")
+    assert doc["options"] == {"model": "opus"}
+    listed = {w["name"]: w for w in await store.list_workspaces()}
+    assert listed["ws"]["description"] == "old"
+
+
+async def test_workspace_claim_sees_live_legacy_lease_as_busy():
+    store = FakeStore()
+    store.legacy_teams["ws"] = {"lease_session_id": "sess_old", "lease_expires": time.time() + 60}
+    assert await store.claim_workspace("ws", "sess_new", 60) is False
+    assert await store.claim_workspace("ws", "sess_old", 60) is True  # holder re-claims
+
+
+async def test_workspace_claim_migrates_legacy_doc_forward():
+    store = FakeStore()
+    store.legacy_teams["ws"] = {"options": {"model": "opus"}, "lease_expires": 0.0}
+    assert await store.claim_workspace("ws", "sess_a", 60) is True
+    assert store.workspaces["ws"]["options"] == {"model": "opus"}
+    assert store.workspaces["ws"]["lease_session_id"] == "sess_a"
+
+
+async def test_workspace_update_migrates_legacy_doc_forward():
+    store = FakeStore()
+    store.legacy_teams["ws"] = {"options": {"model": "opus"}, "description": "old"}
+    await store.update_workspace("ws", description="new")
+    assert store.workspaces["ws"]["description"] == "new"
+    assert store.workspaces["ws"]["options"] == {"model": "opus"}
+    listed = {w["name"]: w for w in await store.list_workspaces()}
+    assert listed["ws"]["description"] == "new"  # migrated copy wins over legacy
+
+
+async def test_workspace_delete_removes_legacy_doc_too():
+    store = FakeStore()
+    store.legacy_teams["ws"] = {"options": {}}
+    await store.delete_workspace("ws")
+    assert await store.get_workspace("ws") is None

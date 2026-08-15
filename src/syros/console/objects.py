@@ -40,16 +40,20 @@ class ObjectStoreProtocol(Protocol):
     async def delete_artifact_prefix(
         self, space: str, subpath: str | None, max_files: int
     ) -> int: ...
-    async def skill_stats(self, team: str | None = None) -> dict[str, dict[str, Any]]: ...
-    async def skill_files(self, name: str, team: str | None = None) -> list[dict[str, Any]]: ...
+    async def skill_stats(self, workspace: str | None = None) -> dict[str, dict[str, Any]]: ...
+    async def skill_files(
+        self, name: str, workspace: str | None = None
+    ) -> list[dict[str, Any]]: ...
     async def read_skill_file(
-        self, name: str, file: str, team: str | None = None
+        self, name: str, file: str, workspace: str | None = None
     ) -> tuple[bytes, str]: ...
     async def write_skill_file(
-        self, name: str, file: str, data: bytes, team: str | None = None
+        self, name: str, file: str, data: bytes, workspace: str | None = None
     ) -> None: ...
-    async def delete_skill_file(self, name: str, file: str, team: str | None = None) -> None: ...
-    async def delete_skill(self, name: str, team: str | None = None) -> int: ...
+    async def delete_skill_file(
+        self, name: str, file: str, workspace: str | None = None
+    ) -> None: ...
+    async def delete_skill(self, name: str, workspace: str | None = None) -> int: ...
     async def sync_official_skills(self) -> dict[str, Any]: ...
 
 
@@ -172,16 +176,16 @@ class GcsObjects:
             workspace.delete_prefix, self._project, self._bucket, prefix, max_files=max_files
         )
 
-    async def skill_stats(self, team: str | None = None) -> dict[str, dict[str, Any]]:
-        root = f"team-skills/{validate_name('team', team)}/" if team else "skills/"
+    async def skill_stats(self, workspace: str | None = None) -> dict[str, dict[str, Any]]:
+        root = f"team-skills/{validate_name('workspace', workspace)}/" if workspace else "skills/"
         return await asyncio.to_thread(lambda: _stats(self._list(root), root))
 
-    async def skill_files(self, name: str, team: str | None = None) -> list[dict[str, Any]]:
-        prefix = skills.skill_prefix(name, team)
+    async def skill_files(self, name: str, workspace: str | None = None) -> list[dict[str, Any]]:
+        prefix = skills.skill_prefix(name, workspace)
         return await asyncio.to_thread(lambda: _files(self._list(prefix), prefix))
 
     async def read_skill_file(
-        self, name: str, file: str, team: str | None = None
+        self, name: str, file: str, workspace: str | None = None
     ) -> tuple[bytes, str]:
         return await asyncio.to_thread(
             skills.read_file,
@@ -190,21 +194,25 @@ class GcsObjects:
             name,
             file,
             max_bytes=MAX_PREVIEW_BYTES,
-            team=team,
+            workspace=workspace,
         )
 
     async def write_skill_file(
-        self, name: str, file: str, data: bytes, team: str | None = None
+        self, name: str, file: str, data: bytes, workspace: str | None = None
     ) -> None:
         await asyncio.to_thread(
-            skills.write_file, self._project, self._bucket, name, file, data, team
+            skills.write_file, self._project, self._bucket, name, file, data, workspace
         )
 
-    async def delete_skill_file(self, name: str, file: str, team: str | None = None) -> None:
-        await asyncio.to_thread(skills.delete_file, self._project, self._bucket, name, file, team)
+    async def delete_skill_file(self, name: str, file: str, workspace: str | None = None) -> None:
+        await asyncio.to_thread(
+            skills.delete_file, self._project, self._bucket, name, file, workspace
+        )
 
-    async def delete_skill(self, name: str, team: str | None = None) -> int:
-        return await asyncio.to_thread(skills.delete_skill, self._project, self._bucket, name, team)
+    async def delete_skill(self, name: str, workspace: str | None = None) -> int:
+        return await asyncio.to_thread(
+            skills.delete_skill, self._project, self._bucket, name, workspace
+        )
 
     async def sync_official_skills(self) -> dict[str, Any]:
         return await asyncio.to_thread(

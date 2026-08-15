@@ -18,7 +18,7 @@ import { bytes, relTime } from "@/lib/format";
 import type { BulkFilesResponse, StoredFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// Shared file management for the team workspace editor and the artifacts page: a
+// Shared file management for the workspace editor and the artifacts page: a
 // virtual folder tree over the flat GCS listing, plus create / upload (multi,
 // drag-drop) / rename / tag / bulk-delete. GCS has no directories, so a
 // folder exists as long as something lives under its prefix — "new folder"

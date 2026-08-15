@@ -87,8 +87,8 @@ class FakeBucket:
 def bucket(monkeypatch):
     fake = FakeBucket(
         {
-            "workspaces/team/a.md": (b"aa", {"syros-tags": "draft"}),
-            "workspaces/team/sub/b.md": (b"bb", None),
+            "workspaces/workspace/a.md": (b"aa", {"syros-tags": "draft"}),
+            "workspaces/workspace/sub/b.md": (b"bb", None),
         }
     )
     monkeypatch.setattr(workspace, "_bucket", lambda project, bucket_name: fake)
@@ -99,49 +99,62 @@ def test_checkpoint_preserves_tags(bucket, tmp_path):
     (tmp_path / "a.md").write_bytes(b"rewritten")
     (tmp_path / "new.md").write_bytes(b"new")
 
-    count = workspace.checkpoint("proj", "bkt", "workspaces/team/", tmp_path)
+    count = workspace.checkpoint("proj", "bkt", "workspaces/workspace/", tmp_path)
 
     assert count == 2
-    assert bucket.objects["workspaces/team/a.md"] == {
+    assert bucket.objects["workspaces/workspace/a.md"] == {
         "data": b"rewritten",
         "metadata": {"syros-tags": "draft"},
     }
-    assert bucket.objects["workspaces/team/new.md"]["metadata"] is None
+    assert bucket.objects["workspaces/workspace/new.md"]["metadata"] is None
 
 
 def test_rename_file(bucket):
-    workspace.rename_file("proj", "bkt", "team", "a.md", "docs/a.md")
-    assert "workspaces/team/a.md" not in bucket.objects
-    assert bucket.objects["workspaces/team/docs/a.md"] == {
+    workspace.rename_file("proj", "bkt", "workspace", "a.md", "docs/a.md")
+    assert "workspaces/workspace/a.md" not in bucket.objects
+    assert bucket.objects["workspaces/workspace/docs/a.md"] == {
         "data": b"aa",
         "metadata": {"syros-tags": "draft"},
     }
 
     with pytest.raises(FileNotFoundError):
-        workspace.rename_file("proj", "bkt", "team", "gone.md", "x.md")
+        workspace.rename_file("proj", "bkt", "workspace", "gone.md", "x.md")
     with pytest.raises(FileExistsError):
-        workspace.rename_file("proj", "bkt", "team", "docs/a.md", "sub/b.md")
+        workspace.rename_file("proj", "bkt", "workspace", "docs/a.md", "sub/b.md")
     with pytest.raises(OptionsError):
-        workspace.rename_file("proj", "bkt", "team", "docs/a.md", "../escape")
+        workspace.rename_file("proj", "bkt", "workspace", "docs/a.md", "../escape")
 
 
 def test_set_tags(bucket):
-    workspace.set_tags("proj", "bkt", "team", "sub/b.md", ["x", "y"])
-    assert bucket.objects["workspaces/team/sub/b.md"]["metadata"] == {"syros-tags": "x,y"}
+    workspace.set_tags("proj", "bkt", "workspace", "sub/b.md", ["x", "y"])
+    assert bucket.objects["workspaces/workspace/sub/b.md"]["metadata"] == {"syros-tags": "x,y"}
 
-    workspace.set_tags("proj", "bkt", "team", "a.md", [])
-    assert bucket.objects["workspaces/team/a.md"]["metadata"] is None
+    workspace.set_tags("proj", "bkt", "workspace", "a.md", [])
+    assert bucket.objects["workspaces/workspace/a.md"]["metadata"] is None
 
     with pytest.raises(FileNotFoundError):
-        workspace.set_tags("proj", "bkt", "team", "gone.md", ["x"])
+        workspace.set_tags("proj", "bkt", "workspace", "gone.md", ["x"])
     with pytest.raises(OptionsError):
-        workspace.set_tags("proj", "bkt", "team", "a.md", ["Bad Tag"])
+        workspace.set_tags("proj", "bkt", "workspace", "a.md", ["Bad Tag"])
 
 
 def test_delete_prefix(bucket):
     with pytest.raises(ValueError, match="limit"):
-        workspace.delete_prefix("proj", "bkt", "workspaces/team/", max_files=1)
+        workspace.delete_prefix("proj", "bkt", "workspaces/workspace/", max_files=1)
 
-    assert workspace.delete_prefix("proj", "bkt", "workspaces/team/sub/", max_files=10) == 1
-    assert workspace.delete_prefix("proj", "bkt", "workspaces/team/", max_files=10) == 1
+    assert workspace.delete_prefix("proj", "bkt", "workspaces/workspace/sub/", max_files=10) == 1
+    assert workspace.delete_prefix("proj", "bkt", "workspaces/workspace/", max_files=10) == 1
     assert bucket.objects == {}
+
+
+def test_workspace_members_derived_from_agent_docs():
+    from syros import workspaces
+
+    agent_docs = [
+        {"name": "writer", "options": {"workspace": "shared"}},
+        {"name": "critic", "options": {"team": "shared"}},  # pre-rename agent doc
+        {"name": "loner", "options": {}},
+        {"name": "other", "options": {"workspace": "elsewhere"}},
+    ]
+    assert workspaces.members("shared", agent_docs) == ["critic", "writer"]
+    assert workspaces.members("empty", agent_docs) == []

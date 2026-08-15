@@ -14,7 +14,7 @@ def args(**overrides):
         system_prompt=None,
         allow=None,
         permission_mode=None,
-        team=None,
+        workspace=None,
         artifacts=None,
         max_turns=None,
         max_budget_usd=None,

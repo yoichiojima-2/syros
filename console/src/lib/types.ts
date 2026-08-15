@@ -32,7 +32,7 @@ export interface SessionSummary {
   created_at: number | null;
   updated_at: number | null;
   model: string | null;
-  team: string | null;
+  workspace: string | null;
   title: string | null; // model-written session title, when one has landed
   summary: string | null; // model-written one-liner of where the session stands
   created_by: string | null; // who started it, when recorded
@@ -194,13 +194,13 @@ export interface ApprovalsResponse {
   approvals: ApprovalWithSession[];
 }
 
-export interface TeamSessionRef {
+export interface WorkspaceSessionRef {
   id: string;
   state: SessionState;
   updated_at: number | null;
 }
 
-export interface TeamSummary {
+export interface WorkspaceSummary {
   name: string;
   busy: boolean;
   lease_session_id: string | null;
@@ -209,12 +209,13 @@ export interface TeamSummary {
   file_count: number;
   total_size: number;
   updated: number | null;
-  sessions: TeamSessionRef[];
+  sessions: WorkspaceSessionRef[];
+  members: string[]; // agents whose stored options name this workspace
 }
 
-export interface TeamsResponse {
+export interface WorkspacesResponse {
   now: number;
-  teams: TeamSummary[];
+  workspaces: WorkspaceSummary[];
 }
 
 export interface StoredFile {
@@ -224,13 +225,13 @@ export interface StoredFile {
   tags?: string[];
 }
 
-export interface TeamFilesResponse {
+export interface WorkspaceFilesResponse {
   now: number;
   name: string;
   files: StoredFile[];
 }
 
-/** Global option defaults (serialized AgentOptions) every team and session inherits. */
+/** Global option defaults (serialized AgentOptions) every workspace and session inherits. */
 export interface SettingsResponse {
   now: number;
   options: Record<string, unknown>;
@@ -278,7 +279,7 @@ export interface SkillSummary {
 
 export interface SkillsResponse {
   now: number;
-  team: string | null; // null = global scope
+  workspace: string | null; // null = global scope
   skills: SkillSummary[];
 }
 

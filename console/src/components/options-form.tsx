@@ -17,7 +17,7 @@ import {
 import { useArtifactSpaces } from "@/lib/hooks";
 
 /** Edit a stored serialized-AgentOptions dict: the global settings defaults
- *  and a team's option defaults share this form. The options mirror the
+ *  and a workspace's option defaults share this form. The options mirror the
  *  AgentOptions subset a session stores and are handed back as that same
  *  serialized dict — the server rejects anything it doesn't recognize rather
  *  than dropping it. */
@@ -64,7 +64,7 @@ export function OptionsForm({
           <Input
             value={desc}
             onChange={(e) => setDesc(e.target.value)}
-            placeholder="what this team is for"
+            placeholder="what this workspace is for"
           />
         </Field>
       )}

@@ -117,7 +117,7 @@ async def test_runner_full_turn(env, store, fake_harness):
     assert client.options.env["ANTHROPIC_VERTEX_PROJECT_ID"] == "proj-1"
     assert "HOME" in client.options.env
     assert client.options.hooks and "PreToolUse" in client.options.hooks
-    # skills mounted into HOME need user settings; the team's CLAUDE.md at the
+    # skills mounted into HOME need user settings; the workspace's CLAUDE.md at the
     # workspace root needs project settings
     assert client.options.setting_sources == ["user", "project"]
 
@@ -206,8 +206,8 @@ async def test_runner_syncs_session_prefixes_without_workspace(env, store, fake_
     assert gcs_sync["exclude"] == [(f"sessions/{SID}/state/home/", (".claude/skills/",))]
 
 
-async def test_runner_routes_ws_to_team_workspace(env, store, fake_harness, gcs_sync):
-    await store.create_session(SID, {"team": "shared"})
+async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gcs_sync):
+    await store.create_session(SID, {"workspace": "shared"})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)
@@ -219,12 +219,12 @@ async def test_runner_routes_ws_to_team_workspace(env, store, fake_harness, gcs_
     ]
     assert gcs_sync["checkpoint"] == checkpointed
     # claimed during the run, released after
-    assert store.teams["shared"]["lease_session_id"] is None
-    assert store.teams["shared"]["lease_expires"] == 0.0
+    assert store.workspaces["shared"]["lease_session_id"] is None
+    assert store.workspaces["shared"]["lease_expires"] == 0.0
 
 
 async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync):
-    await store.create_session(SID, {"artifacts": {"team": "rw", "inputs": "ro"}})
+    await store.create_session(SID, {"artifacts": {"workspace": "rw", "inputs": "ro"}})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)
@@ -233,17 +233,17 @@ async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync)
         (f"sessions/{SID}/state/ws/", "ws"),
         (f"sessions/{SID}/state/home/", "home"),
         ("skills/", "skills"),
-        ("artifacts/team/", "team"),
+        ("artifacts/workspace/", "workspace"),
         ("artifacts/inputs/", "inputs"),
     ]
     # rw spaces checkpoint to their own prefix — once at the end of the turn
     # and once more at release; ro spaces never checkpoint, and the ws
     # checkpoint excludes the mounts.
     assert gcs_sync["checkpoint"] == [
-        ("artifacts/team/", "team"),
+        ("artifacts/workspace/", "workspace"),
         (f"sessions/{SID}/state/ws/", "ws"),
         (f"sessions/{SID}/state/home/", "home"),
-        ("artifacts/team/", "team"),
+        ("artifacts/workspace/", "workspace"),
     ]
     assert gcs_sync["exclude"] == [
         (f"sessions/{SID}/state/ws/", ("artifacts/",)),
@@ -253,7 +253,7 @@ async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync)
 
 async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_sync):
     await store.create_session(
-        SID, {"system_prompt": "sp", "artifacts": {"team": "rw", "inputs": "ro"}}
+        SID, {"system_prompt": "sp", "artifacts": {"workspace": "rw", "inputs": "ro"}}
     )
     await store.push_inbox(SID, "message", "go")
 
@@ -262,7 +262,7 @@ async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_syn
     (client,) = fake_harness
     prompt = client.options.system_prompt
     assert prompt.startswith("sp\n\n")
-    assert "./artifacts/team/ (read-write" in prompt
+    assert "./artifacts/workspace/ (read-write" in prompt
     assert "./artifacts/inputs/ (read-only" in prompt
     # rw-space file count lands on the session for `syros sessions`
     session = await store.get_session(SID)
@@ -272,7 +272,7 @@ async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_syn
 async def test_runner_mount_prompt_stands_alone_without_system_prompt(
     env, store, fake_harness, gcs_sync
 ):
-    await store.create_session(SID, {"artifacts": "team"})
+    await store.create_session(SID, {"artifacts": "workspace"})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)
@@ -293,10 +293,10 @@ async def test_runner_without_mounts_leaves_prompt_and_session_untouched(env, st
     assert "published" not in session
 
 
-async def test_runner_fails_fast_when_team_busy(env, store, fake_harness, gcs_sync):
-    await store.create_session(SID, {"team": "shared"})
+async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, gcs_sync):
+    await store.create_session(SID, {"workspace": "shared"})
     await store.push_inbox(SID, "message", "go")
-    await store.claim_team("shared", "sess_other", 3600)
+    await store.claim_workspace("shared", "sess_other", 3600)
 
     await run(SID)
 
@@ -311,7 +311,7 @@ async def test_runner_fails_fast_when_team_busy(env, store, fake_harness, gcs_sy
     assert doc["subtype"] == "workspace_busy"
     assert doc["is_error"] is True
     # the other session keeps its lease
-    assert store.teams["shared"]["lease_session_id"] == "sess_other"
+    assert store.workspaces["shared"]["lease_session_id"] == "sess_other"
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]
 
@@ -490,7 +490,7 @@ async def test_runner_fails_fast_on_connector_error(
         raise syros.runner.connectors.ConnectorError("connector 'github' has no stored credential")
 
     monkeypatch.setattr(syros.runner.connectors, "mcp_servers_for", boom)
-    await store.create_session(SID, {"connectors": ["github"], "team": "shared"})
+    await store.create_session(SID, {"connectors": ["github"], "workspace": "shared"})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)
@@ -506,6 +506,6 @@ async def test_runner_fails_fast_on_connector_error(
     assert doc["subtype"] == "connector_error"
     assert doc["is_error"] is True
     # the workspace lease claimed just before the connector check is released
-    assert store.teams["shared"]["lease_session_id"] is None
+    assert store.workspaces["shared"]["lease_session_id"] is None
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]

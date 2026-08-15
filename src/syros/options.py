@@ -31,7 +31,7 @@ _SERIALIZED_FIELDS = (
     "mcp_servers",
     "max_turns",
     "max_budget_usd",
-    "team",
+    "workspace",
     "artifacts",
     "connectors",
 )
@@ -75,13 +75,14 @@ class AgentOptions:
     # them. Resolved when the session is created; the session stores the merged
     # result, so later edits to the agent never change a running session.
     agent: str | None = None
-    # Named team (teams/{name} in Firestore): sessions under the same team share
-    # one working directory (workspaces/{name}/ in the bucket, exclusive lease)
-    # and the team's skills, and inherit the team's stored options as defaults
-    # (under agent, over global settings). HOME stays per-session, so
-    # transcripts and resume are unaffected. Fixed at session creation; on
-    # resume the stored options win, like every serialized field.
-    team: str | None = None
+    # Named workspace (workspaces/{name} in Firestore): sessions under the same
+    # workspace share one working directory (workspaces/{name}/ in the bucket,
+    # exclusive lease) and the workspace's skills, and inherit the workspace's
+    # stored options as defaults (under agent, over global settings). HOME
+    # stays per-session, so transcripts and resume are unaffected. Fixed at
+    # session creation; on resume the stored options win, like every
+    # serialized field.
+    workspace: str | None = None
     # Shared artifact spaces mounted into the working directory: each space
     # appears at ./artifacts/{space}/ and the agent uses its ordinary file
     # tools on it. A str means one read-write space; a dict maps space names
@@ -140,8 +141,8 @@ class AgentOptions:
     def validate(self) -> None:
         if self.system_prompt is not None and not isinstance(self.system_prompt, str):
             raise OptionsError("system_prompt must be a plain string in syros")
-        if self.team is not None:
-            validate_name("team", self.team)
+        if self.workspace is not None:
+            validate_name("workspace", self.workspace)
         if self.agent is not None:
             validate_name("agent", self.agent)
         for space, mode in self.resolved_artifacts().items():
@@ -196,12 +197,12 @@ def options_from_doc(doc: dict[str, Any]) -> AgentOptions:
     untrusted input takes when the console defines a deployment, and an option
     that quietly did nothing would be worse than a rejected form.
     """
-    # Sessions serialized before teams absorbed workspaces stored "workspace";
-    # same semantics, new name — accept it so resume keeps working.
-    if "workspace" in doc:
+    # Sessions serialized while the workspace concept was called "team" stored
+    # "team"; same semantics, new name — accept it so resume keeps working.
+    if "team" in doc:
         doc = dict(doc)
-        doc["team"] = doc.get("team") or doc.pop("workspace")
-        doc.pop("workspace", None)
+        doc["workspace"] = doc.get("workspace") or doc.pop("team")
+        doc.pop("team", None)
     unknown = sorted(set(doc) - set(_SERIALIZED_FIELDS))
     if unknown:
         raise OptionsError(f"unknown option(s): {', '.join(unknown)}")

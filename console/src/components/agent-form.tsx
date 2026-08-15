@@ -15,7 +15,7 @@ import {
   ToolPicker,
   useOptionsDraft,
 } from "@/components/option-fields";
-import { useArtifactSpaces, useTeams } from "@/lib/hooks";
+import { useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import type { AgentSummary } from "@/lib/types";
 
@@ -32,7 +32,7 @@ export function AgentForm({
   onSaved: (name: string) => void;
   onCancel: () => void;
 }) {
-  const teams = useTeams();
+  const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
   const draft = useOptionsDraft(agent?.options ?? {});
   const [name, setName] = useState(agent?.name ?? "");
@@ -120,13 +120,13 @@ export function AgentForm({
                 noneLabel="default"
               />
             </Field>
-            <Field label="Team">
+            <Field label="Workspace">
               <ChoiceField
-                value={draft.team}
-                onChange={draft.setTeam}
-                choices={(teams ?? []).map((t) => t.name)}
+                value={draft.workspace}
+                onChange={draft.setWorkspace}
+                choices={(workspaces ?? []).map((t) => t.name)}
                 noneLabel="none"
-                customLabel="new team…"
+                customLabel="new workspace…"
               />
             </Field>
             <Field label="Artifact space">

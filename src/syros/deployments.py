@@ -70,7 +70,7 @@ def build(
 
     `run_options` are the options every run of this deployment gets — the same
     subset a session stores, so a deployment can name a model, a shared
-    team, artifact spaces, allowed tools, or a budget. `agent` names a
+    workspace, artifact spaces, allowed tools, or a budget. `agent` names a
     stored agent whose options become the defaults, resolved fresh at each
     firing; `run_options` then override per field.
     """

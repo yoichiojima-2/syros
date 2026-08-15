@@ -15,7 +15,7 @@ import {
   ToolPicker,
   useOptionsDraft,
 } from "@/components/option-fields";
-import { useAgents, useArtifactSpaces, useTeams } from "@/lib/hooks";
+import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -46,7 +46,7 @@ export function DeploymentForm({
   onCreated: (name: string) => void;
   onCancel: () => void;
 }) {
-  const teams = useTeams();
+  const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
   const { agents } = useAgents();
   const draft = useOptionsDraft();
@@ -140,7 +140,7 @@ export function DeploymentForm({
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
               required
-              placeholder="Profile the CSVs in the team workspace and write report.md"
+              placeholder="Profile the CSVs in the workspace and write report.md"
               className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
             />
           </Field>
@@ -161,13 +161,13 @@ export function DeploymentForm({
                 noneLabel="default"
               />
             </Field>
-            <Field label="Team">
+            <Field label="Workspace">
               <ChoiceField
-                value={draft.team}
-                onChange={draft.setTeam}
-                choices={(teams ?? []).map((t) => t.name)}
+                value={draft.workspace}
+                onChange={draft.setWorkspace}
+                choices={(workspaces ?? []).map((t) => t.name)}
                 noneLabel="none"
-                customLabel="new team…"
+                customLabel="new workspace…"
               />
             </Field>
             <Field label="Artifact space">

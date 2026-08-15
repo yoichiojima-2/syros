@@ -8,7 +8,7 @@ import { api, post } from "@/lib/api";
 import type { OkResponse, SettingsResponse } from "@/lib/types";
 
 // Global option defaults (serialized AgentOptions) — the base layer every
-// team and session inherits. A team's stored options override these, and a
+// workspace and session inherits. A workspace's stored options override these, and a
 // run's explicit options override both.
 
 export default function SettingsPage() {
@@ -36,7 +36,7 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle>Option defaults</CardTitle>
           <CardDescription>
-            Inherited by every team and session. A team&apos;s stored options and a run&apos;s
+            Inherited by every workspace and session. A workspace&apos;s stored options and a run&apos;s
             explicit options each override these, field by field.
           </CardDescription>
         </CardHeader>

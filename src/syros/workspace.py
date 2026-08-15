@@ -5,6 +5,9 @@ The sandbox work dir contains ws/ (the agent's working directory) and home/
 enabling resume). home/ always syncs to a per-session prefix; ws/ syncs to the
 session prefix, or to a shared workspaces/{name}/ prefix when the session
 names a workspace. Synchronous on purpose — callers wrap in asyncio.to_thread.
+
+(This module does the GCS file operations; the sibling `workspaces.py`,
+plural, manages workspace documents in Firestore.)
 """
 
 from __future__ import annotations

@@ -183,7 +183,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   const [systemPrompt, setSystemPrompt] = useState((stored.system_prompt as string) ?? "");
   const [model, setModel] = useState((stored.model as string) ?? "");
   const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
-  const [team, setTeam] = useState((stored.team as string) ?? "");
+  const [workspace, setWorkspace] = useState(((stored.workspace ?? stored.team) as string) ?? "");
   const [artifacts, setArtifacts] = useState(
     typeof stored.artifacts === "string" ? stored.artifacts : "",
   );
@@ -206,7 +206,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
     systemPrompt, setSystemPrompt,
     model, setModel,
     permissionMode, setPermissionMode,
-    team, setTeam,
+    workspace, setWorkspace,
     artifacts, setArtifacts,
     tools, setTools,
     extraTools, setExtraTools,
@@ -226,7 +226,7 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
   if (draft.model.trim()) options.model = draft.model.trim();
   if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
-  if (draft.team.trim()) options.team = draft.team.trim();
+  if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
   if (draft.artifacts.trim()) options.artifacts = draft.artifacts.trim();
   const allowed = [
     ...draft.tools,

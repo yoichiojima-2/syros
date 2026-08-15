@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .. import agents, deployments, remote, teams
+from .. import agents, deployments, remote, workspaces
 from .. import connectors as connectors_mod
 from ..journal import MAIN_BRANCH, active_branch
 from ..names import validate_name, validate_tags
@@ -122,7 +122,7 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
-            "team": options.get("team"),
+            "workspace": options.get("workspace") or options.get("team"),
             "title": session.get("title"),
             "summary": session.get("summary"),
             "created_by": session.get("created_by"),
@@ -565,22 +565,25 @@ class ConsoleAPI:
         ]
         return {"now": time.time(), "connectors": to_jsonable(rows)}
 
-    # --- teams (shared workspace + stored option defaults) ---
+    # --- workspaces (shared directory + stored option defaults + members) ---
 
-    async def teams(self) -> dict[str, Any]:
-        """Every team: GCS workspace contents + Firestore doc (config + lease)
-        + the sessions configured to run under it."""
-        stats, teams_docs, sessions = await asyncio.gather(
+    async def workspaces(self) -> dict[str, Any]:
+        """Every workspace: GCS directory contents + Firestore doc (config +
+        lease) + the sessions configured to run under it + its members (the
+        agents whose stored options name it)."""
+        stats, workspace_docs, sessions, agent_docs = await asyncio.gather(
             self._bucket_objects().workspace_stats(),
-            self._store.list_teams(),
+            self._store.list_workspaces(),
             self._store.list_sessions(limit=50),
+            self._store.list_agents(),
         )
-        docs = {t["name"]: t for t in teams_docs}
-        by_team: dict[str, list[dict[str, Any]]] = {}
+        docs = {w["name"]: w for w in workspace_docs}
+        by_workspace: dict[str, list[dict[str, Any]]] = {}
         for session in sessions:
-            name = ((session.get("options") or {}).get("team")) or None
+            options = session.get("options") or {}
+            name = options.get("workspace") or options.get("team") or None
             if name:
-                by_team.setdefault(name, []).append(
+                by_workspace.setdefault(name, []).append(
                     {
                         "id": session.get("id"),
                         "state": derived_state(session),
@@ -588,7 +591,7 @@ class ConsoleAPI:
                     }
                 )
         rows = []
-        for name in sorted(set(stats) | set(docs) | set(by_team)):
+        for name in sorted(set(stats) | set(docs) | set(by_workspace)):
             doc = docs.get(name) or {}
             stat = stats.get(name) or {"file_count": 0, "total_size": 0, "updated": None}
             rows.append(
@@ -598,34 +601,35 @@ class ConsoleAPI:
                     "lease_session_id": doc.get("lease_session_id") if lease_active(doc) else None,
                     "description": doc.get("description"),
                     "options": doc.get("options") or {},
-                    "sessions": by_team.get(name, []),
+                    "sessions": by_workspace.get(name, []),
+                    "members": workspaces.members(name, agent_docs),
                     **stat,
                 }
             )
-        return {"now": time.time(), "teams": to_jsonable(rows)}
+        return {"now": time.time(), "workspaces": to_jsonable(rows)}
 
-    async def team_files(self, name: str) -> dict[str, Any]:
+    async def workspace_files(self, name: str) -> dict[str, Any]:
         files = await self._bucket_objects().workspace_files(name)
-        if not files and name not in {t["name"] for t in await self._store.list_teams()}:
-            raise NotFound(f"team {name} not found")
+        if not files and name not in {w["name"] for w in await self._store.list_workspaces()}:
+            raise NotFound(f"workspace {name} not found")
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
 
     async def _require_free(self, name: str) -> None:
-        """Refuse to write a team workspace a live run holds.
+        """Refuse to write a workspace a live run holds.
 
         The runner checkpoints its whole ws/ directory when it goes idle, so an
         edit saved mid-run would be silently overwritten by the job's own copy.
         Better to say no than to lose the edit.
         """
-        lease = await self._store.get_team(name)
+        lease = await self._store.get_workspace(name)
         if lease_active(lease):
             raise Conflict(
-                f"team {name} is busy — session {lease.get('lease_session_id')} holds"
+                f"workspace {name} is busy — session {lease.get('lease_session_id')} holds"
                 " the lease. Wait for the run to finish."
             )
 
-    async def team_file(self, name: str, file: str) -> tuple[bytes, str]:
+    async def workspace_file(self, name: str, file: str) -> tuple[bytes, str]:
         """Raw bytes + content type, same contract as artifact_file."""
         try:
             return await self._bucket_objects().read_workspace_file(name, file)
@@ -634,7 +638,7 @@ class ConsoleAPI:
         except ValueError as exc:
             raise TooLarge(str(exc)) from exc
 
-    async def write_team_file(
+    async def write_workspace_file(
         self, name: str, file: str, content: str, encoding: str = "utf-8"
     ) -> dict[str, Any]:
         """Create or overwrite one file. Text rides as utf-8, uploads as base64."""
@@ -645,7 +649,7 @@ class ConsoleAPI:
         await self._bucket_objects().write_workspace_file(name, file, data)
         return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
 
-    async def delete_team_file(self, name: str, file: str) -> dict[str, Any]:
+    async def delete_workspace_file(self, name: str, file: str) -> dict[str, Any]:
         await self._require_free(name)
         try:
             await self._bucket_objects().delete_workspace_file(name, file)
@@ -653,7 +657,7 @@ class ConsoleAPI:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "file": file}
 
-    async def rename_team_file(self, name: str, src: str, dst: str) -> dict[str, Any]:
+    async def rename_workspace_file(self, name: str, src: str, dst: str) -> dict[str, Any]:
         await self._require_free(name)
         try:
             await self._bucket_objects().rename_workspace_file(name, src, dst)
@@ -663,7 +667,9 @@ class ConsoleAPI:
             raise Conflict(f"destination exists: {exc}") from exc
         return {"now": time.time(), "ok": True, "name": name, "file": dst}
 
-    async def set_team_file_tags(self, name: str, file: str, tags: list[str]) -> dict[str, Any]:
+    async def set_workspace_file_tags(
+        self, name: str, file: str, tags: list[str]
+    ) -> dict[str, Any]:
         tags = validate_tags(tags)
         await self._require_free(name)
         try:
@@ -672,7 +678,7 @@ class ConsoleAPI:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "file": file, "tags": tags}
 
-    async def delete_team_files(self, name: str, files: list[str]) -> dict[str, Any]:
+    async def delete_workspace_files(self, name: str, files: list[str]) -> dict[str, Any]:
         """Best-effort bulk delete; reports per-file failures like delete_many."""
         if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
             raise ValueError("files must be a list of strings")
@@ -689,7 +695,7 @@ class ConsoleAPI:
                 failed.append({"name": file, "error": str(exc)})
         return {"now": time.time(), "ok": not failed, "deleted": deleted, "failed": failed}
 
-    async def delete_team_folder(self, name: str, folder: str) -> dict[str, Any]:
+    async def delete_workspace_folder(self, name: str, folder: str) -> dict[str, Any]:
         if not isinstance(folder, str) or not folder.strip("/"):
             raise ValueError("folder must be a non-empty path")
         await self._require_free(name)
@@ -697,22 +703,22 @@ class ConsoleAPI:
             name, folder.strip("/") + "/", MAX_PREFIX_DELETE
         )
         if count == 0:
-            raise NotFound(f"folder {folder} not found in team {name}")
+            raise NotFound(f"folder {folder} not found in workspace {name}")
         return {"now": time.time(), "ok": True, "name": name, "count": count}
 
-    async def create_team(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Create the team doc plus a hidden .keep blob so the workspace lists."""
+    async def create_workspace(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Create the workspace doc plus a hidden .keep blob so it lists."""
         name = str(body.get("name") or "")
-        validate_name("team", name)
+        validate_name("workspace", name)
         existing = set(await self._bucket_objects().workspace_stats()) | {
-            t["name"] for t in await self._store.list_teams()
+            w["name"] for w in await self._store.list_workspaces()
         }
         if name in existing:
-            raise Conflict(f"team {name} already exists")
+            raise Conflict(f"workspace {name} already exists")
         run_options = self._parse_run_options(body.get("options"))
-        await self._store.create_team(
+        await self._store.create_workspace(
             name,
-            teams.build(
+            workspaces.build(
                 name,
                 run_options,
                 description=str(body["description"]) if body.get("description") else None,
@@ -722,9 +728,9 @@ class ConsoleAPI:
         await self._bucket_objects().write_workspace_file(name, ".keep", b"")
         return {"now": time.time(), "ok": True, "name": name}
 
-    async def update_team(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Replace the team's stored options/description. Running sessions keep
-        the options they were created with."""
+    async def update_workspace(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace the workspace's stored options/description. Running sessions
+        keep the options they were created with."""
         fields: dict[str, Any] = {}
         if "options" in body:
             fields["options"] = self._parse_run_options(body.get("options")).serialize()
@@ -732,18 +738,20 @@ class ConsoleAPI:
             fields["description"] = str(body["description"]) if body["description"] else None
         if not fields:
             raise ValueError("nothing to update: pass options and/or description")
-        if not await self._store.get_team(name):
-            # An ad-hoc team (old workspace) has files but no doc yet — created
-            # on first edit so update-from-console always works.
-            await self._store.create_team(name, teams.build(name, created_by=_decided_by()))
-        await self._store.update_team(name, **fields)
+        if not await self._store.get_workspace(name):
+            # An ad-hoc workspace has files but no doc yet — created on first
+            # edit so update-from-console always works.
+            await self._store.create_workspace(
+                name, workspaces.build(name, created_by=_decided_by())
+            )
+        await self._store.update_workspace(name, **fields)
         return {"now": time.time(), "ok": True, "name": name}
 
-    async def delete_team(self, name: str) -> dict[str, Any]:
-        """Remove every blob under the team workspace plus its Firestore doc."""
+    async def delete_workspace(self, name: str) -> dict[str, Any]:
+        """Remove every blob under the workspace plus its Firestore doc."""
         await self._require_free(name)
         count = await self._bucket_objects().delete_workspace_prefix(name, None, MAX_PREFIX_DELETE)
-        await self._store.delete_team(name)
+        await self._store.delete_workspace(name)
         return {"now": time.time(), "ok": True, "name": name, "count": count}
 
     # --- global settings ---
@@ -764,48 +772,55 @@ class ConsoleAPI:
     # sandbox HOME at start, so a console edit never races a live run's
     # checkpoint the way a workspace edit would.
 
-    async def skills(self, team: str | None = None) -> dict[str, Any]:
-        stats = await self._bucket_objects().skill_stats(team)
+    async def skills(self, workspace: str | None = None) -> dict[str, Any]:
+        stats = await self._bucket_objects().skill_stats(workspace)
         rows = [{"name": name, **stat} for name, stat in sorted(stats.items())]
-        return {"now": time.time(), "team": team, "skills": to_jsonable(rows)}
+        return {"now": time.time(), "workspace": workspace, "skills": to_jsonable(rows)}
 
-    async def skill_files(self, name: str, team: str | None = None) -> dict[str, Any]:
-        files = await self._bucket_objects().skill_files(name, team)
+    async def skill_files(self, name: str, workspace: str | None = None) -> dict[str, Any]:
+        files = await self._bucket_objects().skill_files(name, workspace)
         if not files:
             raise NotFound(f"skill {name} not found")
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
 
-    async def skill_file(self, name: str, file: str, team: str | None = None) -> tuple[bytes, str]:
+    async def skill_file(
+        self, name: str, file: str, workspace: str | None = None
+    ) -> tuple[bytes, str]:
         """Raw bytes + content type, same contract as artifact_file."""
         try:
-            return await self._bucket_objects().read_skill_file(name, file, team)
+            return await self._bucket_objects().read_skill_file(name, file, workspace)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         except ValueError as exc:
             raise TooLarge(str(exc)) from exc
 
     async def write_skill_file(
-        self, name: str, file: str, content: str, encoding: str = "utf-8", team: str | None = None
+        self,
+        name: str,
+        file: str,
+        content: str,
+        encoding: str = "utf-8",
+        workspace: str | None = None,
     ) -> dict[str, Any]:
         data = _decode_content(content, encoding)
         if len(data) > MAX_PREVIEW_BYTES:
             raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
-        await self._bucket_objects().write_skill_file(name, file, data, team)
+        await self._bucket_objects().write_skill_file(name, file, data, workspace)
         return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
 
     async def delete_skill_file(
-        self, name: str, file: str, team: str | None = None
+        self, name: str, file: str, workspace: str | None = None
     ) -> dict[str, Any]:
         try:
-            await self._bucket_objects().delete_skill_file(name, file, team)
+            await self._bucket_objects().delete_skill_file(name, file, workspace)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "file": file}
 
-    async def delete_skill(self, name: str, team: str | None = None) -> dict[str, Any]:
+    async def delete_skill(self, name: str, workspace: str | None = None) -> dict[str, Any]:
         try:
-            deleted = await self._bucket_objects().delete_skill(name, team)
+            deleted = await self._bucket_objects().delete_skill(name, workspace)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "deleted": deleted}

@@ -59,9 +59,9 @@ async def test_create_rejects_bad_name_prompt_and_cron():
 
 async def test_run_options_are_stored():
     store = FakeStore()
-    await make(store, run_options=AgentOptions(model="m", team="ws"))
+    await make(store, run_options=AgentOptions(model="m", workspace="ws"))
     options = store.deployments["nightly"]["options"]
-    assert options["model"] == "m" and options["team"] == "ws"
+    assert options["model"] == "m" and options["workspace"] == "ws"
 
 
 async def test_agent_reference_is_stored_and_validated():

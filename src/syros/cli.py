@@ -1,11 +1,11 @@
 """Minimal ops CLI — the UI syros deliberately doesn't have.
 
 syros sessions                          list recent sessions
-syros teams                             list teams and their workspace leases
-syros teams create <name> [--model ...] [--description ...]
-syros teams show|update|delete <name>
-syros teams claude-md <name>            print the team's CLAUDE.md
-syros teams claude-md <name> --file p   replace it from a local file
+syros workspaces                        list workspaces, members, and leases
+syros workspaces create <name> [--model ...] [--description ...]
+syros workspaces show|update|delete <name>
+syros workspaces claude-md <name>       print the workspace's CLAUDE.md
+syros workspaces claude-md <name> --file p  replace it from a local file
 syros settings                          show global option defaults (inherited by everything)
 syros settings update [--model ...]     replace global option defaults
 syros tail <session_id>                 follow a session's journal (messages + audit)
@@ -29,7 +29,7 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
-syros skills files <name>               list one skill's files (--team for team skills)
+syros skills files <name>               list one skill's files (--workspace for workspace skills)
 syros skills cat <name> <file>          print one skill file's content
 syros skills sync                       seed skills/ from the official anthropics/skills repo
 syros connectors                        list platform connectors and credential status
@@ -98,29 +98,32 @@ async def _sessions(args) -> None:
             f"  ${float(session.get('cost_usd') or 0):.4f}"
             f"  {state.get('stop_reason') or '':<14}"
             f"  {'' if published is None else f'{published} published':<14}"
-            f"  {(session.get('options') or {}).get('team') or ''}"
+            f"  {(session.get('options') or {}).get('workspace') or (session.get('options') or {}).get('team') or ''}"
         )
 
 
-async def _teams(args) -> None:
-    from . import teams
+async def _workspaces(args) -> None:
+    from . import workspaces
     from .store import lease_active
 
     store = _store(args)
 
     if args.action == "list":
-        for doc in sorted(await store.list_teams(), key=lambda d: d["name"]):
+        agent_docs = await store.list_agents()
+        for doc in sorted(await store.list_workspaces(), key=lambda d: d["name"]):
             busy = lease_active(doc)
             holder = doc.get("lease_session_id") if busy else ""
             opts = doc.get("options") or {}
+            member_names = ",".join(workspaces.members(doc["name"], agent_docs))
             print(
                 f"{doc['name']:<24}  {'busy' if busy else 'free':<6}"
-                f"  {opts.get('model') or '-':<24}  {holder or doc.get('description') or ''}"
+                f"  {opts.get('model') or '-':<24}  {member_names or '-':<24}"
+                f"  {holder or doc.get('description') or ''}"
             )
         return
 
     if not args.name:
-        raise SystemExit(f"teams {args.action} requires a name")
+        raise SystemExit(f"workspaces {args.action} requires a name")
 
     if args.action == "claude-md":
         project = _project(args)
@@ -129,34 +132,37 @@ async def _teams(args) -> None:
             from pathlib import Path
 
             text = Path(args.file).read_text()
-            await asyncio.to_thread(teams.write_claude_md, project, bucket, args.name, text)
-            print(f"wrote CLAUDE.md for team {args.name}")
+            await asyncio.to_thread(workspaces.write_claude_md, project, bucket, args.name, text)
+            print(f"wrote CLAUDE.md for workspace {args.name}")
             return
-        text = await asyncio.to_thread(teams.read_claude_md, project, bucket, args.name)
+        text = await asyncio.to_thread(workspaces.read_claude_md, project, bucket, args.name)
         if text is None:
-            raise SystemExit(f"team {args.name} has no CLAUDE.md")
+            raise SystemExit(f"workspace {args.name} has no CLAUDE.md")
         print(text, end="")
         return
 
     if args.action == "create":
-        team = await teams.create(
+        workspace = await workspaces.create(
             args.name, _run_options(args), description=args.description, store=store
         )
-        print(f"created team {team['name']}")
+        print(f"created workspace {workspace['name']}")
         return
     if args.action == "show":
-        team = await teams.get(args.name, store=store)
-        if team is None:
-            raise SystemExit(f"no such team: {args.name}")
-        print(json.dumps(team, indent=2, default=str))
+        workspace = await workspaces.get(args.name, store=store)
+        if workspace is None:
+            raise SystemExit(f"no such workspace: {args.name}")
+        workspace["members"] = workspaces.members(args.name, await store.list_agents())
+        print(json.dumps(workspace, indent=2, default=str))
         return
     if args.action == "update":
-        await teams.update(args.name, _run_options(args), description=args.description, store=store)
-        print(f"updated team {args.name}")
+        await workspaces.update(
+            args.name, _run_options(args), description=args.description, store=store
+        )
+        print(f"updated workspace {args.name}")
         return
     if args.action == "delete":
-        await teams.delete(args.name, store=store)
-        print(f"deleted team {args.name}")
+        await workspaces.delete(args.name, store=store)
+        print(f"deleted workspace {args.name}")
         return
 
 
@@ -263,7 +269,7 @@ def _run_options(args) -> AgentOptions:
         allowed_tools=allow,
         mcp_servers=mcp_servers,
         permission_mode=args.permission_mode,
-        team=args.team,
+        workspace=args.workspace,
         artifacts=args.artifacts,
         max_turns=args.max_turns,
         max_budget_usd=args.max_budget_usd,
@@ -481,7 +487,9 @@ async def _skills(args) -> None:
     if args.action == "files":
         if not args.args:
             raise SystemExit("usage: syros skills files <name>")
-        files = await GcsObjects(project, bucket).skill_files(args.args[0], team=args.team)
+        files = await GcsObjects(project, bucket).skill_files(
+            args.args[0], workspace=args.workspace
+        )
         if not files:
             raise SystemExit(f"no such skill: {args.args[0]}")
         for item in files:
@@ -501,7 +509,7 @@ async def _skills(args) -> None:
                 args.args[0],
                 args.args[1],
                 max_bytes=MAX_PREVIEW_BYTES,
-                team=args.team,
+                workspace=args.workspace,
             )
         except FileNotFoundError as exc:
             raise SystemExit(f"not found: {exc}") from exc
@@ -756,7 +764,7 @@ def _run_option_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
     parser.add_argument("--permission-mode", default=None)
-    parser.add_argument("--team", default=None)
+    parser.add_argument("--workspace", "--team", dest="workspace", default=None)
     parser.add_argument("--artifacts", default=None, metavar="SPACE")
     parser.add_argument("--max-turns", type=int, default=None)
     parser.add_argument("--max-budget-usd", type=float, default=None)
@@ -774,19 +782,19 @@ def main() -> None:
 
     sub.add_parser("sessions").set_defaults(func=_sessions)
 
-    teams = sub.add_parser("teams")
-    teams.add_argument(
+    workspaces = sub.add_parser("workspaces", aliases=["teams"])
+    workspaces.add_argument(
         "action",
         nargs="?",
         default="list",
         choices=["list", "create", "show", "update", "delete", "claude-md"],
     )
-    teams.add_argument("name", nargs="?")
-    teams.add_argument("--description", default=None)
-    teams.add_argument("--file", default=None, help="claude-md: local file to upload")
-    teams.add_argument("--bucket", default=None)
-    _run_option_flags(teams)
-    teams.set_defaults(func=_teams)
+    workspaces.add_argument("name", nargs="?")
+    workspaces.add_argument("--description", default=None)
+    workspaces.add_argument("--file", default=None, help="claude-md: local file to upload")
+    workspaces.add_argument("--bucket", default=None)
+    _run_option_flags(workspaces)
+    workspaces.set_defaults(func=_workspaces)
 
     settings = sub.add_parser("settings")
     settings.add_argument("action", nargs="?", default="show", choices=["show", "update"])
@@ -863,7 +871,13 @@ def main() -> None:
     )
     skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
-    skills.add_argument("--team", default=None, help="operate on a team's skills")
+    skills.add_argument(
+        "--workspace",
+        "--team",
+        dest="workspace",
+        default=None,
+        help="operate on a workspace's skills",
+    )
     skills.set_defaults(func=_skills)
 
     connectors = sub.add_parser("connectors")
