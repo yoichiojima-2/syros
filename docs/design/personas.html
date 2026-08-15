@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ユーザーペルソナ(改訂版)— syros コンソール</title>
+<style>
+  :root{
+    --ink:#1c2230; --sub:#5b6478; --line:#e4e7ef; --bg:#f5f6fa; --card:#ffffff;
+    --mgr:#5b5bd6; --mgr-bg:#efeefc;
+    --eng:#0f9d78; --eng-bg:#e8f7f1;
+    --sec:#be123c; --sec-bg:#fdecf1;
+    --warn:#c2410c; --warn-bg:#fdf1e8;
+    --shadow: 0 1px 2px rgba(28,34,48,0.04), 0 8px 24px rgba(28,34,48,0.06);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.65;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 24px 80px;}
+  header.page{margin-bottom:36px;}
+  header.page h1{font-size:27px;margin:0 0 6px;letter-spacing:-0.01em;}
+  header.page p.lede{color:var(--sub);font-size:14.5px;margin:0;max-width:800px;}
+  .meta-row{display:flex;gap:14px;margin-top:14px;font-size:12.5px;color:var(--sub);flex-wrap:wrap;}
+  .meta-row span{background:var(--card);border:1px solid var(--line);padding:4px 10px;border-radius:20px;}
+  .callout{background:#fffdf2;border:1px solid #f0e6bb;border-radius:12px;padding:16px 20px;font-size:13.5px;margin-top:18px;max-width:900px;}
+  .callout b{color:#8a6d00;}
+  .persona{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);margin-bottom:32px;overflow:hidden;}
+  .persona-head{display:flex;align-items:center;gap:20px;padding:26px 32px;border-bottom:1px solid var(--line);}
+  .persona.manager .persona-head{background:linear-gradient(135deg,var(--mgr-bg),#fff 70%);}
+  .persona.engineer .persona-head{background:linear-gradient(135deg,var(--eng-bg),#fff 70%);}
+  .persona.security .persona-head{background:linear-gradient(135deg,var(--sec-bg),#fff 70%);}
+  .avatar{width:68px;height:68px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff;flex-shrink:0;box-shadow:0 4px 10px rgba(0,0,0,0.12);}
+  .persona.manager .avatar{background:linear-gradient(135deg,#6f6fe0,#4a4ac2);}
+  .persona.engineer .avatar{background:linear-gradient(135deg,#22b58a,#0c7f5e);}
+  .persona.security .avatar{background:linear-gradient(135deg,#e0396b,#9f1043);}
+  .persona-head .id .name{font-size:20px;font-weight:700;margin:0;}
+  .persona-head .id .role{font-size:13px;color:var(--sub);margin:2px 0 0;font-weight:600;}
+  .persona-head .id .tagline{font-size:13px;color:var(--sub);margin-top:4px;}
+  .badge{margin-left:auto;font-size:11.5px;font-weight:700;padding:6px 12px;border-radius:8px;white-space:nowrap;color:#fff;}
+  .persona.manager .badge{background:var(--mgr);}
+  .persona.engineer .badge{background:var(--eng);}
+  .persona.security .badge{background:var(--sec);}
+  .quote{font-size:16px;font-style:italic;padding:18px 32px;border-bottom:1px solid var(--line);background:#fbfbfd;}
+  .persona.manager .quote{border-left:4px solid var(--mgr);}
+  .persona.engineer .quote{border-left:4px solid var(--eng);}
+  .persona.security .quote{border-left:4px solid var(--sec);}
+  .body-grid{display:grid;grid-template-columns:1.1fr 1fr;}
+  .col{padding:24px 32px;}
+  .col + .col{border-left:1px solid var(--line);}
+  h3.section{font-size:12.5px;letter-spacing:.05em;color:var(--sub);margin:0 0 12px;display:flex;align-items:center;gap:8px;}
+  h3.section:not(:first-child){margin-top:22px;}
+  h3.section::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;}
+  ul.clean{margin:0;padding:0;list-style:none;}
+  ul.clean li{padding:8px 0 8px 20px;position:relative;font-size:13.5px;border-bottom:1px dashed var(--line);}
+  ul.clean li:last-child{border-bottom:none;}
+  ul.clean li::before{content:"";position:absolute;left:0;top:15px;width:7px;height:7px;border-radius:2px;background:var(--sub);opacity:.5;}
+  .persona.manager ul.clean li::before{background:var(--mgr);opacity:.7;}
+  .persona.engineer ul.clean li::before{background:var(--eng);opacity:.7;}
+  .persona.security ul.clean li::before{background:var(--sec);opacity:.7;}
+  .pain li::before{background:var(--warn) !important;opacity:.8 !important;border-radius:50%;}
+  .tags{display:flex;flex-wrap:wrap;gap:8px;}
+  .tag{font-size:12px;font-weight:600;padding:5px 11px;border-radius:20px;background:var(--mgr-bg);color:var(--mgr);border:1px solid rgba(91,91,214,0.18);}
+  .persona.engineer .tag{background:var(--eng-bg);color:var(--eng);border-color:rgba(15,157,120,0.18);}
+  .persona.security .tag{background:var(--sec-bg);color:var(--sec);border-color:rgba(190,18,60,0.18);}
+  .jtbd{background:#fafafd;border:1px solid var(--line);border-radius:10px;padding:14px 16px;font-size:13px;}
+  .jtbd b{color:var(--mgr);}
+  .persona.engineer .jtbd b{color:var(--eng);}
+  .persona.security .jtbd b{color:var(--sec);}
+  .assume{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--warn-bg);color:var(--warn);margin-left:6px;vertical-align:middle;}
+  code{background:#f0f1f6;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+  footer{margin-top:40px;text-align:center;color:var(--sub);font-size:12px;}
+  @media (max-width:860px){.body-grid{grid-template-columns:1fr;}.col + .col{border-left:none;border-top:1px solid var(--line);}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="page">
+    <h1>ユーザーペルソナ(改訂版)— syros コンソール</h1>
+    <p class="lede">初版のペルソナを、実際のプロダクトに合わせて修正した改訂版。syros は SaaS のチーム管理コンソールではなく、<b>自分の GCP プロジェクト内で <code>claude_agent_sdk</code> エージェントをサンドボックス実行するミニマルなインフラ/SDK プロダクト</b>である(Cloud Run Jobs + Firestore + GCS + IAM + Vertex AI)。認証・共有・テナンシーは意図的に GCP IAM へ委譲されており(README「Out of scope」)、「1 GCP プロジェクト = 1 信頼境界」。ペルソナはこの現実に接地させた。</p>
+    <div class="meta-row">
+      <span>対象: syros(SDK + コンソール)</span>
+      <span>日付: 2026年8月</span>
+      <span>初版からの改訂 — 根拠は review-notes.md 参照</span>
+    </div>
+    <div class="callout"><b>注意:</b> 各ペルソナ内の定量値(セッション数、許容中断時間など)は初版で出典なく置かれた数値であり、<b>すべて「検証すべき仮説」</b>である。<span class="assume">仮説</span> ラベルを付した。実ユーザーへのインタビューで検証すること。</div>
+  </header>
+
+  <!-- ENGINEER (第一ペルソナに昇格) -->
+  <section class="persona engineer">
+    <div class="persona-head">
+      <div class="avatar">DO</div>
+      <div class="id">
+        <p class="name">Devon Okafor</p>
+        <p class="role">シニアソフトウェアエンジニア · SDK ファーストのパワーユーザー · <b>第一ペルソナ</b></p>
+        <p class="tagline">SDK からエージェントに実作業を委譲し、複数セッションを並行運用する。コンソールは監視・承認・介入のための補助面。</p>
+      </div>
+      <div class="badge">Builder</div>
+    </div>
+    <div class="quote">「フローを保ちたい — 単純作業はエージェントに任せて、本当に判断が要るときだけ呼び戻してほしい。」</div>
+    <div class="body-grid">
+      <div class="col">
+        <h3 class="section" style="color:var(--eng)">ゴール</h3>
+        <ul class="clean">
+          <li>スコープの明確なタスク(リファクタ、テスト、バグ修正、移行)を委譲し、end-to-end で任せる。</li>
+          <li>3–5 の並行セッション <span class="assume">仮説</span> を、各セッションの状態を見失わずに回す。</li>
+          <li>承認要求に素早く応答する — 現状、<b>誰も見ていなければ承認は 300 秒でタイムアウト拒否される</b>(<code>gate.py</code>)ため、気づける仕組みが死活問題。</li>
+          <li>実行中のエージェントを、文脈を一から説明し直さずに軌道修正する(実在機能: 実行中セッションへの追いクエリ)。</li>
+          <li>成果物を artifact space(<code>artifacts/{space}/</code>)経由でチームメイトに引き渡す — 共有は IAM(<code>storage.objectViewer</code>)で行う。</li>
+        </ul>
+        <h3 class="section" style="color:var(--eng)">フラストレーション</h3>
+        <ul class="clean pain">
+          <li>承認待ちや入力待ちを<b>プッシュで知る手段がない</b> — コンソールはポーリングのみで、タブを開いていない間の承認要求は黙って拒否に倒れる。</li>
+          <li>過去セッションを横断して「あのファイルを触った実行はどれか」を探す<b>検索が UI にない</b>(状態フィルタのみ)。</li>
+          <li><code>workspace_busy</code> などの停止理由・状態遷移は充実しているが、それを「気づく」のは自分の目視頼み。</li>
+        </ul>
+        <h3 class="section" style="color:var(--eng)">Jobs to Be Done</h3>
+        <div class="jtbd"><b>エージェントにタスクを渡した</b>とき、<b>入力が必要になった瞬間に通知が届き、素早く判断だけ返せる</b>ようにしたい。そうすれば<b>承認のタイムアウト拒否で作業が無駄に止まらず、自分はフローに留まれる</b>。</div>
+        <div class="jtbd" style="margin-top:10px;"><b>成果物を渡す</b>とき、<b>artifact space と IAP 経由の読み取り専用コンソールアクセス</b>で共有したい。公開共有リンクは信頼境界(1 プロジェクト = 1 境界)に反するため求めない。</div>
+      </div>
+      <div class="col">
+        <h3 class="section" style="color:var(--eng)">行動・習慣(実プロダクトに接地)</h3>
+        <ul class="clean">
+          <li>入口は SDK(<code>query()</code> / <code>resume=</code>)。コンソールは監視と承認に使う。</li>
+          <li>ジャーナルツリーの <code>rewind</code> で過去イベントから分岐して手戻りを回避する。</li>
+          <li><code>syros tail</code> でライブ追跡、トランスクリプトより diff・成果物を見る。</li>
+          <li>共有ワークスペースは 1 実行 1 リースの制約(<code>workspace_busy</code>)を理解して運用する。</li>
+        </ul>
+        <h3 class="section" style="color:var(--eng)">プロダクトへの要求</h3>
+        <div class="tags">
+          <span class="tag">入力待ち/承認のプッシュ通知(最優先)</span>
+          <span class="tag">セッション・トランスクリプト検索</span>
+          <span class="tag">明確な状態表示(実装済)</span>
+          <span class="tag">mid-run 介入(実装済)</span>
+          <span class="tag">resume / rewind(実装済)</span>
+          <span class="tag">承認タイムアウトの可視化</span>
+        </div>
+        <h3 class="section" style="color:var(--eng)">技術リテラシー</h3>
+        <ul class="clean">
+          <li>非常に高い。SDK・CLI・BigQuery を直接使う。UI は速さと正確さを重視。</li>
+          <li>成功 = 委譲したタスクの完了数、承認起因の無駄な停止ゼロ、フロー維持。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- OPERATOR (旧 Manager を再スコープ) -->
+  <section class="persona manager">
+    <div class="persona-head">
+      <div class="avatar">MC</div>
+      <div class="id">
+        <p class="name">Maria Chen</p>
+        <p class="role">フリート運用者(GCP プロジェクトオーナー)· 旧「エンジニアリングマネージャー」を再定義</p>
+        <p class="tagline">単一 GCP プロジェクト内で走る全セッションの健全性とコストに責任を持つ。組織的な「チーム予算配分」は対象外(帰属先となるユーザーモデルが存在しない)。</p>
+      </div>
+      <div class="badge">Operator</div>
+    </div>
+    <div class="quote">「全キーストロークを見張る必要はない — 何かがおかしくなった瞬間に知りたいし、2分以内に原因まで辿り着きたい。」</div>
+    <div class="body-grid">
+      <div class="col">
+        <h3 class="section" style="color:var(--mgr)">ゴール</h3>
+        <ul class="clean">
+          <li>フリートの健全性を一目で把握する(実装済: <code>/</code> と <code>/dashboard</code> — 状態内訳、日別支出、モデル別コスト)。</li>
+          <li>危険な操作(force-push、シークレット露出、本番アクセス)を事後でなく事前に止める(実装済の基盤: 承認ゲート + kill switch <code>syros kill</code>)。</li>
+          <li><code>stalled</code>(リース失効)や <code>queued</code> のまま滞留したセッションに気づいて対処する。</li>
+          <li><b>プロジェクトレベル</b>の支出上限を持つ — 現状はクエリ単位の <code>max_budget_usd</code> のみで、README も「クエリを制限するのであって、1日を制限するのではない」と明言(README:371)。</li>
+        </ul>
+        <h3 class="section" style="color:var(--mgr)">フラストレーション</h3>
+        <ul class="clean pain">
+          <li>ダッシュボードは見に行けば分かるが、<b>異常をプッシュで知らせる仕組みがない</b> — 「pull しかない」ことが最大の穴。</li>
+          <li>日次・月次の支出上限や超過アラートがなく、暴走セッションはダッシュボードを開くまで見えない。</li>
+          <li>フリート横断で「特定のファイル/ツールに触れたセッション」を探せない(BigQuery エクスポートはあるがスナップショット)。</li>
+        </ul>
+        <h3 class="section" style="color:var(--mgr)">Jobs to Be Done</h3>
+        <div class="jtbd"><b>チェックインのタイミングでコンソールを開いた</b>とき、<b>介入が必要なセッションとその理由がすぐ分かる</b>ようにしたい。そうすれば<b>必要な所だけ介入し、残りは任せて回せる</b>。(状態モデルは実装済 — 足りないのは push 通知)</div>
+        <div class="jtbd" style="margin-top:10px;"><b>支出を管理する</b>とき、<b>プロジェクト単位の日次/月次上限と超過アラート</b>が欲しい。そうすれば<b>請求書で初めて気づく事態を避けられる</b>。</div>
+      </div>
+      <div class="col">
+        <h3 class="section" style="color:var(--mgr)">初版から削除したもの(理由付き)</h3>
+        <ul class="clean pain">
+          <li><b>エンジニア別の予算配分・コスト内訳</b> — セッションに「所有者」がない(<code>trigger</code> と <code>agent</code> のみ)。ユーザーモデルなしには実装不能。</li>
+          <li><b>チーム予算の月次防衛</b> — マルチテナンシーは明示的に Out of scope。予算はプロジェクト単位が正しい粒度。</li>
+          <li><b>「単一画面がない」というペイン</b> — 事実誤認。<code>/dashboard</code> が既に存在する。</li>
+        </ul>
+        <h3 class="section" style="color:var(--mgr)">プロダクトへの要求</h3>
+        <div class="tags">
+          <span class="tag">異常のプッシュ通知(最優先)</span>
+          <span class="tag">プロジェクト単位の予算上限+超過アラート</span>
+          <span class="tag">フリート横断検索</span>
+          <span class="tag">セッション自動要約</span>
+          <span class="tag">ダッシュボード(実装済)</span>
+          <span class="tag">kill switch(実装済)</span>
+        </div>
+        <h3 class="section" style="color:var(--mgr)">技術リテラシー</h3>
+        <ul class="clean">
+          <li>高いが時間制約が強い。1日数回のチェックイン <span class="assume">仮説</span> + アラート駆動で動きたい。</li>
+          <li>成功 = 想定外ゼロ、検知から原因特定まで 2 分以内 <span class="assume">仮説</span>、予算内着地。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECURITY (再接地) -->
+  <section class="persona security">
+    <div class="persona-head">
+      <div class="avatar">PN</div>
+      <div class="id">
+        <p class="name">Priya Nair</p>
+        <p class="role">セキュリティ/監査担当 · ジャーナル + BigQuery + IAM を武器に監査する</p>
+        <p class="tagline">エージェントが「何をしたか」を、エージェント自身の説明とは独立に証明する。syros のジャーナルは既にその大部分を提供している — 残る穴は「誰が承認したか」の帰属。</p>
+      </div>
+      <div class="badge">Auditor</div>
+    </div>
+    <div class="quote">「エージェントが何をする<b>つもり</b>だったかはどうでもいい — 実際に何をしたか、許可されていたか、それを半年後に証明できるかだ。」</div>
+    <div class="body-grid">
+      <div class="col">
+        <h3 class="section" style="color:var(--sec)">既に手にしているもの(初版は「ない」と誤記)</h3>
+        <ul class="clean">
+          <li><b>実行前コミットの監査台帳</b>: <code>PreToolUse</code> フックがツール実行<b>前</b>に <code>tool_call</code> レコードを Firestore にコミット(<code>journal.py</code>, <code>gate.py</code>)。エージェントの語りとは独立した一次記録。</li>
+          <li><b>承認の完全な記録</b>: 承認キューは全決定(許可/拒否/タイムアウト)を記録。</li>
+          <li><b>SQL での横断分析</b>: <code>syros export</code> → BigQuery 5 テーブル(<code>sessions</code>, <code>events</code>, <code>tool_calls</code>, <code>approvals</code>, <code>agents</code>)。「今月 credentials.json に触れたセッション」はここで書ける。</li>
+          <li><b>読み取り専用アクセス</b>: アプリ内ロールではなく IAM viewer / IAP 招待で実現する(設計方針どおり)。</li>
+        </ul>
+        <h3 class="section" style="color:var(--sec)">フラストレーション(実在するもの)</h3>
+        <ul class="clean pain">
+          <li><b>帰属の穴(最重要)</b>: コンソールからの承認決定が IAP アイデンティティでなく <code>getpass.getuser()</code> またはリテラル <code>"console"</code> として記録される(<code>src/syros/console/api.py:163</code> の <code>_decided_by()</code>)。「誰が許可したか」を証明できない限り、監査証跡の主張は成立しない。</li>
+          <li>BigQuery エクスポートは<b>スナップショット</b> — 最後のエクスポート以降の行動は SQL では見えない。</li>
+          <li>UI にフリート横断検索がなく、定期スイープのたびに SQL を書く必要がある。</li>
+          <li>ポリシー違反(シークレットパターン等)の自動フラグはない — 検知は人力クエリ頼み。</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3 class="section" style="color:var(--sec)">Jobs to Be Done</h3>
+        <div class="jtbd"><b>定期監査またはインシデント対応</b>のとき、<b>特権的アクションの完全な記録を、実行者と承認者の身元付きで</b>参照したい。そうすれば<b>問題がなかったことを証明でき、あれば即座に特定できる</b>。(記録は実装済 — 欠けているのは承認者の帰属)</div>
+        <h3 class="section" style="color:var(--sec)">プロダクトへの要求</h3>
+        <div class="tags">
+          <span class="tag">承認決定への IAP 帰属(バグ修正・最優先)</span>
+          <span class="tag">フリート横断検索(UI)</span>
+          <span class="tag">ポリシーパターンの自動フラグ</span>
+          <span class="tag">エクスポートの鮮度改善 or 定期化</span>
+          <span class="tag">監査台帳(実装済)</span>
+          <span class="tag">IAM viewer での読み取り専用(設計どおり)</span>
+        </div>
+        <h3 class="section" style="color:var(--sec)">初版から削除したもの(理由付き)</h3>
+        <ul class="clean pain">
+          <li><b>アプリ内の監査ロール階層</b> — 認証は IAM/IAP に委譲する設計(README「Out of scope」)。要求は IAM の語彙で書くべき。</li>
+          <li><b>SOC2 型の組織コンプライアンスワークフロー前提</b> — 単一プロジェクト信頼境界のプロダクトにはスコープ過大。レビュー状態の管理は軽量なタグ付けとして再検討。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>ペルソナは生きたドキュメント — 実ユーザーインタビューで <span style="font-weight:700">仮説</span> ラベルの数値を検証し、更新すること。改訂根拠: docs/design/review-notes.md</footer>
+</div>
+</body>
+</html>
