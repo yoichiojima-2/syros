@@ -3,12 +3,13 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, Pencil, Play, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentForm } from "@/components/agent-form";
+import { SessionForm } from "@/components/session-form";
 import { useAction, useAgent, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { compact, relTime } from "@/lib/format";
@@ -51,6 +52,7 @@ function AgentInner() {
   const now = useNow();
   const [flash, act] = useAction();
   const [editing, setEditing] = useState(false);
+  const [running, setRunning] = useState(false);
 
   if (!name || missing) {
     return (
@@ -78,6 +80,10 @@ function AgentInner() {
           <AgentLine agent={agent} now={now} />
         </div>
         <div className="flex items-center gap-2">
+          <Button size="sm" disabled={!agent || running} onClick={() => setRunning(true)}>
+            <Play />
+            New session
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -105,6 +111,17 @@ function AgentInner() {
           </Button>
         </div>
       </div>
+
+      {running && (
+        <SessionForm
+          agent={name}
+          onCancel={() => setRunning(false)}
+          onCreated={(sid) => {
+            setRunning(false);
+            router.push(`/session?sid=${sid}`);
+          }}
+        />
+      )}
 
       {editing && agent ? (
         <AgentForm

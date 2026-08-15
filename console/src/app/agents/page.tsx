@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2 } from "lucide-react";
+import { Play, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,6 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AgentForm } from "@/components/agent-form";
+import { SessionForm } from "@/components/session-form";
 import { useAction, useAgents, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { relTime } from "@/lib/format";
@@ -27,6 +28,10 @@ export default function AgentsPage() {
   const router = useRouter();
   const [flash, run] = useAction();
   const [creating, setCreating] = useState(false);
+  // The agent a session is being started as, from its row's run button — the
+  // list doubles as the launcher, since picking the persona is most of the
+  // decision and it's already made here.
+  const [running, setRunning] = useState<string | null>(null);
 
   const act = (fn: () => Promise<string>) =>
     run(async () => {
@@ -52,6 +57,17 @@ export default function AgentsPage() {
           onSaved={(name) => {
             setCreating(false);
             router.push(`/agent?name=${encodeURIComponent(name)}`);
+          }}
+        />
+      )}
+      {running !== null && (
+        <SessionForm
+          key={running}
+          agent={running}
+          onCancel={() => setRunning(null)}
+          onCreated={(sid) => {
+            setRunning(null);
+            router.push(`/session?sid=${sid}`);
           }}
         />
       )}
@@ -81,12 +97,18 @@ export default function AgentsPage() {
                   <TableHead>Model</TableHead>
                   <TableHead>Tools</TableHead>
                   <TableHead>Updated</TableHead>
-                  <TableHead className="w-10" />
+                  <TableHead className="w-20" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {agents.map((agent) => (
-                  <AgentRow key={agent.name} agent={agent} now={now} act={act} />
+                  <AgentRow
+                    key={agent.name}
+                    agent={agent}
+                    now={now}
+                    act={act}
+                    onRun={() => setRunning(agent.name)}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -102,10 +124,12 @@ function AgentRow({
   agent,
   now,
   act,
+  onRun,
 }: {
   agent: AgentSummary;
   now: number;
   act: (fn: () => Promise<string>) => void;
+  onRun: () => void;
 }) {
   const router = useRouter();
   const href = `/agent?name=${encodeURIComponent(agent.name)}`;
@@ -130,7 +154,16 @@ function AgentRow({
       <TableCell className="text-xs text-muted-foreground">
         {relTime(agent.updated_at, now)}
       </TableCell>
-      <TableCell className="w-10 text-right" onClick={(e) => e.stopPropagation()}>
+      <TableCell className="w-20 text-right" onClick={(e) => e.stopPropagation()}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 hover:text-primary"
+          title={`Start a session as ${agent.name}`}
+          onClick={onRun}
+        >
+          <Play />
+        </Button>
         <Button
           variant="ghost"
           size="icon"
