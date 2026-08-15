@@ -138,16 +138,22 @@ workflows/{name}
       },                            [] = a root task (starts immediately)
       ...
     ]
+    options: {...}                  shared defaults for every task (the layer a
+                                    5-task workflow states "workspace: x" in once)
     schedule: { cron, timezone } | null    null = manual-only (run_now)
-    enabled: bool
+    enabled: bool                   false pauses the schedule; run_now still works
     next_run_at                     epoch seconds; the tick's only cursor (as today)
-    last_run_at, last_run_id, last_error, runs, skips
+    last_run_at, last_run_id, last_error
+    run_count, skip_count           display counters ("runs" would collide with
+                                    the runs/ subcollection)
     created_by
 
 workflows/{name}/runs/{run_id}
     trigger: "schedule" | "manual"
     status: "running" | "succeeded" | "failed"
     started_at, finished_at
+    spec: [...]                     the workflow's tasks array captured at launch —
+                                    advancement never re-reads the (editable) workflow
     tasks: {                        per-task state, the advancement transaction target
       research: { status: "pending"|"running"|"succeeded"|"failed"|"skipped",
                   session_id, result, started_at, finished_at },
@@ -163,10 +169,20 @@ sessions/{id}                       gains provenance fields (replacing `deployme
 
 Notes:
 
-- **Task options resolve exactly like today's deployments**: at fire time,
-  `options_from_doc(task.options)` + `agent` ref through `agents.resolve`,
-  merged result snapshotted onto the session. Editing an agent or a workflow
-  changes future runs only. The step stays a thin binding —
+- **One merge rule, layers ordered by proximity to the run.** At fire time a
+  task's options resolve through the existing per-field merge
+  (`agents.merge`), most-specific layer winning:
+
+  ```
+  task.options ← workflow.options ← agent ← workspace ← settings/global ← "sonnet"
+  ```
+
+  This inserts exactly one layer (workflow defaults) into today's chain, in
+  the position the proximity rule dictates — a workflow saying "this pipeline
+  runs in workspace x on a $2 budget" outranks the persona's stored defaults,
+  just as a deployment's `run_options` outrank its agent today. The merged
+  result is snapshotted onto the session as always; editing an agent or a
+  workflow changes future runs only. The task stays a thin binding —
   `{who, what, after}` — prompts never move into agent docs, agent config
   never moves into tasks.
 - **`depends_on` gives a DAG for free.** The default (`null` → previous task)
@@ -174,9 +190,42 @@ Notes:
   fan-out/fan-in is just naming dependencies (Databricks `depends_on`
   semantics: a task starts when all its dependencies succeeded; tasks with
   disjoint dependencies run in parallel).
-- **The run doc is small.** `result` is the task's final result text,
-  truncated to a hard cap (Databricks caps task values at 48 KiB; same order
-  here) — it exists for prompt templating and display, not as a data bus.
+- **The run doc is small, and orchestration-only.** The run doc is
+  authoritative for one thing: which tasks may start (statuses + the
+  advancement transaction). Sessions stay authoritative for content — journal,
+  audit, cost. The only content the run doc ever copies is `result`, the
+  task's final result text truncated to a hard cap (Databricks caps task
+  values at 48 KiB; same order here), and it exists for prompt templating and
+  display, not as a data bus.
+
+## Structural invariants
+
+The rules that keep the model clean as it grows; a change that breaks one of
+these needs this doc updated first.
+
+1. **One noun, one responsibility.** Agent = who. Workflow = what + when.
+   Workspace = where. Session = one execution's content. Run = one firing's
+   orchestration state. `AgentOptions` = the settings vocabulary all of them
+   share. No noun stores another's data (the near-exception is the workflow's
+   scheduler cursor — `next_run_at` and the display counters — which is the
+   schedule's own state, same as deployments today).
+2. **References point one way, by name, resolved at fire time.** Workflow →
+   agent (per task); session → workflow/run/task (provenance); options →
+   workspace. Nothing stores back-pointers or member lists — a workflow's
+   run history is a query on its runs, an agent's usage is a query on
+   sessions, exactly as workspace members are already derived, never stored.
+3. **One merge rule.** Every defaults layer goes through the same per-field
+   merge in the same proximity order. New layering needs (per-run parameter
+   overrides, say) must join that chain, not invent a second mechanism.
+4. **Every execution is a session.** There is no second execution primitive:
+   a workflow run is N ordinary sessions plus one small orchestration doc.
+   Anything sessions already give (approvals, audit, rewind, kill, tail)
+   works on workflow tasks for free, and anything new added to sessions
+   accrues to workflows without workflow code changing.
+5. **Definitions are immutable to running work.** Options resolve and
+   snapshot at session creation; a run captures its task list at launch.
+   Editing an agent or workflow affects future runs only — no doc is ever
+   read mid-run to decide what already-started work means.
 
 ## Passing data between tasks
 
