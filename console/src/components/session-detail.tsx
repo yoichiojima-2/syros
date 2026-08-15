@@ -104,8 +104,9 @@ export function SessionDetail({ sid }: { sid: string }) {
       return allow ? "allowed" : "denied";
     });
 
-  const sendPrompt = (text: string) =>
-    run(async () => {
+  const sendPrompt = async (text: string) => {
+    let failed = false;
+    await run(async () => {
       setPending((prev) => [...prev, text]);
       try {
         const result = await post<{ triggered: boolean }>(`/api/sessions/${sid}/prompt`, { text });
@@ -116,9 +117,14 @@ export function SessionDetail({ sid }: { sid: string }) {
           const i = prev.lastIndexOf(text);
           return i === -1 ? prev : [...prev.slice(0, i), ...prev.slice(i + 1)];
         });
+        failed = true;
         throw err;
       }
     });
+    // run() turns the failure into a flash and resolves; rejecting here is what
+    // hands the typed prompt back to the composer instead of eating it.
+    if (failed) throw new Error("prompt not sent");
+  };
 
   const interrupt = () =>
     run(async () => {

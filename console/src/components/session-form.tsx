@@ -36,13 +36,19 @@ const TABS: [Mode, string][] = [
  *  replace the agent's entire allowlist), so the agent tab sends the agent's
  *  stored options untouched and shows them read-only instead. Starting a
  *  session here is what a client's query() does — the session is ordinary, and
- *  the transcript takes over once the job runs. */
+ *  the transcript takes over once the job runs.
+ *
+ *  Passing `agent` pins the form to that agent: the tabs and the picker drop
+ *  away, since the caller (the agent page) already made that choice and all
+ *  that's left to decide is the prompt. */
 export function SessionForm({
   onCreated,
   onCancel,
+  agent: pinned,
 }: {
   onCreated: (sessionId: string) => void;
   onCancel: () => void;
+  agent?: string;
 }) {
   const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
@@ -50,15 +56,15 @@ export function SessionForm({
   const draft = useOptionsDraft();
   const [mode, setMode] = useState<Mode>("agent");
   const [prompt, setPrompt] = useState("");
-  const [agent, setAgent] = useState("");
+  const [agent, setAgent] = useState(pinned ?? "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   // With no stored agents the agent tab is a dead end, so land on Default.
   const noAgents = agents !== null && agents.length === 0;
   useEffect(() => {
-    if (noAgents) setMode("default");
-  }, [noAgents]);
+    if (noAgents && !pinned) setMode("default");
+  }, [noAgents, pinned]);
 
   const selectedAgent = (agents ?? []).find((a) => a.name === agent) ?? null;
   // Only the agent tab needs more than a prompt.
@@ -105,32 +111,37 @@ export function SessionForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New session</CardTitle>
+        <CardTitle>{pinned ? `New session as ${pinned}` : "New session"}</CardTitle>
         <CardDescription>
           Starts a sandbox run now. Follow-up prompts go to the same session from its transcript.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="space-y-4">
-          <div className="flex items-center gap-1 rounded-lg bg-secondary p-0.5 w-fit" role="tablist">
-            {TABS.map(([tab, label]) => (
-              <button
-                key={tab}
-                type="button"
-                role="tab"
-                aria-selected={mode === tab}
-                onClick={() => setMode(tab)}
-                className={cn(
-                  "rounded-md px-3 py-1 text-[12px] font-medium transition-colors",
-                  mode === tab
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          {!pinned && (
+            <div
+              className="flex items-center gap-1 rounded-lg bg-secondary p-0.5 w-fit"
+              role="tablist"
+            >
+              {TABS.map(([tab, label]) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === tab}
+                  onClick={() => setMode(tab)}
+                  className={cn(
+                    "rounded-md px-3 py-1 text-[12px] font-medium transition-colors",
+                    mode === tab
+                      ? "bg-card text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <Field label="Prompt">
             <Textarea
               value={prompt}
@@ -151,14 +162,18 @@ export function SessionForm({
           {mode === "agent" ? (
             <>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-                <Field label="Agent" hint="runs with its stored options">
-                  <ChoiceField
-                    value={agent}
-                    onChange={setAgent}
-                    choices={(agents ?? []).map((a) => a.name)}
-                    noneLabel="pick one…"
-                  />
-                </Field>
+                {/* Pinned, the agent is already named in the title — only the
+                    budget is still open. */}
+                {!pinned && (
+                  <Field label="Agent" hint="runs with its stored options">
+                    <ChoiceField
+                      value={agent}
+                      onChange={setAgent}
+                      choices={(agents ?? []).map((a) => a.name)}
+                      noneLabel="pick one…"
+                    />
+                  </Field>
+                )}
                 <Field label="Budget (USD)" hint="per-run cap">
                   <Input
                     value={draft.budget}
