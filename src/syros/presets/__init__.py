@@ -108,7 +108,8 @@ CATALOG: tuple[Preset, ...] = (
         description=(
             "Shared workspace for the example research agents. Its CLAUDE.md loads as project"
             " memory for every session that runs under it, and its stored options (model,"
-            " budget cap) are the workspace layer of the option-resolution chain."
+            " budget cap, and an install list naming both example skills) are the workspace"
+            " layer of the option-resolution chain."
         ),
         spec={
             "name": "research",
