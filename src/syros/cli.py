@@ -19,7 +19,7 @@ syros agents create <name> --system-prompt "..." --allow Read --allow Bash [--bi
 syros agents show|update|delete <name>
 syros workflows                         list workflows and their next run
 syros workflows create <name> [--cron "0 9 * * *"] --prompt "..." [--agent <name>] [--bigquery]
-syros workflows create <name> --tasks tasks.json   define a chain (- for stdin)
+syros workflows create <name> --tasks tasks.json  a chain instead (- for stdin)
 syros workflows runs <name>             run history for one workflow, task by task
 syros workflows show|run|pause|resume|delete <name>
 syros tick                              advance active runs, fire every due workflow
