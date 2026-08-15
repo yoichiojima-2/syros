@@ -11,7 +11,14 @@ import { useAction, useNow, useSkillFiles } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime } from "@/lib/format";
 import type { OkResponse } from "@/lib/types";
-import { entriesFromDrop, filesFromInput, readAsBase64, type PickedFile } from "@/lib/upload";
+import {
+  entriesFromDrop,
+  filesFromInput,
+  ignored,
+  MAX_UPLOAD_BYTES,
+  readAsBase64,
+  type PickedFile,
+} from "@/lib/upload";
 import { cn } from "@/lib/utils";
 
 // One skill (skills/{name}/ in the bucket, or a workspace's own set with ?workspace=),
@@ -57,23 +64,37 @@ function SkillInner() {
   };
 
   // Files land at their relative path, so dropping a folder onto an open skill
-  // adds it as a subdirectory of that skill.
-  const upload = (picked: PickedFile[]) => {
-    if (!name || !picked.length) return;
+  // adds it as a subdirectory of that skill. Same filters as a skill upload:
+  // tooling state never belongs in a skill, and an oversized file would 413
+  // midway through the batch.
+  const upload = (all: PickedFile[]) => {
+    if (!name || !all.length) return;
+    const picked = all.filter((f) => !ignored(f.path) && f.file.size <= MAX_UPLOAD_BYTES);
+    const dropped = all.length - picked.length;
+    if (!picked.length) {
+      run(async () => {
+        throw new Error(`nothing to upload — ${dropped} file(s) skipped`);
+      });
+      return;
+    }
     run(async () => {
-      for (const { path, file } of picked) {
-        await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
-          name: path,
-          content: await readAsBase64(file),
-          encoding: "base64",
-          ...(workspace ? { workspace } : {}),
-        });
+      try {
+        for (const { path, file } of picked) {
+          await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
+            name: path,
+            content: await readAsBase64(file),
+            encoding: "base64",
+            ...(workspace ? { workspace } : {}),
+          });
+        }
+      } finally {
+        refresh();
       }
-      refresh();
       if (picked.length === 1) select(picked[0].path);
+      const tail = dropped ? `, ${dropped} skipped` : "";
       return picked.length === 1
-        ? `uploaded ${picked[0].path}`
-        : `uploaded ${picked.length} files`;
+        ? `uploaded ${picked[0].path}${tail}`
+        : `uploaded ${picked.length} files${tail}`;
     });
   };
 

@@ -5,7 +5,15 @@ import { FolderUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { post } from "@/lib/api";
 import type { OkResponse } from "@/lib/types";
-import { entriesFromDrop, filesFromInput, readAsBase64, type PickedFile } from "@/lib/upload";
+import {
+  entriesFromDrop,
+  filesFromInput,
+  ignored,
+  MAX_UPLOAD_BYTES,
+  readAsBase64,
+  type PickedFile,
+} from "@/lib/upload";
+import { bytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // Uploading a directory is the main way to create a skill: a skill *is* a
@@ -19,25 +27,23 @@ import { cn } from "@/lib/utils";
  *  fails before the first upload rather than midway through one. */
 const SKILL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
-/** Mirror of IGNORED in src/syros/skills.py: a skill folder usually sits in a
- *  checkout, and .git/ or .DS_Store is not part of the skill. */
-function ignored(path: string): boolean {
-  return path
-    .split("/")
-    .some((part) => part.startsWith(".") || part === "__pycache__" || part === "node_modules");
-}
-
 /** Group a picked/dropped tree by top-level folder and upload each as a skill.
- *  Every group is validated before anything is written. */
+ *  Every group is validated before anything is written, and oversized files are
+ *  skipped and reported rather than 413-ing mid-batch — same as `skills push`. */
 export async function uploadSkillFolders(
   picked: PickedFile[],
   workspace: string | null,
 ): Promise<string> {
   const groups = new Map<string, PickedFile[]>();
+  const skipped: string[] = [];
   for (const item of picked) {
     if (ignored(item.path)) continue;
     const slash = item.path.indexOf("/");
     if (slash < 0) continue; // a loose file carries no skill name
+    if (item.file.size > MAX_UPLOAD_BYTES) {
+      skipped.push(item.path);
+      continue;
+    }
     const name = item.path.slice(0, slash);
     const group = groups.get(name) ?? [];
     group.push({ path: item.path.slice(slash + 1), file: item.file });
@@ -64,9 +70,10 @@ export async function uploadSkillFolders(
   }
   const names = [...groups.keys()];
   const files = `${count} file${count === 1 ? "" : "s"}`;
+  const tail = skipped.length ? `, ${skipped.length} skipped (over ${bytes(MAX_UPLOAD_BYTES)})` : "";
   return names.length === 1
-    ? `uploaded skill ${names[0]} (${files})`
-    : `uploaded ${names.length} skills (${files})`;
+    ? `uploaded skill ${names[0]} (${files})${tail}`
+    : `uploaded ${names.length} skills (${files})${tail}`;
 }
 
 interface UploadProps {
@@ -100,10 +107,13 @@ export function SkillUpload({ workspace = null, onUploaded, run }: UploadProps) 
           const picked = filesFromInput(e.target.files);
           // reset so re-picking the same folder fires change again
           e.target.value = "";
+          // refresh either way: a failure partway through still wrote files
           run(async () => {
-            const message = await uploadSkillFolders(picked, workspace);
-            onUploaded();
-            return message;
+            try {
+              return await uploadSkillFolders(picked, workspace);
+            } finally {
+              onUploaded();
+            }
           });
         }}
       />
@@ -141,10 +151,13 @@ export function SkillDropZone({
         setDragging(false);
         // entriesFromDrop reads dataTransfer synchronously before it awaits
         const picked = entriesFromDrop(e);
+        // refresh either way: a failure partway through still wrote files
         run(async () => {
-          const message = await uploadSkillFolders(await picked, workspace);
-          onUploaded();
-          return message;
+          try {
+            return await uploadSkillFolders(await picked, workspace);
+          } finally {
+            onUploaded();
+          }
         });
       }}
     >

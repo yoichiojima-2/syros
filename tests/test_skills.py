@@ -60,7 +60,7 @@ def make_skill_dir(root, name: str = "pdf", files: dict[str, bytes] | None = Non
 def test_push_uploads_the_directory(tmp_path, capture_writes):
     path = make_skill_dir(tmp_path, files={"scripts/fill.py": b"print()", "notes.md": b"hi"})
     summary = skills.push("p", "b", path, max_bytes=1024)
-    assert summary == {"skill": "pdf", "files": 3, "skipped": []}
+    assert summary == {"skill": "pdf", "files": 3, "deleted": 0, "skipped": []}
     assert sorted(f for _, f, _ in capture_writes) == ["SKILL.md", "notes.md", "scripts/fill.py"]
     assert all(name == "pdf" for name, _, _ in capture_writes)
     assert ("pdf", "scripts/fill.py", b"print()") in capture_writes
@@ -136,20 +136,6 @@ def test_push_skips_oversized_files(tmp_path, capture_writes):
     assert [f for _, f, _ in capture_writes] == ["SKILL.md"]
 
 
-def test_push_merges_unless_replacing(tmp_path, monkeypatch, capture_writes):
-    cleared: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(
-        skills,
-        "delete_skill",
-        lambda project, bucket, name, workspace=None: cleared.append((name, workspace)),
-    )
-    path = make_skill_dir(tmp_path)
-    skills.push("p", "b", path, max_bytes=1024)
-    assert cleared == []
-    skills.push("p", "b", path, max_bytes=1024, replace=True, workspace="ws")
-    assert cleared == [("pdf", "ws")]
-
-
 class FakeBlob:
     def __init__(self, bucket, name):
         self.bucket = bucket
@@ -176,8 +162,9 @@ class FakeBucket:
         return [FakeBlob(self, n) for n in sorted(self.objects) if n.startswith(prefix)]
 
 
-def test_push_lands_blobs_under_the_skill_prefix(tmp_path, monkeypatch):
-    """push through the real write: keys, scoping, and replace against a bucket."""
+@pytest.fixture
+def bucket(monkeypatch):
+    """A bucket behind the real write, so push runs end to end."""
     from google.cloud import storage
 
     fake = FakeBucket()
@@ -185,29 +172,54 @@ def test_push_lands_blobs_under_the_skill_prefix(tmp_path, monkeypatch):
         storage, "Client", lambda project=None: type("C", (), {"bucket": lambda s, n: fake})()
     )
     monkeypatch.setattr(skills, "write_file", REAL_WRITE_FILE)
+    return fake
+
+
+def test_push_lands_blobs_under_the_skill_prefix(tmp_path, bucket):
     path = make_skill_dir(tmp_path, files={"scripts/fill.py": b"print()"})
 
     skills.push("p", "b", path, max_bytes=1024)
-    assert sorted(fake.objects) == ["skills/pdf/SKILL.md", "skills/pdf/scripts/fill.py"]
-    assert fake.objects["skills/pdf/SKILL.md"] == (b"# pdf", "text/markdown")
+    assert sorted(bucket.objects) == ["skills/pdf/SKILL.md", "skills/pdf/scripts/fill.py"]
+    assert bucket.objects["skills/pdf/SKILL.md"] == (b"# pdf", "text/markdown")
 
     skills.push("p", "b", path, max_bytes=1024, workspace="ws")
-    assert "team-skills/ws/pdf/SKILL.md" in fake.objects
+    assert "team-skills/ws/pdf/SKILL.md" in bucket.objects
 
-    # replace drops what the local directory no longer carries
+
+def test_push_merges_unless_replacing(tmp_path, bucket):
+    path = make_skill_dir(tmp_path, files={"scripts/fill.py": b"print()"})
+    skills.push("p", "b", path, max_bytes=1024)
+    skills.push("p", "b", path, max_bytes=1024, workspace="ws")
+
     (path / "scripts" / "fill.py").unlink()
-    skills.push("p", "b", path, max_bytes=1024, replace=True)
-    assert sorted(n for n in fake.objects if n.startswith("skills/")) == ["skills/pdf/SKILL.md"]
-    assert "team-skills/ws/pdf/scripts/fill.py" in fake.objects  # the other scope is untouched
+    assert skills.push("p", "b", path, max_bytes=1024)["deleted"] == 0  # a merge keeps it
+    assert "skills/pdf/scripts/fill.py" in bucket.objects
+
+    summary = skills.push("p", "b", path, max_bytes=1024, replace=True)
+    assert summary["deleted"] == 1
+    assert sorted(n for n in bucket.objects if n.startswith("skills/")) == ["skills/pdf/SKILL.md"]
+    assert "team-skills/ws/pdf/scripts/fill.py" in bucket.objects  # the other scope is untouched
 
 
-def test_push_replace_tolerates_a_skill_that_does_not_exist_yet(tmp_path, monkeypatch):
-    def missing(project, bucket, name, workspace=None):
-        raise FileNotFoundError(f"gs://{bucket}/skills/{name}/")
+def test_push_replace_keeps_a_file_it_had_to_skip(tmp_path, bucket):
+    """The dangerous case: prune what the walk covered, never what it skipped.
+    Clearing the prefix first would delete the bucket's only copy of a file
+    that grew past the limit — and report success while doing it."""
+    path = make_skill_dir(tmp_path, files={"big.bin": b"x" * 100})
+    skills.push("p", "b", path, max_bytes=1024)
+    assert "skills/pdf/big.bin" in bucket.objects
 
-    monkeypatch.setattr(skills, "delete_skill", missing)
+    (path / "big.bin").write_bytes(b"x" * 2000)  # now over the limit
+    summary = skills.push("p", "b", path, max_bytes=1024, replace=True)
+    assert summary["skipped"] == [{"file": "big.bin", "size": 2000}]
+    assert summary["deleted"] == 0
+    assert sorted(bucket.objects) == ["skills/pdf/SKILL.md", "skills/pdf/big.bin"]
+
+
+def test_push_replace_on_a_skill_that_does_not_exist_yet(tmp_path, bucket):
     summary = skills.push("p", "b", make_skill_dir(tmp_path), max_bytes=1024, replace=True)
-    assert summary["files"] == 1
+    assert (summary["files"], summary["deleted"]) == (1, 0)
+    assert sorted(bucket.objects) == ["skills/pdf/SKILL.md"]
 
 
 def test_sync_official_detects_skills(capture_writes):

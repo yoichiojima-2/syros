@@ -114,7 +114,7 @@ def push(
     success and mount nothing. Oversized files are skipped and reported rather
     than fatal — the same bargain sync_official makes, keeping everything a
     push writes console-editable. Merges by default (like artifacts.push);
-    `replace` clears the prefix first so a re-push drops files deleted locally.
+    `replace` prunes afterwards so a re-push drops files deleted locally.
     """
     path = path.resolve()  # so `push .` names the skill after the directory, not ""
     if not path.exists():
@@ -137,14 +137,21 @@ def push(
             skipped.append({"file": relative.as_posix(), "size": size})
             continue
         uploads.append((relative.as_posix(), file))
-    if replace:
-        try:
-            delete_skill(project, bucket_name, skill, workspace)
-        except FileNotFoundError:
-            pass  # nothing there yet, so replacing is just a first push
     for file_name, file in uploads:
         write_file(project, bucket_name, skill, file_name, file.read_bytes(), workspace)
-    return {"skill": skill, "files": len(uploads), "skipped": skipped}
+    deleted = 0
+    if replace:
+        # Prune after uploading, never before: clearing the prefix first would
+        # leave the skill missing if an upload failed, and would delete the
+        # bucket's copy of a file this walk skipped for being oversized. Keep
+        # everything the directory still carries, skipped files included.
+        keep = {file_name for file_name, _ in uploads} | {s["file"] for s in skipped}
+        prefix = skill_prefix(skill, workspace)
+        for blob in _bucket(project, bucket_name).list_blobs(prefix=prefix):
+            if blob.name[len(prefix) :] not in keep:
+                blob.delete()
+                deleted += 1
+    return {"skill": skill, "files": len(uploads), "deleted": deleted, "skipped": skipped}
 
 
 def _fetch_official() -> bytes:

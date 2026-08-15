@@ -9,6 +9,19 @@ export interface PickedFile {
   file: File;
 }
 
+/** Mirror of MAX_PREVIEW_BYTES in src/syros/console/objects.py — the server's
+ *  per-file write cap. Checked here so one big file doesn't 413 midway through
+ *  a batch, leaving half a directory uploaded. */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/** Mirror of IGNORED in src/syros/skills.py: a skill folder usually sits in a
+ *  checkout, and .git/ or .DS_Store is not part of the skill. */
+export function ignored(path: string): boolean {
+  return path
+    .split("/")
+    .some((part) => part.startsWith(".") || part === "__pycache__" || part === "node_modules");
+}
+
 export function readAsBase64(picked: File): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
