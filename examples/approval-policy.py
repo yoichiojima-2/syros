@@ -47,6 +47,13 @@ READ_ONLY = {"Read", "Glob", "Grep"}
 WRITE_ROOT = "out"  # the only directory this policy lets the agent write into
 BANNED_COMMANDS = ("rm -rf", "sudo", "curl", "chmod 777")
 
+# A policy like this one expresses intent, not containment: substring matching
+# on a shell command and a path-segment check are both trivial to walk around
+# if something is actually trying to. What contains a run is the sandbox — a
+# throwaway Cloud Run execution with no Anthropic key, optionally behind a
+# default-deny egress firewall — plus the allowlist and the kill switch. Write
+# the policy for the honest-but-wrong case, and let the sandbox handle the rest.
+
 
 def _under_write_root(path: str) -> bool:
     """Paths arrive as the model wrote them — relative or absolute — so match on

@@ -78,12 +78,17 @@ def render(message: Message) -> str:
 
 async def main() -> None:
     options = AgentOptions(
-        system_prompt="You are terse. Use a tool at least once.",
+        system_prompt="You are terse.",
+        # No can_use_tool here, so a call outside this allowlist would sit on
+        # the approval queue until the gate times it out — hence a prompt that
+        # names the tools it should reach for. approval-policy.py is the other
+        # half of this story.
         allowed_tools=["Read", "Glob", "Grep"],
         permission_mode="default",
         max_turns=10,
     )
-    async for message in query(prompt="What files are here? Then summarize.", options=options):
+    prompt = "Use Glob to list the files here, read one of them, then summarize what you saw."
+    async for message in query(prompt=prompt, options=options):
         print(render(message))
         print("-" * 60)
 
