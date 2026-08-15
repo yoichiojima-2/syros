@@ -72,6 +72,29 @@ def test_connector_flag_unknown_name_rejected_by_validate():
         options.validate()
 
 
+async def test_skills_list_scopes_to_the_workspace(monkeypatch, capsys):
+    """`syros skills --workspace w` lists that workspace's skills, not the globals."""
+    from syros import cli
+    from syros.console import objects
+
+    seen: dict[str, str | None] = {}
+
+    class FakeObjects:
+        def __init__(self, project, bucket):
+            pass
+
+        async def skill_stats(self, workspace=None):
+            seen["workspace"] = workspace
+            return {"deploy": {"file_count": 1, "total_size": 12, "updated": None}}
+
+    monkeypatch.setattr(objects, "GcsObjects", FakeObjects)
+    await cli._skills(
+        SimpleNamespace(action="list", args=[], bucket="b", project="p", workspace="ops")
+    )
+    assert seen["workspace"] == "ops"
+    assert "deploy" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
@@ -144,30 +167,6 @@ async def test_skills_push_reports_a_bucket_error_without_a_traceback(monkeypatc
                 replace=False,
             )
         )
-
-
-async def test_skills_list_scopes_to_the_workspace(monkeypatch):
-    """--workspace was declared and threaded everywhere except the listing, so
-    `syros skills --workspace X` silently printed the global skills."""
-    from syros import cli
-
-    seen: list[str | None] = []
-
-    class FakeObjects:
-        def __init__(self, project, bucket): ...
-
-        async def skill_stats(self, workspace=None):
-            seen.append(workspace)
-            return {}
-
-    monkeypatch.setattr(
-        cli.env, "default_bucket", lambda bucket, project: bucket or f"{project}-syros"
-    )
-    monkeypatch.setattr("syros.console.objects.GcsObjects", FakeObjects)
-    await cli._skills(
-        SimpleNamespace(action="list", args=[], bucket="b", project="p", workspace="growth")
-    )
-    assert seen == ["growth"]
 
 
 async def test_skills_sync_rejects_a_workspace(monkeypatch):

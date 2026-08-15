@@ -5,6 +5,7 @@ import pytest
 import syros.remote
 from syros import workflows
 from syros.cron import next_after
+from syros.errors import SessionExists
 from syros.options import AgentOptions
 from syros.workflows import WorkflowError
 
@@ -185,6 +186,80 @@ async def test_task_validation():
         )
 
 
+async def test_concurrent_tasks_may_not_share_a_workspace():
+    store = FakeStore()
+    ws = {"workspace": "shared"}
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):  # two roots
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x", "options": ws, "depends_on": []},
+                {"id": "b", "prompt": "y", "options": ws, "depends_on": []},
+            ],
+        )
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):  # the workflow default
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x", "depends_on": []},
+                {"id": "b", "prompt": "y", "depends_on": []},
+            ],
+            defaults=AgentOptions(workspace="shared"),
+        )
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):  # a parallel branch
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x"},
+                {"id": "b", "prompt": "y", "options": ws, "depends_on": ["a"]},
+                {"id": "c", "prompt": "z", "options": ws, "depends_on": ["a"]},
+            ],
+        )
+    # different workspaces never contend, and neither do ordered tasks
+    await make_chain(
+        store,
+        [
+            {"id": "a", "prompt": "x", "options": ws, "depends_on": []},
+            {"id": "b", "prompt": "y", "options": {"workspace": "other"}, "depends_on": []},
+        ],
+        name="disjoint",
+    )
+    await make_chain(
+        store,
+        [{"id": "a", "prompt": "x"}, {"id": "b", "prompt": "y"}, {"id": "c", "prompt": "z"}],
+        name="linear",
+        defaults=AgentOptions(workspace="shared"),
+    )
+
+
+async def test_concurrent_tasks_may_not_share_an_agents_workspace():
+    store = FakeStore()
+    await store.create_agent("scribe", {"options": AgentOptions(workspace="shared").serialize()})
+    with pytest.raises(WorkflowError, match="workspace 'shared'"):
+        await make_chain(
+            store,
+            [
+                {"id": "a", "prompt": "x", "agent": "scribe", "depends_on": []},
+                {"id": "b", "prompt": "y", "agent": "scribe", "depends_on": []},
+            ],
+        )
+    # the task's own workspace wins over the agent's, as agents.resolve layers it
+    await make_chain(
+        store,
+        [
+            {"id": "a", "prompt": "x", "agent": "scribe", "depends_on": []},
+            {
+                "id": "b",
+                "prompt": "y",
+                "agent": "scribe",
+                "options": {"workspace": "other"},
+                "depends_on": [],
+            },
+        ],
+        name="layered",
+    )
+
+
 async def test_omitted_depends_on_chains_to_previous():
     store = FakeStore()
     await make_chain(store, [{"id": "a", "prompt": "x"}, {"id": "b", "prompt": "y"}])
@@ -349,6 +424,19 @@ async def test_terminated_run_does_not_block():
     store.sessions[sid]["disabled"] = True
     result = await workflows.tick(OPTS, store=store, now=now + 800)
     assert result["fired"]
+
+
+async def test_run_now_rejects_a_second_concurrent_run(no_job_trigger):
+    """One run per workflow at a time, off-cycle too: a second run would
+    contend for the same workspace lease and orphan the first from reconcile."""
+    store = FakeStore()
+    await make(store, cron=None)
+    run_id = await workflows.run_now("nightly", options=OPTS, store=store)
+    with pytest.raises(WorkflowError, match=run_id):
+        await workflows.run_now("nightly", options=OPTS, store=store)
+    # ...and it fires again once that run is done
+    await complete(store, task_state(store, "nightly", run_id, "main")["session_id"])
+    assert await workflows.run_now("nightly", options=OPTS, store=store) != run_id
 
 
 async def test_paused_workflow_never_fires(no_job_trigger):
@@ -537,6 +625,77 @@ async def test_workspace_busy_release_fails_task():
     run = await complete(store, first, result=None, stop_reason="workspace_busy")
     assert run["tasks"]["research"]["status"] == "failed"
     assert run["status"] == "failed"
+
+
+async def test_losing_the_create_race_keeps_the_live_task(no_job_trigger, monkeypatch):
+    store = FakeStore()
+    await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
+    run_id = await workflows.run_now("chain", options=OPTS, store=store)
+    sid = task_state(store, "chain", run_id, "research")["session_id"]
+    # rewind to a claim whose launcher had not created the session yet, so the
+    # reconcile pass re-launches it past the grace
+    task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
+    del store.sessions[sid]
+    winner = store.create_session
+
+    async def racing_create(session_id, *args, **kwargs):
+        await winner(session_id, *args, **kwargs)  # the other launcher gets there first
+        raise SessionExists(f"session {session_id} exists")
+
+    monkeypatch.setattr(store, "create_session", racing_create)
+    await workflows.tick(OPTS, store=store, now=time.time())
+    state = task_state(store, "chain", run_id, "research")
+    assert state["status"] == "running"  # the winner's session stands
+    assert state["session_id"] == sid
+    assert task_state(store, "chain", run_id, "report")["status"] == "pending"
+
+
+async def test_launch_failure_fails_the_task(no_job_trigger, monkeypatch):
+    """A launch that left no session behind fails its task with the real
+    reason — SessionExists is the only error that means "not ours"."""
+    store = FakeStore()
+    await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
+    run_id = await workflows.run_now("chain", options=OPTS, store=store)
+    sid = task_state(store, "chain", run_id, "research")["session_id"]
+    task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
+    del store.sessions[sid]
+
+    async def broken_create(*args, **kwargs):
+        raise ValueError("firestore is down")
+
+    monkeypatch.setattr(store, "create_session", broken_create)
+    await workflows.tick(OPTS, store=store, now=time.time())
+    run = store.runs["chain"][run_id]
+    assert run["tasks"]["research"]["status"] == "failed"
+    assert "firestore is down" in run["tasks"]["research"]["error"]
+    assert run["tasks"]["report"]["status"] == "skipped"
+    assert run["status"] == "failed"
+
+
+async def test_launch_failure_leaves_an_existing_session_alone(no_job_trigger, monkeypatch):
+    """A launcher that fails once the session is there must not fail the task:
+    the session may be another launcher's, already prompted and running. The
+    reconcile pass settles it from the session's own state instead."""
+    store = FakeStore()
+    await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
+    run_id = await workflows.run_now("chain", options=OPTS, store=store)
+    sid = task_state(store, "chain", run_id, "research")["session_id"]
+    task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
+    del store.sessions[sid]
+    create = store.create_session
+
+    async def create_then_fail(*args, **kwargs):
+        await create(*args, **kwargs)
+        raise ValueError("lost the response")
+
+    monkeypatch.setattr(store, "create_session", create_then_fail)
+    await workflows.tick(OPTS, store=store, now=time.time())
+    assert task_state(store, "chain", run_id, "research")["status"] == "launching"
+    assert store.runs["chain"][run_id]["status"] == "running"
+    # the session released as usual (it was the winner's): the run moves on
+    monkeypatch.setattr(store, "create_session", create)
+    await complete(store, sid, result="42")
+    assert task_state(store, "chain", run_id, "research")["status"] == "succeeded"
 
 
 # --- reconcile ---

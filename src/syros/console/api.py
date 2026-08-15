@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .. import agents, remote, workflows, workspaces
+from .. import agents, presets, remote, workflows, workspaces
 from .. import connectors as connectors_mod
 from ..journal import MAIN_BRANCH, active_branch
 from ..names import validate_name, validate_tags
@@ -122,7 +122,7 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
-            "workspace": options.get("workspace") or options.get("team"),
+            "workspace": options.get("workspace"),
             "title": session.get("title"),
             "summary": session.get("summary"),
             "created_by": session.get("created_by"),
@@ -639,7 +639,7 @@ class ConsoleAPI:
         by_workspace: dict[str, list[dict[str, Any]]] = {}
         for session in sessions:
             options = session.get("options") or {}
-            name = options.get("workspace") or options.get("team") or None
+            name = options.get("workspace") or None
             if name:
                 by_workspace.setdefault(name, []).append(
                     {
@@ -903,6 +903,29 @@ class ConsoleAPI:
     async def sync_official_skills(self) -> dict[str, Any]:
         """Seed skills/ from the official anthropics/skills repo (editable copies)."""
         summary = await self._bucket_objects().sync_official_skills()
+        return {"now": time.time(), "ok": True, **to_jsonable(summary)}
+
+    # --- presets ---
+
+    async def presets(self) -> dict[str, Any]:
+        """The example catalog, each row flagged with whether it exists already."""
+        rows = await presets.status(store=self._store, objects=self._bucket_objects())
+        return {"now": time.time(), "presets": to_jsonable(rows)}
+
+    async def install_presets(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Create the example objects. `names` omitted installs the whole catalog;
+        anything that already exists is skipped unless `force` is set."""
+        names = body.get("names")
+        if names is not None and not isinstance(names, list):
+            raise ValueError("names must be a list of preset names")
+        summary = await presets.install(
+            names,
+            store=self._store,
+            objects=self._bucket_objects(),
+            options=self._options,
+            created_by=_decided_by(),
+            force=bool(body.get("force")),
+        )
         return {"now": time.time(), "ok": True, **to_jsonable(summary)}
 
     # --- shared artifact spaces ---

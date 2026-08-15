@@ -55,6 +55,9 @@ async with SyrosClient(AgentOptions()) as client:
     # client.interrupt() / client.terminate() / AgentOptions(resume=client.session_id)
 ```
 
+Runnable versions of both — plus the message types, an approval policy, and resume/rewind
+— are in [`examples/`](examples/), indexed in [examples/README.md](examples/README.md).
+
 Ops without a UI:
 
 ```
@@ -83,13 +86,13 @@ can pull. Nothing new to run or deploy; sharing is the existing IAM story (grant
 `roles/storage.objectViewer` on the bucket):
 
 ```
-syros artifacts                              # list spaces
-syros artifacts team                         # list files in a space
-syros artifacts team push report.md out/     # upload files or directories
-syros artifacts team pull ./downloads        # download a space
-syros artifacts team publish sess_... report.md
-                                             # copy straight out of a session's
-                                             # checkpointed workspace (server-side)
+syros artifacts                             # list spaces
+syros artifacts reports                     # list files in a space
+syros artifacts reports push report.md out/ # upload files or directories
+syros artifacts reports pull ./downloads    # download a space
+syros artifacts reports publish sess_... report.md
+                                            # copy straight out of a session's
+                                            # checkpointed workspace (server-side)
 ```
 
 Agents join the same spaces via `AgentOptions(artifacts=...)`: each space is mounted at
@@ -99,8 +102,8 @@ name for one read-write space, or a dict of modes; `"ro"` restores without check
 back, for sessions that consume shared inputs but must not publish:
 
 ```python
-AgentOptions(artifacts="team")                      # read-write
-AgentOptions(artifacts={"team": "rw", "ref": "ro"})
+AgentOptions(artifacts="reports")                      # read-write
+AgentOptions(artifacts={"reports": "rw", "ref": "ro"})
 ```
 
 Or with one — the console is a pure Firestore client (no server-side state):
@@ -132,6 +135,50 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
 Docker image builds its own copy in a Node stage, so deploys need no local build.
 
+## Presets
+
+A fresh install is empty, and a blank system-prompt textarea is a bad first look at a
+platform whose interesting parts — the option-resolution chain, workspace project memory,
+task DAGs, skill scoping — are invisible until something is using them. `syros presets`
+ships a small catalog of worked examples and creates them as ordinary objects:
+
+```
+syros presets                        # the catalog, and what's already installed
+syros presets show research-pipeline # one preset's full definition, as JSON
+syros presets install                # create everything
+syros presets install research-pipeline   # or one, with whatever it references
+```
+
+The console has the same action behind an **Install examples** button in the Agents,
+Workflows, and Workspaces empty states.
+
+| preset | kind | what it demonstrates |
+|---|---|---|
+| `research` | workspace | stored option defaults, and a `CLAUDE.md` that loads as project memory |
+| `brief` | skill | a two-file skill (`SKILL.md` + `reference/`), mounted into every session |
+| `research-brief` | skill | the same skill name scoped to `research`, shadowing the global one |
+| `researcher` | agent | web tools, an artifact space, a budget cap, no workspace |
+| `writer` | agent | workspace-bound editing under `acceptEdits` |
+| `reviewer` | agent | least privilege — read-only tools, writes denied outright |
+| `analyst` | agent | the built-in BigQuery MCP server with `mcp__bq__query` pre-allowed |
+| `daily-brief` | workflow | one task on a cron — the classic scheduled prompt |
+| `research-pipeline` | workflow | a five-task DAG: fan-out, fan-in, and result piping |
+
+Installed presets are **yours** — ordinary documents and blobs in the usual collections,
+with no version pointer back to the catalog and nothing that re-syncs them. Edit or delete
+them freely. Re-running the installer skips whatever already exists (so a partial install
+completes cleanly), and `--force` is the explicit opt-out that replaces definitions and
+files, including edits you made.
+
+Two deliberate choices worth knowing. **Scheduled presets install paused**: `daily-brief`
+carries a cron but arrives disabled, so clicking Install never starts spending — resume it
+once its prompt says what you actually want briefed, and the next slot re-bases on the
+current time. And **`research-pipeline` shares an artifact space rather than a workspace**:
+its two middle tasks run in parallel, and a workspace's exclusive lease cannot be held by
+both — `workflows.create` rejects that definition outright. Artifact spaces take no lease.
+The serial tail of the chain does take the workspace, from the agents it names, where
+one-at-a-time is the point.
+
 ## Agents
 
 An agent is a named, stored run configuration — the persona a session runs as: system
@@ -162,6 +209,8 @@ syros agents show|update|delete reviewer
 
 The console has an Agents view with the same create/edit/delete surface, and sessions
 show which agent they ran as. Workflow tasks can reference an agent too (below).
+`syros presets install` creates four worked examples if you'd rather start from something
+than from a blank form — see [Presets](#presets).
 
 ### The default agent
 
@@ -327,15 +376,18 @@ The console does the same thing from the browser: drop a folder onto the Skills 
 (or a workspace's skills card), or use the folder picker.
 
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
-tarball and copies each skill into the bucket — nothing is vendored, and the copies are
-editable snapshots: re-syncing overwrites official files but never touches skills (or
-files) the tarball doesn't carry; it always seeds the global prefix, so it takes no
-`--workspace`. Skills come in two scopes: global (`skills/`, mounted
-into every run) and per-workspace (`team-skills/{workspace}/`, mounted only for that workspace's
-sessions, shadowing a same-named global). The console has a Skills view with the same
-surface as workspaces — browse a skill, edit a file in place, upload, or delete the
-skill; a workspace's skills live on its workspace page. `syros skills --workspace
-<name>` scopes both the CLI and where a push lands.
+tarball and copies each skill into the bucket — Anthropic's skills are fetched, never
+vendored, and the copies are editable snapshots: re-syncing overwrites official files but
+never touches skills (or files) the tarball doesn't carry. (The two skills under
+[Presets](#presets) are the exception: those are syros' own, so they ship as package data
+rather than being fetched — same editable-copy semantics once installed.) `sync` always
+seeds the global prefix, so it takes no `--workspace`. Skills come in
+two scopes: global (`skills/`, mounted into every run) and per-workspace
+(`workspaces/{name}/skills/`, mounted only for that workspace's sessions, shadowing a
+same-named global). The console has a Skills view with the same surface as workspaces —
+browse a skill, edit a file in place, upload, or delete the skill; a workspace's skills
+live on its workspace page. `syros skills --workspace <name>` scopes both the CLI and
+where a push lands.
 
 ## Analysis
 
@@ -485,6 +537,9 @@ gcloud builds submit --tag asia-northeast1-docker.pkg.dev/YOUR_PROJECT/syros/run
 # 3. Smoke test
 export SYROS_PROJECT=YOUR_PROJECT
 uv run python examples/hello.py
+
+# 4. Something to look at: example agents, a workspace, workflows and skills
+syros presets install
 ```
 
 Cloud Run resolves an image tag at deploy time, so a fresh project applies twice: the first
@@ -539,6 +594,29 @@ container is the same for everyone, so approvals made through the deployed conso
 attributed to the container's user, not the human — Cloud Run's access logs are the record
 of who acted.
 
+### Upgrading an older installation
+
+The workspace concept was once called a team, and the layout above is newer than the
+rename. An installation deployed before either carries the old shapes — skills under a
+top-level `team-skills/` prefix, workspace docs in a `teams/` Firestore collection,
+workspace files directly under `workspaces/{name}/`, and a `"team"` key inside stored
+option dicts. Nothing reads those names any more, so move the data forward once:
+
+```sh
+syros migrate --dry-run   # print the plan: every object move and doc rewrite
+syros migrate             # do it
+```
+
+It is idempotent — every step skips what is already in place, so re-running it (or
+running it on a fresh installation) is a no-op. It refuses to start while a workspace
+lease is live, since the session holding it is checkpointing to the prefix being moved
+(`--force` overrides). Stored options are rewritten everywhere they are read back:
+sessions, agents, workspaces, global settings, workflows, and the options each
+in-flight workflow run captured at launch. Objects already sitting under a workspace's
+`ws/` or `skills/` are left alone and reported as a count; a name syros would never
+have written (say, a hand-uploaded `workspaces/Old Team/`) is named in the report and
+left for you to move.
+
 ## How a run works
 
 1. `query()` writes `sessions/{sid}` + the prompt to the inbox, then triggers the Cloud Run
@@ -570,19 +648,31 @@ doing nothing.
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
-| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`), the workspace's skills, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
+| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/ws/`), the workspace's skills, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
 | `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
 ## Workspaces and global settings
 
 A workspace is a shared directory with members: one GCS-backed working directory
-(`workspaces/{name}/`, exclusive lease — one live run at a time), a `CLAUDE.md` at its
-root loaded as project memory for every run under the workspace, the workspace's own
-skills (`team-skills/{name}/` — the GCS prefix keeps its pre-rename name; mounted
-alongside the global `skills/`, shadowing same-named globals), and stored option
-defaults. Its members are derived, not stored: the agents whose saved options name
-the workspace, shown in the console and `syros workspaces` listings.
+(`workspaces/{name}/ws/`, exclusive lease — one live run at a time), a `CLAUDE.md` at
+its root loaded as project memory for every run under the workspace, the workspace's
+own skills (`workspaces/{name}/skills/`, mounted alongside the global `skills/` and
+shadowing same-named globals), and stored option defaults. Its members are derived,
+not stored: the agents whose saved options name the workspace, shown in the console
+and `syros workspaces` listings.
+
+Everything a workspace owns nests under its one prefix, so deleting a workspace is
+deleting a prefix. The full bucket layout:
+
+```
+sessions/{sid}/state/ws/            a session's own working directory
+sessions/{sid}/state/home/          HOME for the harness (transcripts, resume)
+workspaces/{name}/ws/               the workspace's shared working directory
+workspaces/{name}/skills/{skill}/   the workspace's own skills
+skills/{skill}/                     global skills, mounted into every run
+artifacts/{space}/                  shared artifact spaces
+```
 
 Options resolve at session creation, layered — explicitly-set fields always win:
 
@@ -621,7 +711,8 @@ uv run ruff check . && uv run ruff format --check .   # CI lints the whole repo
 ```
 
 Layout: `src/syros/` (client SDK + sandbox runner in one package), `infra/` (Terraform),
-`examples/`, `tests/` (unit + fake-store integration; no GCP needed).
+[`examples/`](examples/) (runnable SDK snippets, checked by `tests/test_examples.py`),
+`tests/` (unit + fake-store integration; no GCP needed).
 
 ## Status
 

@@ -194,7 +194,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   );
   const [model, setModel] = useState((stored.model as string) ?? "");
   const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
-  const [workspace, setWorkspace] = useState(((stored.workspace ?? stored.team) as string) ?? "");
+  const [workspace, setWorkspace] = useState((stored.workspace as string) ?? "");
   const [artifacts, setArtifacts] = useState(
     typeof stored.artifacts === "string" ? stored.artifacts : "",
   );

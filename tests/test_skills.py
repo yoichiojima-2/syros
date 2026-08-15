@@ -7,6 +7,7 @@ import pytest
 
 from syros import skills
 from syros.errors import OptionsError
+from syros.layout import skill_prefix
 
 # The real write, captured before the autouse fixture below stubs it out — one
 # test drives push all the way down to the blobs.
@@ -14,10 +15,11 @@ REAL_WRITE_FILE = skills.write_file
 
 
 def test_skill_prefix():
-    assert skills.skill_prefix("pdf") == "skills/pdf/"
+    assert skill_prefix("pdf") == "skills/pdf/"
+    assert skill_prefix("pdf", "shared") == "workspaces/shared/skills/pdf/"
     for name in ("", "Upper", "a/b", "../etc"):
         with pytest.raises(OptionsError):
-            skills.skill_prefix(name)
+            skill_prefix(name)
 
 
 def make_tarball(files: dict[str, bytes]) -> bytes:
@@ -183,7 +185,7 @@ def test_push_lands_blobs_under_the_skill_prefix(tmp_path, bucket):
     assert bucket.objects["skills/pdf/SKILL.md"] == (b"# pdf", "text/markdown")
 
     skills.push("p", "b", path, max_bytes=1024, workspace="ws")
-    assert "team-skills/ws/pdf/SKILL.md" in bucket.objects
+    assert "workspaces/ws/skills/pdf/SKILL.md" in bucket.objects
 
 
 def test_push_merges_unless_replacing(tmp_path, bucket):
@@ -198,7 +200,7 @@ def test_push_merges_unless_replacing(tmp_path, bucket):
     summary = skills.push("p", "b", path, max_bytes=1024, replace=True)
     assert summary["deleted"] == 1
     assert sorted(n for n in bucket.objects if n.startswith("skills/")) == ["skills/pdf/SKILL.md"]
-    assert "team-skills/ws/pdf/scripts/fill.py" in bucket.objects  # the other scope is untouched
+    assert "workspaces/ws/skills/pdf/scripts/fill.py" in bucket.objects  # other scope untouched
 
 
 def test_push_replace_keeps_a_file_it_had_to_skip(tmp_path, bucket):

@@ -14,11 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .names import validate_file, validate_name
-
-
-def space_prefix(space: str) -> str:
-    return f"artifacts/{validate_name('artifact space', space)}/"
+from .layout import ARTIFACTS, space_prefix
+from .names import validate_file
 
 
 def mount_prompt(spaces: dict[str, str]) -> str | None:
@@ -80,9 +77,9 @@ def _bucket(project: str, bucket_name: str):
 
 
 def list_spaces(project: str, bucket_name: str) -> list[str]:
-    iterator = _bucket(project, bucket_name).list_blobs(prefix="artifacts/", delimiter="/")
+    iterator = _bucket(project, bucket_name).list_blobs(prefix=ARTIFACTS, delimiter="/")
     list(iterator)  # prefixes populate only after iteration
-    return sorted(p[len("artifacts/") :].rstrip("/") for p in iterator.prefixes)
+    return sorted(p[len(ARTIFACTS) :].rstrip("/") for p in iterator.prefixes)
 
 
 def list_artifacts(project: str, bucket_name: str, space: str) -> list[Artifact]:

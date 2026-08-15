@@ -71,9 +71,7 @@ def _ts(name: str) -> Callable[[dict[str, Any]], Any]:
 
 
 def _opt_workspace(doc: dict[str, Any]) -> Any:
-    # Stored options predating the rename carry "team"; same column, new name.
-    options = doc.get("options") or {}
-    return options.get("workspace") or options.get("team")
+    return (doc.get("options") or {}).get("workspace")
 
 
 SESSION_FIELDS: list[Field] = [
