@@ -5,6 +5,7 @@ import pytest
 import syros.remote
 from syros import workflows
 from syros.cron import next_after
+from syros.errors import SessionExists
 from syros.options import AgentOptions
 from syros.workflows import WorkflowError
 
@@ -626,7 +627,7 @@ async def test_losing_the_create_race_keeps_the_live_task(no_job_trigger, monkey
 
     async def racing_create(session_id, *args, **kwargs):
         await winner(session_id, *args, **kwargs)  # the other launcher gets there first
-        raise ValueError(f"session {session_id} exists")
+        raise SessionExists(f"session {session_id} exists")
 
     monkeypatch.setattr(store, "create_session", racing_create)
     await workflows.tick(OPTS, store=store, now=time.time())
@@ -636,15 +637,23 @@ async def test_losing_the_create_race_keeps_the_live_task(no_job_trigger, monkey
     assert task_state(store, "chain", run_id, "report")["status"] == "pending"
 
 
-async def test_launch_failure_fails_the_task(no_job_trigger, monkeypatch):
+@pytest.mark.parametrize("committed", [False, True])
+async def test_launch_failure_fails_the_task(no_job_trigger, monkeypatch, committed):
+    """Only SessionExists means "someone else owns this launch". A write that
+    failed any other way fails the task with the real reason — including one
+    that reached Firestore but errored on the way back, whose session doc is
+    there but never got a prompt."""
     store = FakeStore()
     await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
     run_id = await workflows.run_now("chain", options=OPTS, store=store)
     sid = task_state(store, "chain", run_id, "research")["session_id"]
     task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
     del store.sessions[sid]
+    create = store.create_session
 
     async def broken_create(*args, **kwargs):
+        if committed:
+            await create(*args, **kwargs)
         raise ValueError("firestore is down")
 
     monkeypatch.setattr(store, "create_session", broken_create)

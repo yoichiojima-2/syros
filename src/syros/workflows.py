@@ -51,7 +51,7 @@ from datetime import datetime
 from typing import Any
 
 from . import agents, cron, remote
-from .errors import SyrosError
+from .errors import SessionExists, SyrosError
 from .names import validate_name
 from .options import AgentOptions, options_from_doc
 from .store import (
@@ -669,12 +669,13 @@ async def _start_task(
                     trigger=run.get("trigger") or "schedule",
                     agent=spec.get("agent"),
                 )
-            except Exception:
+            except SessionExists:
                 # Lost the create race (the reconcile pass re-starts a launch
                 # stuck past the grace, so two launchers can share one claimed
-                # id): the winner owns the session and sends the prompt.
-                if await store.get_session(session_id) is None:
-                    raise
+                # id): the winner owns the session and sends the prompt. Only
+                # this error means that — a write that failed any other way
+                # still fails the task, with the real reason.
+                pass
             else:
                 await remote.send_prompt(store, session_id, options, prompt)
         # else: a launcher died between creating the session and recording it

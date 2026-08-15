@@ -50,6 +50,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
+from .errors import SessionExists
 from .journal import MAIN_BRANCH
 
 
@@ -154,7 +155,10 @@ class StoreProtocol(Protocol):
         task: str | None = None,
         trigger: str = "api",
         agent: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Raises SessionExists if that id is already taken."""
+        ...
+
     async def get_session(self, session_id: str) -> dict[str, Any] | None: ...
     async def update_session(self, session_id: str, **fields: Any) -> None: ...
     async def list_sessions(self, limit: int | None = 20) -> list[dict[str, Any]]: ...
@@ -260,51 +264,59 @@ class Store:
         trigger: str = "api",
         agent: str | None = None,
     ) -> None:
-        await self._session(session_id).create(
-            {
-                "options": options,
-                "disabled": False,
-                "cost_usd": 0.0,
-                "claude_session_id": None,
-                # Transcript topology. seq_head/tip_uuid describe the active
-                # branch and are advisory (display/cursor seeds) — the journal
-                # itself is the source of truth via recover_head.
-                "branches": {
-                    MAIN_BRANCH: {
-                        "created_at": time.time(),
-                        "base_uuid": None,
-                        "base_seq": 0,
-                        "claude_session_id": None,
-                    }
-                },
-                "active_branch": MAIN_BRANCH,
-                "tip_uuid": None,
-                "seq_head": 0,
-                # Everything ephemeral — meaningless once the run is over.
-                "runtime": {
-                    "status": "queued",
-                    "stop_reason": None,
-                    "lease_id": None,
-                    "lease_expires": 0.0,
-                    "heartbeat_at": 0.0,
-                    "triggered_at": 0.0,
-                },
-                "created_by": created_by,
-                # Run provenance: which workflow run and task this session
-                # executes (all None for an ordinary query) and what started it —
-                # "api", "console" for the console's new-session form,
-                # "schedule" for a cron firing, "manual" for a run-now.
-                "workflow": workflow,
-                "run_id": run_id,
-                "task": task,
-                "trigger": trigger,
-                # Which stored agent the options were resolved from, if any —
-                # provenance only; the merged options above are authoritative.
-                "agent": agent,
-                "created_at": self._firestore.SERVER_TIMESTAMP,
-                "updated_at": self._firestore.SERVER_TIMESTAMP,
-            }
-        )
+        doc = {
+            "options": options,
+            "disabled": False,
+            "cost_usd": 0.0,
+            "claude_session_id": None,
+            # Transcript topology. seq_head/tip_uuid describe the active
+            # branch and are advisory (display/cursor seeds) — the journal
+            # itself is the source of truth via recover_head.
+            "branches": {
+                MAIN_BRANCH: {
+                    "created_at": time.time(),
+                    "base_uuid": None,
+                    "base_seq": 0,
+                    "claude_session_id": None,
+                }
+            },
+            "active_branch": MAIN_BRANCH,
+            "tip_uuid": None,
+            "seq_head": 0,
+            # Everything ephemeral — meaningless once the run is over.
+            "runtime": {
+                "status": "queued",
+                "stop_reason": None,
+                "lease_id": None,
+                "lease_expires": 0.0,
+                "heartbeat_at": 0.0,
+                "triggered_at": 0.0,
+            },
+            "created_by": created_by,
+            # Run provenance: which workflow run and task this session
+            # executes (all None for an ordinary query) and what started it —
+            # "api", "console" for the console's new-session form,
+            # "schedule" for a cron firing, "manual" for a run-now.
+            "workflow": workflow,
+            "run_id": run_id,
+            "task": task,
+            "trigger": trigger,
+            # Which stored agent the options were resolved from, if any —
+            # provenance only; the merged options above are authoritative.
+            "agent": agent,
+            "created_at": self._firestore.SERVER_TIMESTAMP,
+            "updated_at": self._firestore.SERVER_TIMESTAMP,
+        }
+        # Lazy, like the firestore import itself — the module stays importable
+        # without the GCP libraries present. A distinct error, not the generic
+        # failure: a caller creating under a pre-assigned id needs to tell
+        # "someone else got here first" apart from "the write failed".
+        from google.api_core.exceptions import AlreadyExists
+
+        try:
+            await self._session(session_id).create(doc)
+        except AlreadyExists as exc:
+            raise SessionExists(f"session {session_id} exists") from exc
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         snapshot = await self._session(session_id).get()

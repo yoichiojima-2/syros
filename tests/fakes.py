@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from syros.errors import SessionExists
 from syros.store import RUNTIME_FIELDS
 
 
@@ -52,7 +53,7 @@ class FakeStore:
         agent=None,
     ):
         if session_id in self.sessions:
-            raise ValueError(f"session {session_id} exists")
+            raise SessionExists(f"session {session_id} exists")
         self.sessions[session_id] = {
             "options": options,
             "disabled": False,
