@@ -55,6 +55,9 @@ async with SyrosClient(AgentOptions()) as client:
     # client.interrupt() / client.terminate() / AgentOptions(resume=client.session_id)
 ```
 
+Runnable versions of both — plus the message types, an approval policy, and resume/rewind
+— are in [`examples/`](examples/), indexed in [examples/README.md](examples/README.md).
+
 Ops without a UI:
 
 ```
@@ -616,7 +619,8 @@ uv run ruff check . && uv run ruff format --check .   # CI lints the whole repo
 ```
 
 Layout: `src/syros/` (client SDK + sandbox runner in one package), `infra/` (Terraform),
-`examples/`, `tests/` (unit + fake-store integration; no GCP needed).
+[`examples/`](examples/) (runnable SDK snippets, checked by `tests/test_examples.py`),
+`tests/` (unit + fake-store integration; no GCP needed).
 
 ## Status
 
