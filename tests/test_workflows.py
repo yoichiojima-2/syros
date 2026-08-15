@@ -426,6 +426,19 @@ async def test_terminated_run_does_not_block():
     assert result["fired"]
 
 
+async def test_run_now_rejects_a_second_concurrent_run(no_job_trigger):
+    """One run per workflow at a time, off-cycle too: a second run would
+    contend for the same workspace lease and orphan the first from reconcile."""
+    store = FakeStore()
+    await make(store, cron=None)
+    run_id = await workflows.run_now("nightly", options=OPTS, store=store)
+    with pytest.raises(WorkflowError, match=run_id):
+        await workflows.run_now("nightly", options=OPTS, store=store)
+    # ...and it fires again once that run is done
+    await complete(store, task_state(store, "nightly", run_id, "main")["session_id"])
+    assert await workflows.run_now("nightly", options=OPTS, store=store) != run_id
+
+
 async def test_paused_workflow_never_fires(no_job_trigger):
     store = FakeStore()
     now = time.time()

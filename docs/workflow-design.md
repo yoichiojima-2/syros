@@ -285,9 +285,10 @@ someone is around, reconciled by the clock, idempotent either way:
 
 Semantics, all inherited from today's deployments:
 
-- **One active run per workflow** (`_run_active` generalizes to "the last
-  run's status is running"): Databricks' `max_concurrent_runs = 1` default,
-  and the only safe choice when tasks share a workspace.
+- **One active run per workflow** (`active_run` — "the last run's status is
+  running"): Databricks' `max_concurrent_runs = 1` default, and the only safe
+  choice when tasks share a workspace. The tick skips the due slot; `run_now`
+  has no slot to skip to, so it refuses instead.
 - **Slots are claimed transactionally** (`claim_slot` unchanged), missed
   slots collapse to one catch-up firing, a bad cron parks the workflow with
   `last_error`.

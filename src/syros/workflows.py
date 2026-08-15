@@ -465,7 +465,28 @@ async def run_now(
     options = options or AgentOptions()
     store = _store(options, store)
     workflow = await _require(store, name)
+    active = await active_run(store, workflow)
+    if active:
+        # The tick skips a due slot for the same reason; off-cycle there is no
+        # next slot to skip to, so the caller is told instead.
+        raise WorkflowError(
+            f"workflow {name!r} already has run {active['id']} in flight — one run at a time"
+        )
     return await launch(store, options, workflow, trigger="manual", created_by=created_by, now=now)
+
+
+async def active_run(store: StoreProtocol, workflow: dict[str, Any]) -> dict[str, Any] | None:
+    """The workflow's in-flight run, if any.
+
+    One run per workflow at a time — the Databricks default, and the only safe
+    one when tasks share a workspace, whose exclusive lease a second run would
+    lose anyway (_reject_concurrent_workspace rests on this).
+    """
+    run_id = workflow.get("last_run_id")
+    if not run_id:
+        return None
+    run = await store.get_run(workflow["name"], run_id)
+    return run if run and run.get("status") == "running" else None
 
 
 async def launch(
@@ -812,13 +833,7 @@ async def tick(
             continue
         if not await store.claim_slot(name, due, following):
             continue  # another tick took this slot, or it was paused meanwhile
-        last_run = None
-        if workflow.get("last_run_id"):
-            last_run = await store.get_run(name, workflow["last_run_id"])
-        if last_run and last_run.get("status") == "running":
-            # One run per workflow at a time — the Databricks default, and the
-            # only safe one when tasks share a workspace, whose lease a second
-            # run would lose anyway.
+        if await active_run(store, workflow):
             await store.update_workflow(
                 name, last_skipped_at=now, skip_count=int(workflow.get("skip_count") or 0) + 1
             )

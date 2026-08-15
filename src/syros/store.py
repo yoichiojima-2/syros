@@ -311,11 +311,14 @@ class Store:
         # without the GCP libraries present. A distinct error, not the generic
         # failure: a caller creating under a pre-assigned id needs to tell
         # "someone else got here first" apart from "the write failed".
-        from google.api_core.exceptions import AlreadyExists
+        from google.api_core.exceptions import Aborted, Conflict
 
         try:
             await self._session(session_id).create(doc)
-        except AlreadyExists as exc:
+        except Aborted:
+            raise  # contention, not a duplicate — Aborted is a Conflict subclass
+        except Conflict as exc:
+            # AlreadyExists over gRPC; a bare Conflict is what http 409 maps to.
             raise SessionExists(f"session {session_id} exists") from exc
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
