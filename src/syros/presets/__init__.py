@@ -320,10 +320,9 @@ CATALOG: tuple[Preset, ...] = (
             "enabled": True,
             # Workflow-level defaults, inherited by every task under its own
             # options and its agent's. Deliberately an artifact space and not a
-            # workspace: 'sources' and 'landscape' run at the same time, and the
-            # loser of a workspace lease does not wait — the runner releases it
-            # with stop_reason="workspace_busy", which the run records as a
-            # failed task and whose downstream cone it then skips. The serial
+            # workspace: 'sources' and 'landscape' run at the same time, and two
+            # concurrent tasks cannot both hold a workspace's exclusive lease —
+            # _validate_tasks rejects such a definition outright. The serial
             # tail does pick up workspace="research" from the writer/reviewer
             # agents, where one-at-a-time is exactly what you want.
             "options": {"artifacts": {"research": "rw"}},

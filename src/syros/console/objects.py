@@ -8,6 +8,7 @@ artifacts.py-style listings via asyncio.to_thread (same contract as the CLI).
 from __future__ import annotations
 
 import asyncio
+from concurrent import futures
 from typing import Any, Protocol, runtime_checkable
 
 from .. import artifacts, skills, workspace
@@ -41,6 +42,7 @@ class ObjectStoreProtocol(Protocol):
         self, space: str, subpath: str | None, max_files: int
     ) -> int: ...
     async def skill_stats(self, workspace: str | None = None) -> dict[str, dict[str, Any]]: ...
+    async def workspace_skill_stats(self) -> dict[str, dict[str, dict[str, Any]]]: ...
     async def skill_files(
         self, name: str, workspace: str | None = None
     ) -> list[dict[str, Any]]: ...
@@ -74,6 +76,53 @@ def _stats(blobs, prefix: str) -> dict[str, dict[str, Any]]:
     return stats
 
 
+def _descriptions(
+    targets: dict[Any, Any], cache: dict[Any, tuple[Any, str | None]]
+) -> dict[Any, str]:
+    """key -> SKILL.md description, for a key -> blob mapping of SKILL.md blobs.
+
+    A ranged read per skill rather than a full download, run in a small pool so
+    listing skills stays responsive as the prefix grows. A skill whose SKILL.md
+    is unreadable or carries no description simply has none — the page still
+    has to render.
+
+    The console polls this listing every 8s and a description only changes when
+    SKILL.md is rewritten, so results are cached against the blob generation:
+    a steady prefix re-reads nothing, an edited skill re-reads on the next poll.
+    Read failures are deliberately not cached — a transient GCS error must not
+    hide a description until the next write.
+    """
+    found: dict[Any, str] = {}
+    misses: dict[Any, Any] = {}
+    for key, blob in targets.items():
+        cached = cache.get(key)
+        if cached is not None and cached[0] == blob.generation:
+            if cached[1]:
+                found[key] = cached[1]
+        else:
+            misses[key] = blob
+
+    def read(item):
+        key, blob = item
+        try:
+            data = blob.download_as_bytes(end=skills.FRONTMATTER_BYTES)
+        except Exception:
+            return key, None, False
+        return key, skills.parse_description(data), True
+
+    if misses:
+        with futures.ThreadPoolExecutor(max_workers=min(8, len(misses))) as pool:
+            for key, text, ok in pool.map(read, misses.items()):
+                if ok:
+                    cache[key] = (misses[key].generation, text)
+                if text:
+                    found[key] = text
+
+    for gone in set(cache) - set(targets):
+        del cache[gone]  # a deleted skill must not pin its entry forever
+    return found
+
+
 def _tags(blob) -> list[str]:
     raw = (getattr(blob, "metadata", None) or {}).get(workspace.TAGS_KEY)
     return raw.split(",") if raw else []
@@ -96,6 +145,13 @@ class GcsObjects:
     def __init__(self, project: str, bucket: str) -> None:
         self._project = project
         self._bucket = bucket
+        # SKILL.md descriptions, one cache per listed prefix so each prunes
+        # against its own listing. ConsoleAPI holds this object for the life of
+        # the process, so the caches outlive a request — see _descriptions.
+        self._described: dict[str, dict[Any, tuple[Any, str | None]]] = {}
+
+    def _describe(self, root: str, targets: dict[Any, Any]) -> dict[Any, str]:
+        return _descriptions(targets, self._described.setdefault(root, {}))
 
     def _list(self, prefix: str):
         return artifacts._bucket(self._project, self._bucket).list_blobs(prefix=prefix)
@@ -178,7 +234,54 @@ class GcsObjects:
 
     async def skill_stats(self, workspace: str | None = None) -> dict[str, dict[str, Any]]:
         root = f"team-skills/{validate_name('workspace', workspace)}/" if workspace else "skills/"
-        return await asyncio.to_thread(lambda: _stats(self._list(root), root))
+
+        def work() -> dict[str, dict[str, Any]]:
+            blobs = list(self._list(root))
+            stats = _stats(blobs, root)
+            targets = {
+                blob.name[len(root) :].split("/", 1)[0]: blob
+                for blob in blobs
+                if blob.name[len(root) :].partition("/")[2] == skills.SKILL_MD
+            }
+            for name, text in self._describe(root, targets).items():
+                if name in stats:
+                    stats[name]["description"] = text
+            return stats
+
+        return await asyncio.to_thread(work)
+
+    async def workspace_skill_stats(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Every workspace's skills, keyed workspace -> name -> stat.
+
+        One listing of the whole team-skills/ prefix rather than one per
+        workspace, so the console can show workspace-scoped skills beside the
+        globals without knowing which workspaces exist.
+        """
+        root = "team-skills/"
+
+        def work() -> dict[str, dict[str, dict[str, Any]]]:
+            blobs = list(self._list(root))
+            stats: dict[str, dict[str, dict[str, Any]]] = {}
+            targets: dict[tuple[str, str], Any] = {}
+            for blob in blobs:
+                owner, _, rest = blob.name[len(root) :].partition("/")
+                skill, _, file = rest.partition("/")
+                if not skill or not file:
+                    continue
+                row = stats.setdefault(owner, {}).setdefault(
+                    skill, {"file_count": 0, "total_size": 0, "updated": None}
+                )
+                row["file_count"] += 1
+                row["total_size"] += blob.size or 0
+                if blob.updated and (row["updated"] is None or blob.updated > row["updated"]):
+                    row["updated"] = blob.updated
+                if file == skills.SKILL_MD:
+                    targets[(owner, skill)] = blob
+            for (owner, skill), text in self._describe(root, targets).items():
+                stats[owner][skill]["description"] = text
+            return stats
+
+        return await asyncio.to_thread(work)
 
     async def skill_files(self, name: str, workspace: str | None = None) -> list[dict[str, Any]]:
         prefix = skills.skill_prefix(name, workspace)

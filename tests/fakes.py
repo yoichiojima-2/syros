@@ -7,8 +7,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from syros.errors import SessionExists
 from syros.names import validate_file
-from syros.skills import skill_prefix
+from syros.skills import parse_description, skill_prefix
 from syros.store import RUNTIME_FIELDS
 from syros.workspace import workspace_prefix
 
@@ -57,7 +58,7 @@ class FakeStore:
         agent=None,
     ):
         if session_id in self.sessions:
-            raise ValueError(f"session {session_id} exists")
+            raise SessionExists(f"session {session_id} exists")
         self.sessions[session_id] = {
             "options": options,
             "disabled": False,
@@ -558,9 +559,22 @@ class FakeObjects:
             return self.workspace_skills.setdefault(workspace, {})
         return self.workspace_skills.get(workspace, {})
 
+    @staticmethod
+    def _skill_stat(files):
+        stat = FakeObjects._stats(files)
+        described = parse_description(files.get("SKILL.md", b""))
+        return {**stat, "description": described} if described else stat
+
     async def skill_stats(self, workspace=None):
         pool = self._skill_pool(workspace)
-        return {name: self._stats(files) for name, files in pool.items()}
+        return {name: self._skill_stat(files) for name, files in pool.items()}
+
+    async def workspace_skill_stats(self):
+        return {
+            owner: {name: self._skill_stat(files) for name, files in pool.items()}
+            for owner, pool in self.workspace_skills.items()
+            if pool
+        }
 
     async def skill_files(self, name, workspace=None):
         files = self._skill_pool(workspace).get(name, {})

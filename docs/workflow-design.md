@@ -245,12 +245,15 @@ Two channels, both explicit:
 2. **Files** — tasks in one run share whatever `workspace` / `artifacts`
    spaces their options mount, which already exist and already checkpoint
    (Dagster's split: dependencies order execution, storage carries data).
-   Guidance, not mechanism: a *linear* chain can share a `workspace` (the
-   exclusive lease is harmless when tasks run one at a time); *parallel*
-   branches must use artifact spaces (no lease). The lease does not queue the
-   losing branch, it kills it: the runner releases with
-   `stop_reason="workspace_busy"`, which `advance` records as a failed task and
-   whose downstream cone it then skips, failing the run.
+   A *linear* chain can share a `workspace` (the exclusive lease is harmless
+   when tasks run one at a time); *parallel* branches must use artifact spaces
+   (no lease; the workspace lease would not serialize them but fail the loser
+   `workspace_busy` — the trap `deployments.tick` already documents). Checked
+   at definition time rather than left as guidance: `_validate_tasks` rejects a
+   definition in which two tasks that can run at the same time name the same
+   workspace (via task, workflow, or agent options — an installation-wide
+   `settings/global` default is exempt, since it must not retroactively
+   invalidate saved definitions).
 
 Deliberately not: Step Functions-style input/output path plumbing, or a
 LangGraph-style shared typed state. Both buy parallel-branch power at a
@@ -282,9 +285,10 @@ someone is around, reconciled by the clock, idempotent either way:
 
 Semantics, all inherited from today's deployments:
 
-- **One active run per workflow** (`_run_active` generalizes to "the last
-  run's status is running"): Databricks' `max_concurrent_runs = 1` default,
-  and the only safe choice when tasks share a workspace.
+- **One active run per workflow** (`active_run` — "the last run's status is
+  running"): Databricks' `max_concurrent_runs = 1` default, and the only safe
+  choice when tasks share a workspace. The tick skips the due slot; `run_now`
+  has no slot to skip to, so it refuses instead.
 - **Slots are claimed transactionally** (`claim_slot` unchanged), missed
   slots collapse to one catch-up firing, a bad cron parks the workflow with
   `last_error`.
