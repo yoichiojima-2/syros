@@ -182,13 +182,13 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   const storedBigquery = Boolean(
     (stored.mcp_servers as Record<string, unknown> | undefined)?.bq,
   );
-  // The system prompt is either a hand-written persona or the harness's own
-  // prompt with instructions appended, so the toggle and the text are one
+  // The system prompt is either a hand-written persona that replaces the
+  // default prompt or text added after it, so the toggle and the text are one
   // field split in two: with the toggle on, the text is what gets appended.
-  const storedDefault = isDefaultPrompt(stored.system_prompt);
-  const [defaults, setDefaults] = useState(storedDefault);
+  const storedAppend = isDefaultPrompt(stored.system_prompt);
+  const [append, setAppend] = useState(storedAppend);
   const [systemPrompt, setSystemPrompt] = useState(
-    (storedDefault
+    (storedAppend
       ? (stored.system_prompt as DefaultPrompt).append
       : (stored.system_prompt as string)) ?? "",
   );
@@ -214,7 +214,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   );
   const [maxTurns, setMaxTurns] = useState(stored.max_turns == null ? "" : String(stored.max_turns));
   return {
-    defaults, setDefaults,
+    append, setAppend,
     systemPrompt, setSystemPrompt,
     model, setModel,
     permissionMode, setPermissionMode,
@@ -246,7 +246,10 @@ export function allowedTools(draft: OptionsDraft): string[] {
  *  payload: an empty string is "unset", not "". */
 export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown> {
   const options: Record<string, unknown> = {};
-  if (draft.defaults) options.system_prompt = defaultPrompt(draft.systemPrompt);
+  // The preset rides the payload even with no text behind it: unset inherits
+  // whatever persona a workspace or the global settings stores, while the
+  // preset says "the default prompt, whatever those layers hold".
+  if (draft.append) options.system_prompt = defaultPrompt(draft.systemPrompt);
   else if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
   if (draft.model.trim()) options.model = draft.model.trim();
   if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
@@ -264,28 +267,25 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   return options;
 }
 
-/** The system-prompt field: a persona, or the default agent's own prompt.
- *
- *  Empty and toggled off, a run has no system prompt at all — a bare
- *  assistant. The toggle is how you ask for the harness's default prompt
- *  instead, and the textarea then holds instructions appended after it rather
- *  than a replacement for it. */
+/** The system-prompt field. Left empty the run gets the default prompt, so
+ *  what this field holds is a persona that replaces it; the `append` toggle
+ *  keeps the default prompt and adds the text after it instead. */
 export function SystemPromptField({ draft }: { draft: OptionsDraft }) {
-  const { defaults, setDefaults, systemPrompt, setSystemPrompt } = draft;
+  const { append, setAppend, systemPrompt, setSystemPrompt } = draft;
   return (
     <Field
       label="System prompt"
-      hint={defaults ? "appended to the default prompt" : "replaces it entirely"}
+      hint={
+        append ? "added after the default prompt" : "empty = the default prompt; text replaces it"
+      }
     >
       <div className="space-y-1.5">
-        <DefaultPromptToggle on={defaults} onChange={setDefaults} />
+        <AppendToggle on={append} onChange={setAppend} />
         <Textarea
           value={systemPrompt}
           onChange={(e) => setSystemPrompt(e.target.value)}
           rows={3}
-          placeholder={
-            defaults ? "Prefer small commits. (optional)" : "You are a careful data analyst."
-          }
+          placeholder={append ? "Prefer small commits." : "You are a careful data analyst."}
           className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
         />
       </div>
@@ -293,19 +293,14 @@ export function SystemPromptField({ draft }: { draft: OptionsDraft }) {
   );
 }
 
-/** One pill for "run the default agent", styled like the connector chips. */
-export function DefaultPromptToggle({
-  on,
-  onChange,
-}: {
-  on: boolean;
-  onChange: (on: boolean) => void;
-}) {
+/** One pill for "add to the default prompt instead of replacing it", styled
+ *  like the connector chips. */
+export function AppendToggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
   return (
     <button
       type="button"
       aria-pressed={on}
-      title="Run with the harness's default system prompt — the stock agent, no persona of its own"
+      title="Keep the default system prompt and add these instructions after it"
       onClick={() => onChange(!on)}
       className={cn(
         "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
@@ -314,7 +309,7 @@ export function DefaultPromptToggle({
           : "border-border text-muted-foreground hover:bg-secondary",
       )}
     >
-      default prompt
+      append
     </button>
   );
 }

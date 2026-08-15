@@ -19,7 +19,6 @@ def args(**overrides):
         max_turns=None,
         max_budget_usd=None,
         bigquery=False,
-        default_prompt=False,
         connector=None,
     )
     base.update(overrides)
@@ -49,20 +48,11 @@ def test_run_options_validate_with_bigquery():
     options.validate()  # the flag emits exactly what validate() accepts
 
 
-def test_default_prompt_flag_asks_for_the_preset():
-    options = _run_options(args(default_prompt=True))
-    assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
-    options.project = "p"
-    options.validate()  # the flag emits exactly what validate() accepts
-
-
-def test_default_prompt_flag_appends_the_system_prompt_instead_of_replacing():
-    options = _run_options(args(default_prompt=True, system_prompt="Be terse."))
-    assert options.system_prompt["append"] == "Be terse."
-
-
-def test_system_prompt_without_the_flag_stays_a_plain_replacement():
+def test_system_prompt_is_a_plain_replacement():
+    """No flag for the default prompt: unset is what resolves to it, and a
+    string here is the persona that replaces it."""
     assert _run_options(args(system_prompt="Be terse.")).system_prompt == "Be terse."
+    assert _run_options(args()).system_prompt is None
 
 
 def test_connector_flag_repeatable_and_comma_separated():

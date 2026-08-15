@@ -9,7 +9,6 @@ import {
   BigQueryToggle,
   buildOptionsPayload,
   ChoiceField,
-  DefaultPromptToggle,
   ConnectorPicker,
   Field,
   MODELS,
@@ -240,9 +239,6 @@ export function WorkflowForm({
               />
             </Field>
           </div>
-          <Field label="System prompt" hint="run tasks as the default agent, with no stored persona">
-            <DefaultPromptToggle on={draft.defaults} onChange={draft.setDefaults} />
-          </Field>
           <Field label="Allowed tools" hint="click to toggle; defaults for every task">
             <ToolPicker draft={draft} />
           </Field>

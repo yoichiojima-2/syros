@@ -78,7 +78,10 @@ export function SessionForm({
       Object.assign(options, buildOptionsPayload(draft));
     } else {
       if (mode === "default") {
-        options.system_prompt = defaultPrompt(draft.systemPrompt);
+        // Nothing to send for the prompt itself: options with no system prompt
+        // resolve to the default one server-side. Extra instructions are the
+        // exception — they ride the preset, so they append instead of replace.
+        if (draft.systemPrompt.trim()) options.system_prompt = defaultPrompt(draft.systemPrompt);
         if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
         const allowed = allowedTools(draft);
         if (allowed.length) options.allowed_tools = allowed;
@@ -171,8 +174,8 @@ export function SessionForm({
           ) : mode === "default" ? (
             <>
               <p className="text-[12px] leading-relaxed text-muted-foreground">
-                Runs the default agent — the harness&apos;s own system prompt, no stored
-                persona. Everything below is optional.
+                Runs the default agent — no stored persona in front of it. Everything below is
+                optional.
               </p>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Field label="Workspace" hint="shared directory">

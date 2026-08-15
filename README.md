@@ -165,31 +165,27 @@ show which agent they ran as. Workflow tasks can reference an agent too (below).
 
 ### The default agent
 
-Not every run wants a persona. Left unset, `system_prompt` gives a run no system prompt
-at all — `claude_agent_sdk`'s default, a bare assistant. `default_prompt()` asks for the
-harness's own system prompt instead: the stock agent as it ships, with nothing stored in
-front of it.
+A persona is what you get for naming an agent or writing one — not the price of not
+naming one. With no `system_prompt` in any layer, a session resolves to the harness's own
+default prompt (the same floor that lands the model on `"sonnet"`), so the SDK, the CLI
+and the console all behave the same way: no agent, no persona, just the stock agent.
 
 ```python
-from syros import query, AgentOptions, default_prompt
+from syros import query, AgentOptions
 
-async for message in query(
+async for message in query(                    # the default agent, no configuration
     prompt="collect today's news",
-    options=AgentOptions(
-        system_prompt=default_prompt(),   # or default_prompt("Be terse.")
-        allowed_tools=["Read", "Write", "Bash", "WebSearch"],
-    ),
+    options=AgentOptions(allowed_tools=["Read", "Write", "Bash", "WebSearch"]),
 ):
     ...
 ```
 
-The instructions passed to `default_prompt()` are *appended* to that prompt rather than
-replacing it, so an agent can layer on it too. On the command line any run-option flag
-set takes `--default-prompt`, which turns `--system-prompt` into that appended text. In
-the console, **New session** has a **Default** tab beside **Agent** and **Custom**, and
-the agent/workspace/settings/workflow forms have a `default prompt` toggle on their
-system-prompt field. Tool calls are gated as always — unlisted tools still pause for
-approval.
+`system_prompt="..."` replaces that prompt with a persona. To keep it and add to it,
+`default_prompt("Be terse.")` builds the preset with the instructions appended — what
+the console's **Default** tab sends as *extra instructions*, and what the `append` toggle
+on the agent/workspace/settings forms stores. `system_prompt=""` is the escape hatch for
+a run with no system prompt at all. Tool calls are gated as always — unlisted tools still
+pause for approval.
 
 ## Workflows
 
@@ -552,8 +548,8 @@ doing nothing.
 
 | claude_agent_sdk option | syros |
 |---|---|
-| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness) |
-| `system_prompt` presets | the default-agent preset only (`claude_code` on the wire) — `default_prompt()`, optionally with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
+| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness), except that an unset `system_prompt` resolves to the default-agent preset rather than to no system prompt — pass `""` for that |
+| `system_prompt` presets | the default-agent preset only (`claude_code` on the wire) — the resolution floor, and `default_prompt()` when you want it with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
 | `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |

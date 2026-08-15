@@ -403,21 +403,39 @@ async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
 
 
 async def test_create_session_runs_the_default_agent(no_job_trigger):
-    # What the form's "Default" tab posts: no agent, no persona — the preset
-    # that gives the run the harness's own system prompt.
+    # What the form's "Default" tab posts: no agent, no options at all. The
+    # session still records the default prompt — resolution floors it, so a run
+    # with no persona is the stock agent rather than a bare assistant.
     store = FakeStore()
 
     result = await api(store).create_session(
-        {
-            "prompt": "collect today's news",
-            "agent": None,
-            "options": {"system_prompt": {"type": "preset", "preset": "claude_code"}},
-        }
+        {"prompt": "collect today's news", "agent": None, "options": {}}
     )
 
     session = store.sessions[result["session_id"]]
     assert session["agent"] is None
     assert session["options"]["system_prompt"] == {"type": "preset", "preset": "claude_code"}
+
+
+async def test_create_session_appends_extra_instructions_to_the_default_prompt(no_job_trigger):
+    # The "Default" tab's extra-instructions box: the preset, plus text after it.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "collect today's news",
+            "options": {
+                "system_prompt": {
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "Cite every source.",
+                }
+            },
+        }
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["options"]["system_prompt"]["append"] == "Cite every source."
 
 
 async def test_create_session_rejects_an_unknown_preset(no_job_trigger):
