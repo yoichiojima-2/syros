@@ -30,6 +30,7 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
+                                        (--workspace lists a workspace's skills)
 syros skills push <dir...> [--name X] [--replace]
                                         upload local skill directories (SKILL.md plus resources)
 syros skills files <name>               list one skill's files (--workspace for workspace skills)
@@ -581,7 +582,7 @@ async def _skills(args) -> None:
             raise SystemExit(str(exc)) from exc
         sys.stdout.buffer.write(data)
         return
-    stats = await GcsObjects(project, bucket).skill_stats()
+    stats = await GcsObjects(project, bucket).skill_stats(workspace=args.workspace)
     for name in sorted(stats):
         stat = stats[name]
         print(f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']} bytes")

@@ -72,6 +72,29 @@ def test_connector_flag_unknown_name_rejected_by_validate():
         options.validate()
 
 
+async def test_skills_list_scopes_to_the_workspace(monkeypatch, capsys):
+    """`syros skills --workspace w` lists that workspace's skills, not the globals."""
+    from syros import cli
+    from syros.console import objects
+
+    seen: dict[str, str | None] = {}
+
+    class FakeObjects:
+        def __init__(self, project, bucket):
+            pass
+
+        async def skill_stats(self, workspace=None):
+            seen["workspace"] = workspace
+            return {"deploy": {"file_count": 1, "total_size": 12, "updated": None}}
+
+    monkeypatch.setattr(objects, "GcsObjects", FakeObjects)
+    await cli._skills(
+        SimpleNamespace(action="list", args=[], bucket="b", project="p", workspace="ops")
+    )
+    assert seen["workspace"] == "ops"
+    assert "deploy" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
