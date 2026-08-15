@@ -650,23 +650,17 @@ async def test_losing_the_create_race_keeps_the_live_task(no_job_trigger, monkey
     assert task_state(store, "chain", run_id, "report")["status"] == "pending"
 
 
-@pytest.mark.parametrize("committed", [False, True])
-async def test_launch_failure_fails_the_task(no_job_trigger, monkeypatch, committed):
-    """Only SessionExists means "someone else owns this launch". A write that
-    failed any other way fails the task with the real reason — including one
-    that reached Firestore but errored on the way back, whose session doc is
-    there but never got a prompt."""
+async def test_launch_failure_fails_the_task(no_job_trigger, monkeypatch):
+    """A launch that left no session behind fails its task with the real
+    reason — SessionExists is the only error that means "not ours"."""
     store = FakeStore()
     await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
     run_id = await workflows.run_now("chain", options=OPTS, store=store)
     sid = task_state(store, "chain", run_id, "research")["session_id"]
     task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
     del store.sessions[sid]
-    create = store.create_session
 
     async def broken_create(*args, **kwargs):
-        if committed:
-            await create(*args, **kwargs)
         raise ValueError("firestore is down")
 
     monkeypatch.setattr(store, "create_session", broken_create)
@@ -676,6 +670,32 @@ async def test_launch_failure_fails_the_task(no_job_trigger, monkeypatch, commit
     assert "firestore is down" in run["tasks"]["research"]["error"]
     assert run["tasks"]["report"]["status"] == "skipped"
     assert run["status"] == "failed"
+
+
+async def test_launch_failure_leaves_an_existing_session_alone(no_job_trigger, monkeypatch):
+    """A launcher that fails once the session is there must not fail the task:
+    the session may be another launcher's, already prompted and running. The
+    reconcile pass settles it from the session's own state instead."""
+    store = FakeStore()
+    await make_chain(store, PIPE, cron="*/5 * * * *", now=time.time())
+    run_id = await workflows.run_now("chain", options=OPTS, store=store)
+    sid = task_state(store, "chain", run_id, "research")["session_id"]
+    task_state(store, "chain", run_id, "research").update(status="launching", launching_at=0.0)
+    del store.sessions[sid]
+    create = store.create_session
+
+    async def create_then_fail(*args, **kwargs):
+        await create(*args, **kwargs)
+        raise ValueError("lost the response")
+
+    monkeypatch.setattr(store, "create_session", create_then_fail)
+    await workflows.tick(OPTS, store=store, now=time.time())
+    assert task_state(store, "chain", run_id, "research")["status"] == "launching"
+    assert store.runs["chain"][run_id]["status"] == "running"
+    # the session released as usual (it was the winner's): the run moves on
+    monkeypatch.setattr(store, "create_session", create)
+    await complete(store, sid, result="42")
+    assert task_state(store, "chain", run_id, "research")["status"] == "succeeded"
 
 
 # --- reconcile ---

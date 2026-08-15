@@ -272,7 +272,9 @@ def _reject_concurrent_workspace(tasks: list[dict[str, Any]], workspaces: dict[s
     fails it and skips its whole downstream cone. Only a linear chain may share
     a workspace; parallel branches pass files through artifact spaces instead
     (docs/workflow-design.md). Rejecting the definition beats letting the first
-    firing be the thing that finds it."""
+    firing be the thing that finds it — though only at definition time: an
+    agent re-pointed at a workspace afterwards is not re-checked, exactly as a
+    deleted agent is not, and surfaces at the launch instead."""
     closure = dependency_closure(tasks)
     ordered = [t["id"] for t in tasks if t["id"] in workspaces]
     for i, first in enumerate(ordered):
@@ -468,7 +470,9 @@ async def run_now(
     active = await active_run(store, workflow)
     if active:
         # The tick skips a due slot for the same reason; off-cycle there is no
-        # next slot to skip to, so the caller is told instead.
+        # next slot to skip to, so the caller is told instead. Read-then-launch,
+        # as in the tick: two firings within the same instant can still both
+        # pass, and the loser's run is the one reconcile forgets.
         raise WorkflowError(
             f"workflow {name!r} already has run {active['id']} in flight — one run at a time"
         )
@@ -695,7 +699,10 @@ async def _start_task(
                 # stuck past the grace, so two launchers can share one claimed
                 # id): the winner owns the session and sends the prompt. Only
                 # this error means that — a write that failed any other way
-                # still fails the task, with the real reason.
+                # still fails the task, with the real reason. The one other way
+                # to land here is our own create committing but losing its
+                # response to a retry, which leaves the session queued with no
+                # prompt; reconcile fails the task at the next tick.
                 pass
             else:
                 await remote.send_prompt(store, session_id, options, prompt)
@@ -703,6 +710,17 @@ async def _start_task(
         # here — the session (and its trigger) stands; just mark it running.
     except Exception as exc:  # a bad task must fail its cone, not the advancer
         error = f"{type(exc).__name__}: {exc}"  # `exc` is gone by the time this runs
+        try:
+            taken = await store.get_session(session_id) is not None
+        except Exception:
+            taken = False  # cannot tell; the guard below is what stands then
+        if taken:
+            # Someone got further with this launch than we did — the session may
+            # already be prompted and running, and it is not yet marked running,
+            # so the guard below would not catch it. Failing the task here would
+            # leave a live session working on a run that declared it dead; the
+            # reconcile pass settles it either way, from the session's own state.
+            return
 
         def fail_launch(run_doc: dict[str, Any]) -> dict[str, Any] | None:
             tasks = {tid: dict(state) for tid, state in (run_doc.get("tasks") or {}).items()}
