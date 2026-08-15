@@ -229,6 +229,26 @@ def _store(options: AgentOptions, store: StoreProtocol | None) -> StoreProtocol:
     return store or Store(options.resolved_project())
 
 
+async def _validate_tasks(
+    store: StoreProtocol,
+    tasks: list[dict[str, Any]],
+    defaults: AgentOptions,
+    options: AgentOptions,
+) -> None:
+    """Fail at definition time, not at the first firing."""
+    for task in tasks:
+        if task["agent"] is not None:
+            # The reference is still re-resolved on every launch, so a later
+            # delete surfaces there.
+            await agents.require_agent(store, task["agent"])
+        # Every run inherits the workflow's project, so validate the merged
+        # options against it here rather than letting the first firing be the
+        # thing that finds the problem.
+        merged = agents.merge(defaults, options_from_doc(dict(task["options"])))
+        merged.project = merged.project or defaults.project or options.project
+        merged.validate()
+
+
 async def create(
     name: str,
     tasks: list[dict[str, Any]] | None = None,
@@ -274,24 +294,54 @@ async def create(
         now=now,
     )
     store = _store(options, store)
-    for task in doc["tasks"]:
-        if task["agent"] is not None:
-            # Fail at definition time, not at the first firing. The reference
-            # is still re-resolved on every launch, so a later delete surfaces
-            # there.
-            await agents.require_agent(store, task["agent"])
-        # Every run inherits the workflow's project, so validate the merged
-        # options against it here rather than letting the first firing be the
-        # thing that finds the problem.
-        merged = agents.merge(
-            options_from_doc(dict(doc["options"])), options_from_doc(dict(task["options"]))
-        )
-        merged.project = merged.project or defaults.project or options.project
-        merged.validate()
+    await _validate_tasks(store, doc["tasks"], defaults, options)
     if await store.get_workflow(name) is not None:
         raise WorkflowError(f"workflow {name!r} already exists")
     await store.create_workflow(name, doc)
     return {"name": name, **doc}
+
+
+async def update(
+    name: str,
+    tasks: list[dict[str, Any]],
+    *,
+    defaults: AgentOptions | None = None,
+    cron_expression: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
+    options: AgentOptions | None = None,
+    store: StoreProtocol | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Replace a workflow's definition — tasks, defaults, and schedule.
+
+    Full-replace semantics: the caller sends the complete definition, as the
+    console's edit form does. Counters, created_by, and the paused/enabled
+    state are untouched; the next slot is re-based on the current time, same
+    as resuming. Running work is unaffected — runs snapshot their spec at
+    launch.
+    """
+    options = options or AgentOptions()
+    defaults = defaults or AgentOptions()
+    normalized = normalize_tasks(tasks)
+    schedule = None
+    next_run_at = 0.0
+    if cron_expression:
+        cron.validate(cron_expression, timezone)
+        schedule = {"cron": cron.describe(cron_expression), "timezone": timezone}
+        now = time.time() if now is None else now
+        next_run_at = cron.next_after(cron_expression, now, timezone)
+    store = _store(options, store)
+    await _validate_tasks(store, normalized, defaults, options)
+    workflow = await _require(store, name)
+    fields: dict[str, Any] = {
+        "tasks": normalized,
+        "options": defaults.serialize(),
+        "schedule": schedule,
+        "next_run_at": next_run_at,
+        "last_error": None,
+    }
+    await store.update_workflow(name, **fields)
+    return {**workflow, **fields}
 
 
 async def get(

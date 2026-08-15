@@ -78,6 +78,11 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     ("GET", ("api", "workflows", None), lambda api, body, query, name: api.workflow(name)),
     (
         "POST",
+        ("api", "workflows", None, "update"),
+        lambda api, body, query, name: api.update_workflow(name, body),
+    ),
+    (
+        "POST",
         ("api", "workflows", None, "enabled"),
         lambda api, body, query, name: api.set_workflow_enabled(name, bool(body.get("enabled"))),
     ),
