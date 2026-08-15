@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  allowedTools,
   BigQueryToggle,
   buildOptionsPayload,
   ChoiceField,
@@ -17,21 +18,29 @@ import {
 } from "@/components/option-fields";
 import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
+import { defaultPrompt, isDefaultPrompt } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Mode = "agent" | "custom";
+type Mode = "agent" | "default" | "custom";
 
-/** New-session form: a prompt plus either a stored agent or hand-picked run
- *  options — never both. The tabs are exclusive because the backend merge
- *  treats any explicitly-set field as a whole-value override of the agent's
- *  (a single tool chip would silently replace the agent's entire allowlist),
- *  so the agent tab sends the agent's stored options untouched and shows them
- *  read-only instead. Starting a session here is what a client's query() does —
- *  the session is ordinary, and the transcript takes over once the job runs.
+const TABS: [Mode, string][] = [
+  ["agent", "Agent"],
+  ["default", "Default"],
+  ["custom", "Custom"],
+];
+
+/** New-session form: a prompt plus one of three ways to configure the run — a
+ *  stored agent, the default agent, or hand-picked options. The tabs are
+ *  exclusive because the backend merge treats any explicitly-set field as a
+ *  whole-value override of the agent's (a single tool chip would silently
+ *  replace the agent's entire allowlist), so the agent tab sends the agent's
+ *  stored options untouched and shows them read-only instead. Starting a
+ *  session here is what a client's query() does — the session is ordinary, and
+ *  the transcript takes over once the job runs.
  *
  *  Passing `agent` pins the form to that agent: the tabs and the picker drop
- *  away, since the caller (an agent row, an agent page) already made that
- *  choice and all that's left to decide is the prompt. */
+ *  away, since the caller (the agent page) already made that choice and all
+ *  that's left to decide is the prompt. */
 export function SessionForm({
   onCreated,
   onCancel,
@@ -51,14 +60,15 @@ export function SessionForm({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // With no stored agents the agent tab is a dead end, so land on custom.
+  // With no stored agents the agent tab is a dead end, so land on Default.
   const noAgents = agents !== null && agents.length === 0;
   useEffect(() => {
-    if (noAgents && !pinned) setMode("custom");
+    if (noAgents && !pinned) setMode("default");
   }, [noAgents, pinned]);
 
   const selectedAgent = (agents ?? []).find((a) => a.name === agent) ?? null;
-  const ready = prompt.trim() && (mode === "custom" || agent.trim());
+  // Only the agent tab needs more than a prompt.
+  const ready = prompt.trim() && (mode !== "agent" || agent.trim());
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -67,9 +77,23 @@ export function SessionForm({
     setError("");
     // On the agent tab the run options stay with the agent; only the budget
     // rides along, since it's a per-run cap rather than part of the persona.
+    // The Default tab sends only the fields it renders — a half-filled custom
+    // tab left behind in the same draft must not leak into it.
     const options: Record<string, unknown> = {};
-    if (mode === "custom") Object.assign(options, buildOptionsPayload(draft));
-    else if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
+    if (mode === "custom") {
+      Object.assign(options, buildOptionsPayload(draft));
+    } else {
+      if (mode === "default") {
+        // Nothing to send for the prompt itself: options with no system prompt
+        // resolve to the default one server-side. Extra instructions are the
+        // exception — they ride the preset, so they append instead of replace.
+        if (draft.systemPrompt.trim()) options.system_prompt = defaultPrompt(draft.systemPrompt);
+        if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
+        const allowed = allowedTools(draft);
+        if (allowed.length) options.allowed_tools = allowed;
+      }
+      if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
+    }
     try {
       const { session_id } = await post<{ session_id: string }>("/api/sessions", {
         prompt: prompt.trim(),
@@ -99,7 +123,7 @@ export function SessionForm({
               className="flex items-center gap-1 rounded-lg bg-secondary p-0.5 w-fit"
               role="tablist"
             >
-              {(["agent", "custom"] as const).map((tab) => (
+              {TABS.map(([tab, label]) => (
                 <button
                   key={tab}
                   type="button"
@@ -113,7 +137,7 @@ export function SessionForm({
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {tab === "agent" ? "Agent" : "Custom"}
+                  {label}
                 </button>
               ))}
             </div>
@@ -161,6 +185,45 @@ export function SessionForm({
                 </Field>
               </div>
               {selectedAgent && <AgentOptionsSummary options={selectedAgent.options} />}
+            </>
+          ) : mode === "default" ? (
+            <>
+              <p className="text-[12px] leading-relaxed text-muted-foreground">
+                Runs the default agent — no stored persona in front of it. Everything below is
+                optional.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <Field label="Workspace" hint="shared directory">
+                  <ChoiceField
+                    value={draft.workspace}
+                    onChange={draft.setWorkspace}
+                    choices={(workspaces ?? []).map((t) => t.name)}
+                    noneLabel="none"
+                    customLabel="new workspace…"
+                  />
+                </Field>
+                <Field label="Budget (USD)" hint="per-run cap">
+                  <Input
+                    value={draft.budget}
+                    onChange={(e) => draft.setBudget(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="none"
+                    className="font-mono"
+                  />
+                </Field>
+              </div>
+              <Field label="Extra instructions" hint="appended to the default prompt">
+                <Textarea
+                  value={draft.systemPrompt}
+                  onChange={(e) => draft.setSystemPrompt(e.target.value)}
+                  rows={2}
+                  placeholder="Prefer small commits. (optional)"
+                  className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
+                />
+              </Field>
+              <Field label="Allowed tools" hint="click to toggle">
+                <ToolPicker draft={draft} />
+              </Field>
             </>
           ) : (
             <>
@@ -241,11 +304,17 @@ function AgentOptionsSummary({ options }: { options: Record<string, unknown> }) 
     const value = options[key];
     return Array.isArray(value) && value.length ? (value as string[]) : null;
   };
-  const systemPrompt = str("system_prompt");
+  // A preset prompt is the harness's own, so what's worth showing is the fact
+  // of it plus whatever the agent appended.
+  const preset = isDefaultPrompt(options.system_prompt);
+  const systemPrompt = preset
+    ? (options.system_prompt as { append?: string }).append || null
+    : str("system_prompt");
   const rows: [string, string][] = [];
   const push = (label: string, value: string | null) => {
     if (value) rows.push([label, value]);
   };
+  if (preset) push("system prompt", "the default prompt");
   push("model", str("model"));
   push("permission mode", str("permission_mode"));
   push("workspace", str("workspace"));

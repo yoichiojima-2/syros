@@ -415,6 +415,51 @@ async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
     assert session["options"]["allowed_tools"] == ["mcp__bq__query"]
 
 
+async def test_create_session_runs_the_default_agent(no_job_trigger):
+    # What the form's "Default" tab posts: no agent, no options at all. The
+    # session still records the default prompt — resolution floors it, so a run
+    # with no persona is the stock agent rather than a bare assistant.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {"prompt": "collect today's news", "agent": None, "options": {}}
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["agent"] is None
+    assert session["options"]["system_prompt"] == {"type": "preset", "preset": "claude_code"}
+
+
+async def test_create_session_appends_extra_instructions_to_the_default_prompt(no_job_trigger):
+    # The "Default" tab's extra-instructions box: the preset, plus text after it.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "collect today's news",
+            "options": {
+                "system_prompt": {
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "Cite every source.",
+                }
+            },
+        }
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["options"]["system_prompt"]["append"] == "Cite every source."
+
+
+async def test_create_session_rejects_an_unknown_preset(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(SyrosError, match="preset"):
+        await api(store).create_session(
+            {"prompt": "go", "options": {"system_prompt": {"type": "file", "path": "/p.md"}}}
+        )
+    assert store.sessions == {}
+
+
 async def test_create_session_resolves_agent(no_job_trigger):
     store = FakeStore()
     await store.create_agent(
@@ -1019,6 +1064,25 @@ async def test_skill_file_read_write_delete():
     assert "logo.bin" not in objects.skills["pdf"]
     with pytest.raises(NotFound):
         await console.delete_skill_file("pdf", "logo.bin")
+
+
+async def test_writing_a_file_creates_the_skill():
+    """What the console's folder upload relies on: a skill has no create
+    endpoint, it exists as soon as the first file lands under its prefix. The
+    browser walks the directory and sends one write per file, nested paths and
+    all — global or scoped to a workspace."""
+    objects = FakeObjects()
+    console = api(FakeStore(), objects=objects)
+
+    await console.write_skill_file("my-skill", "SKILL.md", "# new")
+    await console.write_skill_file("my-skill", "scripts/fill.py", "print()")
+    assert objects.skills["my-skill"] == {"SKILL.md": b"# new", "scripts/fill.py": b"print()"}
+    listing = await console.skill_files("my-skill")
+    assert [f["name"] for f in listing["files"]] == ["SKILL.md", "scripts/fill.py"]
+
+    await console.write_skill_file("ws-skill", "SKILL.md", "# ws", workspace="team")
+    assert objects.workspace_skills["team"]["ws-skill"] == {"SKILL.md": b"# ws"}
+    assert "ws-skill" not in objects.skills  # scopes never collide
 
 
 async def test_skill_file_too_large():

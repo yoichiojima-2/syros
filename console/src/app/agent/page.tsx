@@ -14,6 +14,7 @@ import { SessionForm } from "@/components/session-form";
 import { useAction, useAgent, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { compact, relTime } from "@/lib/format";
+import { isDefaultPrompt } from "@/lib/types";
 import type { AgentSummary } from "@/lib/types";
 
 // One stored agent: what it is and the options every referencing run inherits.
@@ -35,6 +36,29 @@ function setOptions(options: Record<string, unknown>): [string, string][] {
     }
     return [[key, compact(value, 60)]];
   });
+}
+
+/** The agent's system prompt: a persona it was given, the default prompt, or
+ *  both — the preset carries its additions in `append`. */
+function SystemPrompt({ options }: { options: Record<string, unknown> }) {
+  const value = options.system_prompt;
+  const preset = isDefaultPrompt(value);
+  const text = preset ? (value.append ?? "") : typeof value === "string" ? value : "";
+  if (!preset && !text) return null;
+  return (
+    <div className="space-y-2">
+      {preset && (
+        <p className="text-[12px] text-muted-foreground">
+          Runs with the harness&apos;s default system prompt{text && ", plus:"}
+        </p>
+      )}
+      {text && (
+        <pre className="chat-prose overflow-x-auto rounded-lg border border-border bg-surface px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">
+          {text}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 export default function AgentPage() {
@@ -157,11 +181,7 @@ function AgentInner() {
               <Skeleton className="h-20 w-full" />
             ) : (
               <>
-                {(agent.options.system_prompt as string) && (
-                  <pre className="chat-prose overflow-x-auto rounded-lg border border-border bg-surface px-3 py-2 font-mono text-[12px] whitespace-pre-wrap">
-                    {agent.options.system_prompt as string}
-                  </pre>
-                )}
+                <SystemPrompt options={agent.options} />
                 <div className="flex flex-wrap gap-1.5">
                   {setOptions(agent.options)
                     .filter(([key]) => key !== "system_prompt")

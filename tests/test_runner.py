@@ -54,6 +54,18 @@ class FakeClient:
         pass
 
 
+@pytest.fixture(autouse=True)
+def run_log(monkeypatch):
+    """Capture the release-time audit rows instead of streaming to BigQuery."""
+    rows = []
+    monkeypatch.setattr(
+        syros.runner.analytics,
+        "append_run_log",
+        lambda project, row, dataset: rows.append({"project": project, "dataset": dataset, **row}),
+    )
+    return rows
+
+
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     monkeypatch.setenv("SYROS_PROJECT", "proj-1")
@@ -269,6 +281,29 @@ async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_syn
     assert session["published"] == 2
 
 
+async def test_runner_tells_the_default_agent_about_mounts_without_losing_the_preset(
+    env, store, fake_harness, gcs_sync
+):
+    """A default-prompt session keeps its preset: the mount notice rides its
+    `append`, rather than becoming a string that replaces the preset."""
+    await store.create_session(
+        SID,
+        {
+            "system_prompt": {"type": "preset", "preset": "claude_code", "append": "Be terse."},
+            "artifacts": "workspace",
+        },
+    )
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    prompt = client.options.system_prompt
+    assert prompt["preset"] == "claude_code"
+    assert prompt["append"].startswith("Be terse.\n\n")
+    assert "./artifacts/workspace/ (read-write" in prompt["append"]
+
+
 async def test_runner_mount_prompt_stands_alone_without_system_prompt(
     env, store, fake_harness, gcs_sync
 ):
@@ -386,7 +421,7 @@ async def test_runner_forks_even_when_branch_shares_current_sdk_session(env, sto
     assert client.options.fork_session is True
 
 
-async def test_runner_stops_writing_when_lease_lost(env, store, monkeypatch):
+async def test_runner_stops_writing_when_lease_lost(env, store, monkeypatch, run_log):
     import asyncio
 
     class SlowClient(FakeClient):
@@ -418,6 +453,8 @@ async def test_runner_stops_writing_when_lease_lost(env, store, monkeypatch):
     assert session["runtime"]["status"] == "running"
     assert session["runtime"]["stop_reason"] is None
     assert session["runtime"]["lease_id"] == "thief"
+    # ...and logs no audit row: it never finished a run to account for
+    assert run_log == []
 
 
 async def test_runner_resolves_builtin_mcp_server(env, store, fake_harness, monkeypatch):
@@ -509,3 +546,89 @@ async def test_runner_fails_fast_on_connector_error(
     assert store.workspaces["shared"]["lease_session_id"] is None
     # the prompt stays queued for a retry
     assert [m["consumed"] for m in store.inbox[SID]] == [False]
+
+
+async def test_runner_streams_run_log_row_at_release(env, store, fake_harness, run_log):
+    await store.create_session(SID, {"model": "m", "workspace": "shared"}, created_by="alice")
+    await store.push_inbox(SID, "message", "do the thing")
+
+    await run(SID)
+
+    (row,) = run_log
+    assert row["project"] == "proj-1"
+    assert row["dataset"] == "syros"
+    assert row["session_id"] == SID
+    assert row["stop_reason"] == "success"
+    assert row["run_cost_usd"] == 0.25
+    assert row["cost_usd"] == 0.25
+    assert row["seq_head"] == 6
+    assert row["branch"] == "main"
+    assert row["model"] == "m"
+    assert row["workspace"] == "shared"
+    assert row["created_by"] == "alice"
+    assert row["released_at"]  # ISO timestamp of the release
+
+
+async def test_runner_run_log_reports_this_runs_cost_not_the_total(
+    env, store, fake_harness, run_log
+):
+    # A session resumed with prior spend: cost_usd is cumulative, run_cost_usd
+    # is only what this run added.
+    await store.create_session(SID, {})
+    await store.update_session(SID, cost_usd=1.0)
+    await store.push_inbox(SID, "message", "again")
+
+    await run(SID)
+
+    (row,) = run_log
+    assert row["run_cost_usd"] == 0.25
+    assert row["cost_usd"] == 1.25
+
+
+async def test_runner_survives_run_log_failure(env, store, fake_harness, monkeypatch):
+    def boom(project, row, dataset):
+        raise RuntimeError("bigquery down")
+
+    monkeypatch.setattr(syros.runner.analytics, "append_run_log", boom)
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    session = await store.get_session(SID)
+    assert session["runtime"]["status"] == "idle"
+    assert session["runtime"]["stop_reason"] == "success"
+    assert session["cost_usd"] == 0.25
+
+
+async def test_runner_logs_the_workspace_busy_run(env, store, fake_harness, run_log):
+    """A blocked run costs nothing but still belongs in the audit trail —
+    Firestore won't remember it once the session is deleted."""
+    await store.create_session(SID, {"workspace": "shared"})
+    await store.claim_workspace("shared", "other-session", 3600)
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (row,) = run_log
+    assert row["session_id"] == SID
+    assert row["stop_reason"] == "workspace_busy"
+    assert row["run_cost_usd"] == 0.0
+    assert row["workspace"] == "shared"
+
+
+async def test_runner_logs_the_connector_error_run(
+    env, store, fake_harness, gcs_sync, run_log, monkeypatch
+):
+    def boom(project, names):
+        raise syros.runner.connectors.ConnectorError("connector 'github' has no stored credential")
+
+    monkeypatch.setattr(syros.runner.connectors, "mcp_servers_for", boom)
+    await store.create_session(SID, {"connectors": ["github"]})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    (row,) = run_log
+    assert row["stop_reason"] == "connector_error"
+    assert row["run_cost_usd"] == 0.0

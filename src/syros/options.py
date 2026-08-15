@@ -42,6 +42,14 @@ ArtifactMode = Literal["rw", "ro"]
 # never records no model, whatever the stored layers say.
 DEFAULT_MODEL = "sonnet"
 
+# claude_agent_sdk starts a run with *no* system prompt — a bare assistant. The
+# harness's own prompt, the one that makes it the default coding agent, is a
+# preset, and this is its name on the wire (claude_agent_sdk's spelling — the
+# option syros calls "the default prompt"). It is the one preset syros defines:
+# a "file" preset would name a path on a machine the sandbox doesn't have.
+DEFAULT_PROMPT_PRESET = "claude_code"
+_PRESET_KEYS = ("type", "preset", "append")
+
 # Platform-owned in-process MCP servers, requested by reference because options
 # travel through Firestore. Resolved into live server objects in the sandbox
 # (runner.BUILTIN_SERVERS) — this module must stay importable on a client with
@@ -49,10 +57,63 @@ DEFAULT_MODEL = "sonnet"
 BUILTIN_MCP_SERVERS = ("bigquery",)
 
 
+def default_prompt(append: str | None = None) -> dict[str, Any]:
+    """The `system_prompt` value that runs the harness's default agent.
+
+    An unset `system_prompt` already resolves to this (agents.resolve), so
+    naming it explicitly is for the two cases that differ: adding instructions
+    after that prompt instead of replacing it (`append`), and pinning it over a
+    persona a stored layer would otherwise contribute.
+    """
+    prompt: dict[str, Any] = {"type": "preset", "preset": DEFAULT_PROMPT_PRESET}
+    if append:
+        prompt["append"] = append
+    return prompt
+
+
+def append_system_prompt(system_prompt: Any, text: str) -> Any:
+    """Add platform-owned instructions to whatever the session configured.
+
+    A preset keeps its shape — the addition rides its `append`, so appending to
+    it never quietly turns the default prompt into a plain string that replaces
+    it.
+    """
+    if not text:
+        return system_prompt
+    if isinstance(system_prompt, dict):
+        appended = "\n\n".join(filter(None, (system_prompt.get("append"), text)))
+        return {**system_prompt, "append": appended}
+    return "\n\n".join(filter(None, (system_prompt, text)))
+
+
+def _validate_system_prompt(system_prompt: Any) -> None:
+    if system_prompt is None or isinstance(system_prompt, str):
+        return
+    preset = f'{{"type": "preset", "preset": "{DEFAULT_PROMPT_PRESET}"}}'
+    if not isinstance(system_prompt, dict):
+        raise OptionsError(f"system_prompt must be a plain string or {preset} in syros")
+    if (
+        system_prompt.get("type") != "preset"
+        or system_prompt.get("preset") != DEFAULT_PROMPT_PRESET
+    ):
+        raise OptionsError(
+            f"system_prompt: the only preset syros defines is {preset} —"
+            " a file preset would name a path the sandbox doesn't have"
+        )
+    if unknown := sorted(set(system_prompt) - set(_PRESET_KEYS)):
+        raise OptionsError(f"system_prompt preset: unknown key(s): {', '.join(unknown)}")
+    if (append := system_prompt.get("append")) is not None and not isinstance(append, str):
+        raise OptionsError("system_prompt preset: 'append' must be a string")
+
+
 @dataclass
 class AgentOptions:
     # --- mirrored from claude_agent_sdk; same semantics, run in the sandbox ---
-    system_prompt: str | None = None
+    # A plain string is a persona, replacing the harness's own prompt;
+    # default_prompt() keeps that prompt and optionally appends to it. Left
+    # unset in every layer, a session resolves to default_prompt() — an
+    # explicit "" is what asks for no system prompt at all.
+    system_prompt: str | dict[str, Any] | None = None
     model: str | None = None
     tools: list[str] | None = None
     allowed_tools: list[str] = field(default_factory=list)
@@ -139,8 +200,7 @@ class AgentOptions:
         return dict(self.artifacts)
 
     def validate(self) -> None:
-        if self.system_prompt is not None and not isinstance(self.system_prompt, str):
-            raise OptionsError("system_prompt must be a plain string in syros")
+        _validate_system_prompt(self.system_prompt)
         if self.workspace is not None:
             validate_name("workspace", self.workspace)
         if self.agent is not None:
