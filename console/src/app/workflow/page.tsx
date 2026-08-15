@@ -1,9 +1,9 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ArrowRight, Pause, Play, Trash2, Zap } from "lucide-react";
+import { ArrowLeft, ArrowRight, Pause, Pencil, Play, Trash2, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { RunBadge, TaskBadge } from "@/components/run-badge";
 import { RunTimeline } from "@/components/run-timeline";
 import { StatCard } from "@/components/stat-card";
+import { WorkflowForm } from "@/components/workflow-form";
 import { useAction, useNow, useWorkflow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { clockTime, compact, duration, relTime, shortId, untilTime } from "@/lib/format";
@@ -56,6 +57,7 @@ function WorkflowInner() {
   const { workflow, runs, missing, refresh } = useWorkflow(name);
   const now = useNow();
   const [flash, act] = useAction();
+  const [editing, setEditing] = useState(false);
 
   if (!name || missing) {
     return (
@@ -110,6 +112,15 @@ function WorkflowInner() {
           <Button
             variant="outline"
             size="sm"
+            disabled={!workflow}
+            onClick={() => setEditing((on) => !on)}
+          >
+            <Pencil />
+            Edit
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             disabled={!workflow || !workflow.cron}
             onClick={() =>
               command(async () => {
@@ -146,6 +157,17 @@ function WorkflowInner() {
         <p className="rounded-lg border border-destructive/40 bg-card px-3 py-2 text-[12px] text-destructive">
           {workflow.last_error}
         </p>
+      )}
+
+      {editing && workflow && (
+        <WorkflowForm
+          initial={workflow}
+          onCancel={() => setEditing(false)}
+          onCreated={() => {
+            setEditing(false);
+            refresh();
+          }}
+        />
       )}
 
       <Stats workflow={workflow} runs={runs} />

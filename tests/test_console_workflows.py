@@ -166,6 +166,44 @@ async def test_create_workflow_rejects_bad_cron():
         )
 
 
+# --- update ---
+
+
+async def test_update_workflow_replaces_tasks_and_schedule():
+    store = FakeStore()
+    await seed(store)
+    result = await api(store).update_workflow(
+        "nightly",
+        {
+            "tasks": [
+                {"id": "research", "prompt": "find the numbers"},
+                {"id": "report", "prompt": "write it up", "depends_on": ["research"]},
+            ],
+            "cron": "@daily",
+            "timezone": "Asia/Tokyo",
+            "options": {"model": "m2"},
+        },
+    )
+    assert [t["id"] for t in result["workflow"]["tasks"]] == ["research", "report"]
+    assert result["workflow"]["cron"] == "0 0 * * *"
+    stored = store.workflows["nightly"]
+    assert stored["options"]["model"] == "m2"
+    assert stored["schedule"]["timezone"] == "Asia/Tokyo"
+    detail = await api(store).workflow("nightly")
+    assert len(detail["workflow"]["tasks"]) == 2
+
+
+async def test_update_workflow_unknown_and_bad_option():
+    store = FakeStore()
+    with pytest.raises(NotFound):
+        await api(store).update_workflow("ghost", {"tasks": [{"id": "main", "prompt": "x"}]})
+    await seed(store)
+    with pytest.raises(OptionsError):
+        await api(store).update_workflow(
+            "nightly", {"tasks": [{"id": "main", "prompt": "x"}], "options": {"cwd": "/tmp"}}
+        )
+
+
 # --- actions ---
 
 

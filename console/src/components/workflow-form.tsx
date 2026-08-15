@@ -4,7 +4,6 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   BigQueryToggle,
   buildOptionsPayload,
@@ -15,9 +14,11 @@ import {
   ToolPicker,
   useOptionsDraft,
 } from "@/components/option-fields";
+import { emptyTask, TaskListEditor, type TaskDraft } from "@/components/task-list-editor";
 import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import type { WorkflowSummary } from "@/lib/types";
 
 // The presets cover what people actually schedule; anything else is typed in.
 const PRESETS: { label: string; cron: string }[] = [
@@ -29,11 +30,6 @@ const PRESETS: { label: string; cron: string }[] = [
   { label: "Every 15m", cron: "*/15 * * * *" },
 ];
 
-const TASKS_PLACEHOLDER = `[
-  { "id": "research", "prompt": "find the numbers" },
-  { "id": "report", "prompt": "write it up from: {{tasks.research.result}}" }
-]`;
-
 function browserZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -42,29 +38,46 @@ function browserZone(): string {
   }
 }
 
-/** New-workflow form. The simple mode is one prompt (a one-task workflow, the
- *  old "deployment"); the chain mode takes the tasks array as JSON. Options
- *  mirror the AgentOptions subset a session stores and become the workflow's
- *  defaults, posted as that same serialized dict — the server rejects anything
- *  it doesn't recognize rather than dropping it. */
+/** The stored tasks of a workflow being edited, as editor drafts. Stored
+ *  depends_on is always explicit (normalize_tasks resolves the linear default
+ *  at write time), so it round-trips verbatim. */
+function draftsFrom(workflow: WorkflowSummary): TaskDraft[] {
+  return workflow.tasks.map((task, i) => ({
+    key: `stored-${i}-${task.id}`,
+    id: task.id,
+    prompt: task.prompt,
+    agent: task.agent ?? "",
+    dependsOn: task.depends_on ?? [],
+    options: task.options,
+  }));
+}
+
+/** Workflow definition form, for a new workflow or (with `initial`) an edit of
+ *  an existing one. The task list is always the shape being edited — a
+ *  one-task workflow is just the short list, and it's the classic scheduled
+ *  prompt. Options mirror the AgentOptions subset a session stores and become
+ *  the workflow's defaults, posted as that same serialized dict — the server
+ *  rejects anything it doesn't recognize rather than dropping it. */
 export function WorkflowForm({
   onCreated,
   onCancel,
+  initial,
 }: {
   onCreated: (name: string) => void;
   onCancel: () => void;
+  initial?: WorkflowSummary;
 }) {
   const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
   const { agents } = useAgents();
-  const draft = useOptionsDraft();
-  const [name, setName] = useState("");
-  const [agent, setAgent] = useState("");
-  const [cron, setCron] = useState("0 9 * * *");
-  const [timezone, setTimezone] = useState(browserZone());
-  const [chain, setChain] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [tasksJson, setTasksJson] = useState("");
+  const draft = useOptionsDraft(initial?.options ?? {});
+  const editing = initial !== undefined;
+  const [name, setName] = useState(initial?.name ?? "");
+  const [cron, setCron] = useState(initial ? (initial.cron ?? "") : "0 9 * * *");
+  const [timezone, setTimezone] = useState(initial?.timezone || browserZone());
+  const [tasks, setTasks] = useState<TaskDraft[]>(
+    initial ? draftsFrom(initial) : [emptyTask("main")],
+  );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -74,18 +87,25 @@ export function WorkflowForm({
     setBusy(true);
     setError("");
     try {
-      let tasks: unknown = null;
-      if (chain) {
-        tasks = JSON.parse(tasksJson); // surfaced as a form error if invalid
-        if (!Array.isArray(tasks)) throw new Error("tasks must be a JSON array");
-      }
-      await post("/api/workflows", {
-        name: name.trim(),
+      const payload = tasks.map((task) => ({
+        id: task.id.trim(),
+        prompt: task.prompt,
+        agent: task.agent.trim() || null,
+        // An untouched dependency control stays off the payload so the server
+        // applies its linear default.
+        ...(task.dependsOn !== null ? { depends_on: task.dependsOn } : {}),
+        ...(task.options ? { options: task.options } : {}),
+      }));
+      const body = {
         cron: cron.trim() || null,
         timezone: timezone.trim(),
-        ...(chain ? { tasks } : { prompt, agent: agent.trim() || null }),
+        tasks: payload,
         options: buildOptionsPayload(draft),
-      });
+      };
+      await post(
+        editing ? `/api/workflows/${encodeURIComponent(name)}/update` : "/api/workflows",
+        editing ? body : { name: name.trim(), ...body },
+      );
       onCreated(name.trim());
     } catch (err) {
       setError((err as Error).message);
@@ -97,22 +117,25 @@ export function WorkflowForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New workflow</CardTitle>
+        <CardTitle>{editing ? `Edit ${initial.name}` : "New workflow"}</CardTitle>
         <CardDescription>
-          A named chain of one-shot tasks — every firing runs each task as a fresh session. One
-          task and a cron is the classic scheduled prompt.
+          {editing
+            ? "Edits apply to future runs — a run in flight keeps the definition it started with."
+            : "Tasks run one after another, each as a fresh session. One task and a cron is the classic scheduled prompt."}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-3">
-            <Field label="Name" hint="lowercase, no spaces">
+            <Field label="Name" hint={editing ? "fixed" : "lowercase, no spaces"}>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="nightly-report"
-                autoFocus
+                autoFocus={!editing}
+                readOnly={editing}
                 required
+                className={cn("font-mono", editing && "text-muted-foreground")}
               />
             </Field>
             <Field label="Cron" hint="empty = manual-only">
@@ -149,60 +172,22 @@ export function WorkflowForm({
               </button>
             ))}
           </div>
-          <div className="flex gap-1.5">
-            {[false, true].map((mode) => (
-              <button
-                key={String(mode)}
-                type="button"
-                onClick={() => setChain(mode)}
-                className={cn(
-                  "rounded-full border px-2.5 py-0.5 text-[11px] transition-colors",
-                  chain === mode
-                    ? "border-transparent bg-primary-soft text-foreground"
-                    : "border-border text-muted-foreground hover:bg-secondary",
-                )}
-              >
-                {mode ? "Task chain (JSON)" : "Single task"}
-              </button>
-            ))}
+          {/* A plain heading, not Field: Field is a <label>, and the task list
+              carries its own labels and buttons. */}
+          <div className="space-y-1.5">
+            <span className="flex items-baseline gap-1.5">
+              <span className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+                Tasks
+              </span>
+              <span className="text-[10px] text-faint">run in order; each one a fresh session</span>
+            </span>
+            <TaskListEditor
+              tasks={tasks}
+              onChange={setTasks}
+              agents={(agents ?? []).map((a) => a.name)}
+            />
           </div>
-          {chain ? (
-            <Field
-              label="Tasks"
-              hint="id, prompt, agent?, options?, depends_on? — omitted depends_on chains to the previous task"
-            >
-              <Textarea
-                value={tasksJson}
-                onChange={(e) => setTasksJson(e.target.value)}
-                rows={8}
-                required
-                placeholder={TASKS_PLACEHOLDER}
-                className="rounded-lg border border-input bg-card px-3 py-2 font-mono text-[12px]"
-              />
-            </Field>
-          ) : (
-            <Field label="Prompt">
-              <Textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                rows={3}
-                required
-                placeholder="Profile the CSVs in the workspace and write report.md"
-                className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
-              />
-            </Field>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            {!chain && (
-              <Field label="Agent" hint="stored persona">
-                <ChoiceField
-                  value={agent}
-                  onChange={setAgent}
-                  choices={(agents ?? []).map((a) => a.name)}
-                  noneLabel="none"
-                />
-              </Field>
-            )}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Field label="Model">
               <ChoiceField
                 value={draft.model}
@@ -239,7 +224,7 @@ export function WorkflowForm({
               />
             </Field>
           </div>
-          <Field label="Allowed tools" hint="click to toggle; defaults for every task">
+          <Field label="Allowed tools" hint="click to toggle; applies to every task">
             <ToolPicker draft={draft} />
           </Field>
           <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
@@ -251,7 +236,13 @@ export function WorkflowForm({
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">
             <Button type="submit" size="sm" disabled={busy}>
-              {busy ? "Creating…" : "Create workflow"}
+              {busy
+                ? editing
+                  ? "Saving…"
+                  : "Creating…"
+                : editing
+                  ? "Save workflow"
+                  : "Create workflow"}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
               Cancel

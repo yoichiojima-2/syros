@@ -497,6 +497,27 @@ class ConsoleAPI:
         )
         return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
 
+    async def update_workflow(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a workflow's definition from the console's edit form.
+
+        Full definition every time — tasks, option defaults, schedule. The
+        form always sends `tasks` (the one-task shorthand is create-only);
+        pause state, counters, and run history stay put.
+        """
+        await self._require_workflow(name)
+        defaults = options_from_doc(dict(body.get("options") or {}))
+        defaults.project = defaults.project or self._options.project
+        workflow = await workflows.update(
+            name,
+            list(body.get("tasks") or []),
+            defaults=defaults,
+            options=self._options,
+            cron_expression=(str(body["cron"]).strip() or None) if body.get("cron") else None,
+            timezone=str(body.get("timezone") or workflows.DEFAULT_TIMEZONE),
+            store=self._store,
+        )
+        return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
+
     async def set_workflow_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
         await self._require_workflow(name)
         await workflows.set_enabled(name, enabled, store=self._store)
