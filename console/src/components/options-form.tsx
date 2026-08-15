@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   BigQueryToggle,
   buildOptionsPayload,
@@ -12,6 +11,7 @@ import {
   Field,
   MODELS,
   SkillPicker,
+  SystemPromptField,
   ToolPicker,
   useOptionsDraft,
 } from "@/components/option-fields";
@@ -69,15 +69,7 @@ export function OptionsForm({
           />
         </Field>
       )}
-      <Field label="System prompt">
-        <Textarea
-          value={draft.systemPrompt}
-          onChange={(e) => draft.setSystemPrompt(e.target.value)}
-          rows={3}
-          placeholder="You are a careful data analyst."
-          className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
-        />
-      </Field>
+      <SystemPromptField draft={draft} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Field label="Model">
           <ChoiceField

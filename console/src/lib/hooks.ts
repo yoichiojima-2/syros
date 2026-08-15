@@ -257,17 +257,27 @@ export function useConnectors(intervalMs = 15000): ConnectorSummary[] | null {
   return connectors;
 }
 
-/** The skill catalog, each entry carrying where it is installed. */
-export function useSkills(intervalMs = 8000): SkillSummary[] | null {
+/** The skill catalog, each entry carrying where it is installed. Exposes a
+ *  refresh like useSkillFiles, so an upload shows up without waiting out the
+ *  poll. */
+export function useSkills(intervalMs = 8000): {
+  skills: SkillSummary[] | null;
+  refresh: () => void;
+} {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
-  usePolling((alive) => {
-    api<SkillsResponse>("/api/skills")
-      .then((data) => {
-        if (alive()) setSkills(data.skills);
-      })
-      .catch(() => {});
-  }, intervalMs);
-  return skills;
+  const [nonce, setNonce] = useState(0);
+  usePolling(
+    (alive) => {
+      api<SkillsResponse>("/api/skills")
+        .then((data) => {
+          if (alive()) setSkills(data.skills);
+        })
+        .catch(() => {});
+    },
+    intervalMs,
+    [nonce],
+  );
+  return { skills, refresh: () => setNonce((n) => n + 1) };
 }
 
 /** Files in one catalog skill. Like useWorkspaceFiles this exposes a refresh,

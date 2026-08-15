@@ -1,7 +1,14 @@
 import pytest
 
 from syros.errors import OptionsError
-from syros.options import AgentOptions, build_sdk_options, model_env, options_from_doc
+from syros.options import (
+    AgentOptions,
+    append_system_prompt,
+    build_sdk_options,
+    default_prompt,
+    model_env,
+    options_from_doc,
+)
 
 
 def test_requires_project():
@@ -138,6 +145,58 @@ def test_build_sdk_options_maps_fields():
 
     sdk = build_sdk_options(options, setting_sources=["user"])
     assert sdk.setting_sources == ["user"]
+
+
+def test_default_prompt_rides_options_and_survives_the_wire():
+    """The default-agent prompt is an ordinary serialized option."""
+    options = AgentOptions(project="p", system_prompt=default_prompt())
+    options.validate()
+    doc = options.serialize()
+    assert doc["system_prompt"] == {"type": "preset", "preset": "claude_code"}
+    restored = options_from_doc(doc)
+    assert build_sdk_options(restored).system_prompt == doc["system_prompt"]
+
+
+def test_default_prompt_with_append():
+    options = AgentOptions(project="p", system_prompt=default_prompt("Be terse."))
+    options.validate()
+    assert options.system_prompt["append"] == "Be terse."
+    # No instructions means no key at all, rather than an empty append.
+    assert "append" not in default_prompt("")
+
+
+def test_rejects_unknown_system_prompt_preset():
+    for prompt in (
+        {"type": "preset", "preset": "sonnet"},
+        {"type": "file", "path": "/etc/prompt.md"},
+        {"preset": "claude_code"},
+        42,
+    ):
+        with pytest.raises(OptionsError, match="system_prompt"):
+            AgentOptions(project="p", system_prompt=prompt).validate()
+
+
+def test_rejects_malformed_default_prompt_preset():
+    with pytest.raises(OptionsError, match="unknown key"):
+        AgentOptions(project="p", system_prompt={**default_prompt(), "exclude": True}).validate()
+    with pytest.raises(OptionsError, match="append"):
+        AgentOptions(project="p", system_prompt={**default_prompt(), "append": 1}).validate()
+
+
+def test_append_system_prompt_keeps_the_preset_a_preset():
+    """Platform-owned additions must never flatten the preset into a string —
+    that would silently replace the default prompt instead of adding to it."""
+    assert append_system_prompt("persona", "mounts") == "persona\n\nmounts"
+    assert append_system_prompt(None, "mounts") == "mounts"
+    assert append_system_prompt("persona", "") == "persona"
+    assert append_system_prompt(default_prompt(), "mounts") == {
+        "type": "preset",
+        "preset": "claude_code",
+        "append": "mounts",
+    }
+    assert append_system_prompt(default_prompt("be terse"), "mounts")["append"] == (
+        "be terse\n\nmounts"
+    )
 
 
 def test_model_env_with_project():

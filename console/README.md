@@ -7,13 +7,13 @@ Pages: `/` (overview: stat tiles, cost chart, recent sessions), `/dashboard`
 (analytics: spend and activity per day, state mix, cost by model), `/sessions`
 (list + new-session form), `/session?sid=...` (transcript, composer, approvals,
 artifacts), `/approvals` (global pending queue), `/agents` + `/agent` (stored
-personas), `/deployments` + `/deployment` (cron runs, outcome/duration bars),
-`/connectors` (catalog + credential status), `/workspaces` + `/workspace`
-(shared working directories, file editing), `/artifacts` (shared spaces),
-`/skills` + `/skill` (the Agent Skills catalog: file editing, and where each
-skill is installed — installing itself is a Skills field on the options forms).
-Endpoints
-live in `src/syros/console/api.py`.
+personas), `/workflows` + `/workflow` (task chains, cron runs, outcome/duration
+bars), `/connectors` (catalog + credential status), `/workspaces` +
+`/workspace` (shared working directories, file editing), `/artifacts` (shared
+spaces), `/skills` + `/skill` (the Agent Skills catalog: drop a skill directory
+to create one, edit its files in place, and see where each skill is installed —
+installing itself is a Skills field on the options forms), `/settings` (global
+option defaults). Endpoints live in `src/syros/console/api.py`.
 
 The session page includes a Claude-style artifact panel: files the agent
 writes are reconstructed client-side by replaying Write/Edit tool calls from

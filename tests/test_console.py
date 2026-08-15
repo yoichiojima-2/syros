@@ -19,205 +19,8 @@ from syros.console.api import (
     to_jsonable,
 )
 from syros.errors import OptionsError, SyrosError
-from syros.names import validate_file
 from syros.options import AgentOptions
-from syros.skills import skill_prefix
-from syros.workspace import workspace_prefix
-
-from .fakes import FakeStore, append_message
-
-
-class FakeObjects:
-    """Implements syros.console.objects.ObjectStoreProtocol over a name->bytes dict."""
-
-    def __init__(self, workspaces=None, spaces=None, skills=None):
-        # workspaces' shared directories live under the workspaces/ GCS prefix
-        self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
-        self.spaces: dict[str, dict[str, bytes]] = spaces or {}
-        self.skills: dict[str, dict[str, bytes]] = skills or {}
-        # tags live beside the bytes, keyed (kind, owner, file) — mirrors GCS
-        # custom metadata surviving independently of content rewrites
-        self.tags: dict[tuple[str, str, str], list[str]] = {}
-
-    @staticmethod
-    def _stats(files):
-        return {
-            "file_count": len(files),
-            "total_size": sum(map(len, files.values())),
-            "updated": None,
-        }
-
-    async def workspace_stats(self):
-        return {name: self._stats(files) for name, files in self.workspaces.items()}
-
-    async def workspace_files(self, name):
-        files = self.workspaces.get(name, {})
-        return [
-            {"name": n, "size": len(b), "updated": None, "tags": self.tags.get(("ws", name, n), [])}
-            for n, b in files.items()
-        ]
-
-    @staticmethod
-    def _check(name, file):
-        """GcsObjects validates by building the prefix; mirror that so the fake
-        rejects the same names the real object store would."""
-        workspace_prefix(name)
-        validate_file("workspace file", file)
-
-    async def read_workspace_file(self, name, file):
-        import mimetypes
-
-        self._check(name, file)
-        files = self.workspaces.get(name, {})
-        if file not in files:
-            raise FileNotFoundError(file)
-        if len(files[file]) > 100:
-            raise ValueError("too large")
-        return files[file], mimetypes.guess_type(file)[0] or "application/octet-stream"
-
-    async def write_workspace_file(self, name, file, data):
-        self._check(name, file)
-        self.workspaces.setdefault(name, {})[file] = data
-
-    async def delete_workspace_file(self, name, file):
-        self._check(name, file)
-        files = self.workspaces.get(name, {})
-        if file not in files:
-            raise FileNotFoundError(file)
-        del files[file]
-        self.tags.pop(("ws", name, file), None)
-
-    def _rename(self, kind, files, owner, src, dst):
-        if src not in files:
-            raise FileNotFoundError(src)
-        if src != dst and dst in files:
-            raise FileExistsError(dst)
-        files[dst] = files.pop(src)
-        if (kind, owner, src) in self.tags:
-            self.tags[(kind, owner, dst)] = self.tags.pop((kind, owner, src))
-
-    def _delete_prefix(self, files, kind, owner, subpath, max_files):
-        matching = [n for n in files if subpath is None or n.startswith(subpath)]
-        if len(matching) > max_files:
-            raise ValueError(f"{len(matching)} files (limit {max_files})")
-        for n in matching:
-            del files[n]
-            self.tags.pop((kind, owner, n), None)
-        return len(matching)
-
-    async def rename_workspace_file(self, name, src, dst):
-        self._check(name, src)
-        validate_file("workspace file", dst)
-        self._rename("ws", self.workspaces.get(name, {}), name, src, dst)
-
-    async def set_workspace_tags(self, name, file, tags):
-        self._check(name, file)
-        if file not in self.workspaces.get(name, {}):
-            raise FileNotFoundError(file)
-        self.tags[("ws", name, file)] = tags
-
-    async def delete_workspace_prefix(self, name, subpath, max_files):
-        workspace_prefix(name)
-        return self._delete_prefix(self.workspaces.get(name, {}), "ws", name, subpath, max_files)
-
-    async def space_stats(self):
-        return {name: self._stats(files) for name, files in self.spaces.items()}
-
-    async def list_artifacts(self, space):
-        files = self.spaces.get(space, {})
-        return [
-            {
-                "name": n,
-                "size": len(b),
-                "updated": None,
-                "tags": self.tags.get(("space", space, n), []),
-            }
-            for n, b in files.items()
-        ]
-
-    async def read_artifact(self, space, name):
-        import mimetypes
-
-        files = self.spaces.get(space, {})
-        if name not in files:
-            raise FileNotFoundError(name)
-        if len(files[name]) > 100:
-            raise ValueError("too large")
-        return files[name], mimetypes.guess_type(name)[0] or "application/octet-stream"
-
-    async def write_artifact_file(self, space, name, data):
-        validate_file("artifact", name)
-        self.spaces.setdefault(space, {})[name] = data
-
-    async def delete_artifact_file(self, space, name):
-        validate_file("artifact", name)
-        files = self.spaces.get(space, {})
-        if name not in files:
-            raise FileNotFoundError(name)
-        del files[name]
-        self.tags.pop(("space", space, name), None)
-
-    async def rename_artifact_file(self, space, src, dst):
-        validate_file("artifact", src)
-        validate_file("artifact", dst)
-        self._rename("space", self.spaces.get(space, {}), space, src, dst)
-
-    async def set_artifact_tags(self, space, name, tags):
-        validate_file("artifact", name)
-        if name not in self.spaces.get(space, {}):
-            raise FileNotFoundError(name)
-        self.tags[("space", space, name)] = tags
-
-    async def delete_artifact_prefix(self, space, subpath, max_files):
-        count = self._delete_prefix(self.spaces.get(space, {}), "space", space, subpath, max_files)
-        if count and not self.spaces.get(space):
-            self.spaces.pop(space, None)
-        return count
-
-    @staticmethod
-    def _check_skill(name, file):
-        skill_prefix(name)
-        validate_file("skill file", file)
-
-    async def skill_stats(self):
-        return {name: self._stats(files) for name, files in self.skills.items()}
-
-    async def skill_files(self, name):
-        files = self.skills.get(name, {})
-        return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
-
-    async def read_skill_file(self, name, file):
-        import mimetypes
-
-        self._check_skill(name, file)
-        files = self.skills.get(name, {})
-        if file not in files:
-            raise FileNotFoundError(file)
-        if len(files[file]) > 100:
-            raise ValueError("too large")
-        return files[file], mimetypes.guess_type(file)[0] or "application/octet-stream"
-
-    async def write_skill_file(self, name, file, data):
-        self._check_skill(name, file)
-        self.skills.setdefault(name, {})[file] = data
-
-    async def delete_skill_file(self, name, file):
-        self._check_skill(name, file)
-        files = self.skills.get(name, {})
-        if file not in files:
-            raise FileNotFoundError(file)
-        del files[file]
-
-    async def delete_skill(self, name):
-        skill_prefix(name)
-        files = self.skills.pop(name, None)
-        if not files:
-            raise FileNotFoundError(name)
-        return len(files)
-
-    async def sync_official_skills(self):
-        self.skills.setdefault("pdf", {})["SKILL.md"] = b"# pdf"
-        return {"skills": ["pdf"], "files": 1, "skipped": []}
+from .fakes import FakeObjects, FakeStore, append_message
 
 
 @pytest.fixture(autouse=True)
@@ -393,6 +196,51 @@ async def test_create_session_carries_builtin_bigquery_server(no_job_trigger):
     session = store.sessions[result["session_id"]]
     assert session["options"]["mcp_servers"] == {"bq": {"type": "builtin", "name": "bigquery"}}
     assert session["options"]["allowed_tools"] == ["mcp__bq__query"]
+
+
+async def test_create_session_runs_the_default_agent(no_job_trigger):
+    # What the form's "Default" tab posts: no agent, no options at all. The
+    # session still records the default prompt — resolution floors it, so a run
+    # with no persona is the stock agent rather than a bare assistant.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {"prompt": "collect today's news", "agent": None, "options": {}}
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["agent"] is None
+    assert session["options"]["system_prompt"] == {"type": "preset", "preset": "claude_code"}
+
+
+async def test_create_session_appends_extra_instructions_to_the_default_prompt(no_job_trigger):
+    # The "Default" tab's extra-instructions box: the preset, plus text after it.
+    store = FakeStore()
+
+    result = await api(store).create_session(
+        {
+            "prompt": "collect today's news",
+            "options": {
+                "system_prompt": {
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": "Cite every source.",
+                }
+            },
+        }
+    )
+
+    session = store.sessions[result["session_id"]]
+    assert session["options"]["system_prompt"]["append"] == "Cite every source."
+
+
+async def test_create_session_rejects_an_unknown_preset(no_job_trigger):
+    store = FakeStore()
+    with pytest.raises(SyrosError, match="preset"):
+        await api(store).create_session(
+            {"prompt": "go", "options": {"system_prompt": {"type": "file", "path": "/p.md"}}}
+        )
+    assert store.sessions == {}
 
 
 async def test_create_session_resolves_agent(no_job_trigger):
@@ -985,6 +833,18 @@ async def test_install_skill_edits_the_targets_options():
         await console.install_skill("pdf", {"workspace": "research", "installed": False})
 
 
+async def test_skills_carry_frontmatter_description():
+    """The description is what the page leads with, so it rides the listing."""
+    frontmatter = b"---\nname: pdf\ndescription: Merge, split, and OCR PDFs\n---\n# pdf\n"
+    objects = FakeObjects(skills={"pdf": {"SKILL.md": frontmatter}, "bare": {"SKILL.md": b"# x"}})
+
+    rows = {
+        row["name"]: row for row in (await api(FakeStore(), objects=objects).skills())["skills"]
+    }
+    assert rows["pdf"]["description"] == "Merge, split, and OCR PDFs"
+    assert "description" not in rows["bare"]
+
+
 async def test_skill_file_read_write_delete():
     objects = FakeObjects(skills={"pdf": {"SKILL.md": b"# pdf"}})
     console = api(FakeStore(), objects=objects)
@@ -1010,6 +870,21 @@ async def test_skill_file_read_write_delete():
     assert "logo.bin" not in objects.skills["pdf"]
     with pytest.raises(NotFound):
         await console.delete_skill_file("pdf", "logo.bin")
+
+
+async def test_writing_a_file_creates_the_skill():
+    """What the console's folder upload relies on: a skill has no create
+    endpoint, it exists as soon as the first file lands under its prefix. The
+    browser walks the directory and sends one write per file, nested paths and
+    all."""
+    objects = FakeObjects()
+    console = api(FakeStore(), objects=objects)
+
+    await console.write_skill_file("my-skill", "SKILL.md", "# new")
+    await console.write_skill_file("my-skill", "scripts/fill.py", "print()")
+    assert objects.skills["my-skill"] == {"SKILL.md": b"# new", "scripts/fill.py": b"print()"}
+    listing = await console.skill_files("my-skill")
+    assert [f["name"] for f in listing["files"]] == ["SKILL.md", "scripts/fill.py"]
 
 
 async def test_skill_file_too_large():
@@ -1264,6 +1139,17 @@ async def test_http_artifact_and_workspace_routes():
         status, body = await asyncio.to_thread(post, "/api/skills/pdf/delete", {})
         assert status == 200 and json.loads(body)["deleted"] == 1
         assert "pdf" not in objects.skills
+
+        status, body, _ = await asyncio.to_thread(fetch, "/api/presets")
+        assert status == 200
+        assert not any(row["installed"] for row in json.loads(body)["presets"])
+
+        status, body = await asyncio.to_thread(
+            post, "/api/presets/install", {"names": ["researcher"]}
+        )
+        assert status == 200
+        assert [row["name"] for row in json.loads(body)["installed"]] == ["researcher"]
+        assert "researcher" in store.agents
     finally:
         server.shutdown()
 
@@ -1353,3 +1239,52 @@ async def test_static_serving_next_export():
         assert status == 404 and b"error" in body
     finally:
         server.shutdown()
+
+
+class FakeBlob:
+    def __init__(self, data=None, boom=False, generation=1):
+        self.data, self.boom, self.generation = data, boom, generation
+        self.reads = 0
+
+    def download_as_bytes(self, end=None):
+        self.reads += 1
+        if self.boom:
+            raise RuntimeError("gone")
+        self.asked = end
+        return self.data[: (end or len(self.data))]
+
+
+def test_descriptions_range_read_and_tolerate_failure():
+    """Only the head of each SKILL.md is fetched, and one bad blob can't blank
+    the listing — the page still has to render."""
+    from syros.console.objects import _descriptions
+
+    good = FakeBlob(b"---\ndescription: Reads PDFs\n---\n" + b"z" * 99_000)
+    described = _descriptions({"pdf": good, "broken": FakeBlob(boom=True)}, {})
+
+    assert described == {"pdf": "Reads PDFs"}
+    assert good.asked == 4096  # a prefix, not the 99 KB body
+
+
+def test_descriptions_cache_by_generation():
+    """The console polls this every 8s; a description only moves when SKILL.md
+    is rewritten, so a steady prefix must stop re-reading."""
+    from syros.console.objects import _descriptions
+
+    blob = FakeBlob(b"---\ndescription: First\n---\n")
+    cache: dict = {}
+
+    assert _descriptions({"pdf": blob}, cache) == {"pdf": "First"}
+    assert _descriptions({"pdf": blob}, cache) == {"pdf": "First"}
+    assert blob.reads == 1  # second poll served from cache
+
+    edited = FakeBlob(b"---\ndescription: Second\n---\n", generation=2)
+    assert _descriptions({"pdf": edited}, cache) == {"pdf": "Second"}
+
+    # a failed read must not be cached, or a blip hides the text until the
+    # next write; and a deleted skill must not pin its entry
+    flaky = FakeBlob(boom=True, generation=3)
+    assert _descriptions({"pdf": flaky}, cache) == {}
+    assert _descriptions({"pdf": flaky}, cache) == {}
+    assert flaky.reads == 2
+    assert _descriptions({}, cache) == {} and cache == {}

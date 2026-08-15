@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .. import agents, remote, workflows, workspaces
+from .. import agents, presets, remote, workflows, workspaces
 from .. import skills as skills_mod
 from .. import connectors as connectors_mod
 from ..journal import MAIN_BRANCH, active_branch
@@ -498,6 +498,27 @@ class ConsoleAPI:
         )
         return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
 
+    async def update_workflow(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a workflow's definition from the console's edit form.
+
+        Full definition every time — tasks, option defaults, schedule. The
+        form always sends `tasks` (the one-task shorthand is create-only);
+        pause state, counters, and run history stay put.
+        """
+        await self._require_workflow(name)
+        defaults = options_from_doc(dict(body.get("options") or {}))
+        defaults.project = defaults.project or self._options.project
+        workflow = await workflows.update(
+            name,
+            list(body.get("tasks") or []),
+            defaults=defaults,
+            options=self._options,
+            cron_expression=(str(body["cron"]).strip() or None) if body.get("cron") else None,
+            timezone=str(body.get("timezone") or workflows.DEFAULT_TIMEZONE),
+            store=self._store,
+        )
+        return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
+
     async def set_workflow_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
         await self._require_workflow(name)
         await workflows.set_enabled(name, enabled, store=self._store)
@@ -899,6 +920,29 @@ class ConsoleAPI:
         copies). Seeding installs nothing — a synced skill is available to
         install, not mounted."""
         summary = await self._bucket_objects().sync_official_skills()
+        return {"now": time.time(), "ok": True, **to_jsonable(summary)}
+
+    # --- presets ---
+
+    async def presets(self) -> dict[str, Any]:
+        """The example catalog, each row flagged with whether it exists already."""
+        rows = await presets.status(store=self._store, objects=self._bucket_objects())
+        return {"now": time.time(), "presets": to_jsonable(rows)}
+
+    async def install_presets(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Create the example objects. `names` omitted installs the whole catalog;
+        anything that already exists is skipped unless `force` is set."""
+        names = body.get("names")
+        if names is not None and not isinstance(names, list):
+            raise ValueError("names must be a list of preset names")
+        summary = await presets.install(
+            names,
+            store=self._store,
+            objects=self._bucket_objects(),
+            options=self._options,
+            created_by=_decided_by(),
+            force=bool(body.get("force")),
+        )
         return {"now": time.time(), "ok": True, **to_jsonable(summary)}
 
     # --- shared artifact spaces ---

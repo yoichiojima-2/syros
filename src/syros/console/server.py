@@ -70,6 +70,11 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     ("GET", ("api", "workflows", None), lambda api, body, query, name: api.workflow(name)),
     (
         "POST",
+        ("api", "workflows", None, "update"),
+        lambda api, body, query, name: api.update_workflow(name, body),
+    ),
+    (
+        "POST",
         ("api", "workflows", None, "enabled"),
         lambda api, body, query, name: api.set_workflow_enabled(name, bool(body.get("enabled"))),
     ),
@@ -174,6 +179,12 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     ("GET", ("api", "connectors"), lambda api, body, query: api.connectors()),
     ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
     ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
+    ("GET", ("api", "presets"), lambda api, body, query: api.presets()),
+    (
+        "POST",
+        ("api", "presets", "install"),
+        lambda api, body, query: api.install_presets(body),
+    ),
     (
         "GET",
         ("api", "skills", None, "files"),

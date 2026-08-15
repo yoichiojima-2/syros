@@ -16,6 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { InstallPresetsButton } from "@/components/install-presets-button";
 import { RunBadge } from "@/components/run-badge";
 import { WorkflowForm } from "@/components/workflow-form";
 import { useAction, useNow, useWorkflows } from "@/lib/hooks";
@@ -65,15 +66,23 @@ export default function WorkflowsPage() {
               <Skeleton className="h-8" />
             </div>
           ) : workflows.length === 0 ? (
-            <p className="p-10 text-center text-[13px] text-muted-foreground">
-              No workflows yet — a workflow chains one-shot tasks, each run as a fresh session,
-              on a cron or on demand.
-              <br />
-              Create one above, or with{" "}
-              <code className="font-mono text-xs">
-                syros workflows create nightly --cron &quot;0 9 * * *&quot; --prompt &quot;…&quot;
-              </code>
-            </p>
+            <div className="space-y-4 p-10 text-center text-[13px] text-muted-foreground">
+              <p>
+                No workflows yet.
+                <br />
+                Create one above, or with{" "}
+                <code className="font-mono text-xs">
+                  syros workflows create nightly --cron &quot;0 9 * * *&quot; --prompt &quot;…&quot;
+                </code>
+              </p>
+              <div>
+                <InstallPresetsButton />
+                <p className="mt-2 text-[11px]">
+                  Adds a scheduled one-task workflow (installed paused) and a five-task chain that
+                  fans out and back in.
+                </p>
+              </div>
+            </div>
           ) : (
             <Table>
               <TableHeader>

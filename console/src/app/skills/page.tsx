@@ -1,193 +1,203 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import {
-  ChevronDown,
-  ChevronRight,
-  DownloadCloud,
-  FilePlus2,
-  Globe,
-  Trash2,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, DownloadCloud, Globe, Search, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { SkillDropZone, SkillUpload } from "@/components/skill-upload";
 import { useAction, useNow, useSkillFiles, useSkills } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime } from "@/lib/format";
-import type { SkillSummary, SyncSkillsResponse } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import type { SkillSummary } from "@/lib/types";
+import type { SyncSkillsResponse } from "@/lib/types";
 
 // The skill catalog: skills/{name}/ in the bucket, the one place skill content
-// lives. Nothing here is mounted by itself — a run mounts the skills its
-// options install, so each row shows where it is installed ("global" = the
-// settings default, plus any workspace that installs it). Installing happens
-// on the target: the Skills field on global settings, a workspace, an agent or
-// a single session. "Sync official skills" seeds the catalog with editable
-// copies of github.com/anthropics/skills.
+// lives. A skill is a directory, so uploading one is how you create one — drop
+// a folder anywhere on the list, or use the picker. "Sync official skills"
+// seeds the catalog with editable copies of github.com/anthropics/skills.
+//
+// Nothing here is mounted by itself: a run mounts the skills its options
+// install, so each row says where it is installed and carries a one-click
+// "install everywhere" toggle. Narrower installs — a workspace, an agent, one
+// session — are the Skills field on that target's own options form.
+//
+// The row leads with the SKILL.md description rather than the byte counts: it
+// is the text the model matches on when deciding whether a skill fires, so it
+// is the only thing that distinguishes twenty rows of slugs from each other.
 
 export default function SkillsPage() {
-  const router = useRouter();
-  const skills = useSkills();
+  const { skills, refresh } = useSkills();
   const now = useNow();
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [flash, run] = useAction();
-
-  // A skill is a directory, so "new" is just the first file: the editor page
-  // creates the prefix when SKILL.md is saved.
-  const create = () => {
-    const name = prompt("New skill name (lowercase, [a-z0-9_-])");
-    if (name) router.push(`/skill?name=${encodeURIComponent(name)}`);
-  };
 
   const sync = () =>
     run(async () => {
       const result = await post<SyncSkillsResponse>("/api/skills/sync");
       const skipped = result.skipped.length ? `, ${result.skipped.length} skipped (too large)` : "";
+      refresh();
       return `synced ${result.files} file(s) across ${result.skills.length} skill(s)${skipped}`;
     });
+
+  const term = query.trim().toLowerCase();
+  const hits = useMemo(
+    () =>
+      (skills ?? []).filter(
+        (skill) =>
+          !term ||
+          skill.name.toLowerCase().includes(term) ||
+          (skill.description ?? "").toLowerCase().includes(term),
+      ),
+    [skills, term],
+  );
 
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
       <div className="flex items-center gap-3">
         <h1 className="flex-1 font-serif text-2xl tracking-tight">Skills</h1>
         {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
-        <Button variant="outline" size="sm" onClick={create}>
-          <FilePlus2 /> New skill
-        </Button>
+        <SkillUpload onUploaded={refresh} run={run} />
         <Button variant="outline" size="sm" onClick={sync}>
           <DownloadCloud /> Sync official skills
         </Button>
       </div>
-      <Card>
-        <CardContent className="px-2 py-2">
-          {skills === null ? (
-            <div className="space-y-2 p-2">
-              <Skeleton className="h-8" />
-              <Skeleton className="h-8" />
-            </div>
-          ) : skills.length === 0 ? (
-            <p className="p-6 text-center text-[13px] text-muted-foreground">
-              No skills yet — sync the official Anthropic skills above, or write your own. A skill
-              runs where it is installed: pick it in the Skills field on a workspace, an agent, or
-              global settings.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead />
-                  <TableHead>Name</TableHead>
-                  <TableHead>Installed in</TableHead>
-                  <TableHead className="text-right">Files</TableHead>
-                  <TableHead className="text-right">Size</TableHead>
-                  <TableHead className="text-right">Updated</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {skills.map((skill) => (
-                  <SkillRow
-                    key={skill.name}
-                    skill={skill}
-                    now={now}
-                    expanded={expanded === skill.name}
-                    onToggle={() => setExpanded(expanded === skill.name ? null : skill.name)}
-                  />
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <SkillDropZone onUploaded={refresh} run={run}>
+        <Card>
+          <CardContent className="px-0 py-0">
+            {skills === null ? (
+              <div className="space-y-2 p-4">
+                <Skeleton className="h-8" />
+                <Skeleton className="h-8" />
+              </div>
+            ) : skills.length === 0 ? (
+              <p className="p-6 text-center text-[13px] text-muted-foreground">
+                No skills yet — drop a skill directory here (a folder with a SKILL.md in it), or sync
+                the official Anthropic skills above. A synced skill is available to install, not
+                mounted: install it here for every session, or on a workspace or agent for theirs.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2.5">
+                  <div className="relative flex min-w-[240px] flex-1 items-center">
+                    <Search className="pointer-events-none absolute left-2.5 size-3.5 text-faint" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Filter by name or what it does"
+                      aria-label="Filter skills"
+                      className="h-8 pl-8 text-[13px]"
+                    />
+                  </div>
+                  <span className="font-mono text-[11px] whitespace-nowrap text-faint">
+                    {term
+                      ? `${hits.length} of ${skills.length}`
+                      : `${skills.length} skills · mounted where installed`}
+                  </span>
+                </div>
+                {hits.length === 0 ? (
+                  <p className="px-3 py-9 text-center text-[13px] text-muted-foreground">
+                    Nothing matches “{query.trim()}”.
+                  </p>
+                ) : (
+                  hits.map((skill) => (
+                    <SkillRow
+                      key={skill.name}
+                      skill={skill}
+                      now={now}
+                      query={term}
+                      expanded={expanded === skill.name}
+                      onToggle={() => setExpanded(expanded === skill.name ? null : skill.name)}
+                      onChanged={refresh}
+                    />
+                  ))
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </SkillDropZone>
     </div>
+  );
+}
+
+/** Highlight the filter match in place, so it is obvious why a row survived. */
+function Highlight({ text, query }: { text: string; query: string }) {
+  const at = query ? text.toLowerCase().indexOf(query) : -1;
+  if (at < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, at)}
+      <mark className="rounded-[2px] bg-primary-soft text-foreground">
+        {text.slice(at, at + query.length)}
+      </mark>
+      {text.slice(at + query.length)}
+    </>
   );
 }
 
 function SkillRow({
   skill,
   now,
+  query,
   expanded,
   onToggle,
+  onChanged,
 }: {
   skill: SkillSummary;
   now: number;
+  query: string;
   expanded: boolean;
   onToggle: () => void;
+  onChanged: () => void;
 }) {
   const [flash, run] = useAction();
   const Chevron = expanded ? ChevronDown : ChevronRight;
-  const global = skill.installed_globally;
+  const everywhere = skill.installed_globally;
 
   // The one install worth a shortcut: everywhere, i.e. the global settings
-  // default. Per-workspace and per-agent installs are a field on those forms,
-  // where they sit next to the rest of that target's options.
+  // default. Narrower installs — a workspace, an agent, one session — are a
+  // field on that target's own options form, next to the rest of its options.
   const toggleGlobal = () =>
     run(async () => {
-      await post(`/api/skills/${encodeURIComponent(skill.name)}/install`, { installed: !global });
-      return global ? `uninstalled ${skill.name} globally` : `installed ${skill.name} everywhere`;
+      await post(`/api/skills/${encodeURIComponent(skill.name)}/install`, {
+        installed: !everywhere,
+      });
+      onChanged();
+      return `${everywhere ? "uninstalled" : "installed"} ${skill.name} everywhere`;
     });
 
   const remove = () => {
     if (!confirm(`Delete the whole skill ${skill.name}? Every file under it is removed.`)) return;
     run(async () => {
       await post(`/api/skills/${encodeURIComponent(skill.name)}/delete`);
+      onChanged();
       return `deleted ${skill.name}`;
     });
   };
 
   return (
     <>
-      <TableRow onClick={onToggle} className="cursor-pointer">
-        <TableCell className="w-8">
-          <Chevron className="size-4 text-muted-foreground" />
-        </TableCell>
-        <TableCell className="font-mono text-[13px] font-medium">
-          <Link
-            href={`/skill?name=${encodeURIComponent(skill.name)}`}
-            onClick={(e) => e.stopPropagation()}
-            className="hover:underline"
-          >
-            {skill.name}
-          </Link>
-        </TableCell>
-        <TableCell className="py-1.5">
-          {!skill.installed_globally && skill.installed_in.length === 0 ? (
-            <span className="text-[11px] text-faint">not installed</span>
-          ) : (
-            <span className="flex flex-wrap gap-1">
-              {skill.installed_globally && (
-                <span className="rounded-full bg-primary-soft px-2 py-0.5 font-mono text-[10px]">
-                  everywhere
-                </span>
-              )}
-              {skill.installed_in.map((where) => (
-                <span
-                  key={where}
-                  className="rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
-                >
-                  {where}
-                </span>
-              ))}
-            </span>
-          )}
-        </TableCell>
-        <TableCell className="text-right font-mono text-xs">{skill.file_count}</TableCell>
-        <TableCell className="text-right font-mono text-xs">{bytes(skill.total_size)}</TableCell>
-        <TableCell className="text-right text-xs text-muted-foreground">
+      <div
+        onClick={onToggle}
+        className="group grid cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto_auto] items-baseline gap-x-3 px-3.5 py-2 hover:bg-muted"
+      >
+        <Chevron className="size-3.5 self-center text-faint" />
+        <Link
+          href={`/skill?name=${encodeURIComponent(skill.name)}`}
+          onClick={(e) => e.stopPropagation()}
+          className="min-w-0 truncate font-mono text-[13px] font-medium hover:underline"
+        >
+          <Highlight text={skill.name} query={query} />
+        </Link>
+        <span className="self-center font-mono text-[11px] tabular-nums whitespace-nowrap text-faint">
+          {skill.file_count} file{skill.file_count === 1 ? "" : "s"} · {bytes(skill.total_size)} ·{" "}
           {relTime(skill.updated, now)}
-        </TableCell>
-        <TableCell className="w-20 text-right">
+        </span>
+        <span className="w-16 self-center text-right">
           {flash ? (
             <span className="text-[11px] text-muted-foreground">{flash}</span>
           ) : (
@@ -195,9 +205,13 @@ function SkillRow({
               <Button
                 variant="ghost"
                 size="sm"
-                aria-pressed={global}
-                title={global ? "Remove from the global default" : "Install everywhere"}
-                className={global ? "text-foreground" : "text-faint"}
+                aria-pressed={everywhere}
+                title={everywhere ? "Remove from the global default" : "Install everywhere"}
+                className={
+                  everywhere
+                    ? "text-foreground"
+                    : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                }
                 onClick={(e) => {
                   e.stopPropagation();
                   toggleGlobal();
@@ -209,6 +223,7 @@ function SkillRow({
                 variant="ghost"
                 size="sm"
                 title="Delete skill"
+                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();
                   remove();
@@ -218,10 +233,45 @@ function SkillRow({
               </Button>
             </>
           )}
-        </TableCell>
-      </TableRow>
+        </span>
+        <p className="col-start-2 mt-0.5 line-clamp-1 text-[12.5px] text-muted-foreground">
+          {skill.description ? (
+            <Highlight text={skill.description} query={query} />
+          ) : (
+            <span className="text-faint italic">no description in SKILL.md</span>
+          )}
+        </p>
+        <Installs skill={skill} />
+      </div>
       {expanded && <FilesRow name={skill.name} now={now} />}
     </>
+  );
+}
+
+/** Where this skill actually mounts. A catalog skill nobody installs is dead
+ *  weight, and that is the one thing a bare listing used to hide. */
+function Installs({ skill }: { skill: SkillSummary }) {
+  if (!skill.installed_globally && skill.installed_in.length === 0) {
+    return (
+      <span className="col-start-2 mt-1 text-[11px] text-faint italic">not installed anywhere</span>
+    );
+  }
+  return (
+    <span className="col-start-2 mt-1 flex flex-wrap items-center gap-1">
+      {skill.installed_globally && (
+        <span className="rounded-full bg-primary-soft px-2 py-0.5 font-mono text-[10px]">
+          everywhere
+        </span>
+      )}
+      {skill.installed_in.map((where) => (
+        <span
+          key={where}
+          className="rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+        >
+          {where}
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -229,28 +279,22 @@ function FilesRow({ name, now }: { name: string; now: number }) {
   const { files } = useSkillFiles(name);
 
   return (
-    <TableRow className="hover:bg-transparent">
-      <TableCell />
-      <TableCell colSpan={6} className="py-2">
-        {files === null ? (
-          <Skeleton className="h-5 w-48" />
-        ) : files.length === 0 ? (
-          <span className="text-[12px] text-muted-foreground">empty</span>
-        ) : (
-          <ul className="space-y-0.5">
-            {files.map((file) => (
-              <li
-                key={file.name}
-                className={cn("flex items-baseline gap-3 font-mono text-[12px]")}
-              >
-                <span className="min-w-0 truncate">{file.name}</span>
-                <span className="text-muted-foreground">{bytes(file.size)}</span>
-                <span className="text-faint">{relTime(file.updated, now)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </TableCell>
-    </TableRow>
+    <div className="bg-muted px-3.5 py-2 pl-11">
+      {files === null ? (
+        <Skeleton className="h-5 w-48" />
+      ) : files.length === 0 ? (
+        <span className="text-[12px] text-muted-foreground">empty</span>
+      ) : (
+        <ul className="space-y-0.5">
+          {files.map((file) => (
+            <li key={file.name} className="flex items-baseline gap-3 font-mono text-[12px]">
+              <span className="min-w-0 truncate">{file.name}</span>
+              <span className="text-muted-foreground">{bytes(file.size)}</span>
+              <span className="text-faint">{relTime(file.updated, now)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

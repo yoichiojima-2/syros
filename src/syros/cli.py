@@ -17,11 +17,15 @@ syros kill <session_id>                 flip the kill switch
 syros agents                            list stored agents (personas)
 syros agents create <name> --system-prompt "..." --allow Read --allow Bash [--bigquery]
 syros agents show|update|delete <name>
-syros deployments                         list deployments and their next run
-syros deployments create <name> --cron "0 9 * * *" --prompt "..." [--agent <name>] [--bigquery]
-syros deployments runs <name>             run history for one deployment
-syros deployments run|pause|resume|delete <name>
-syros tick                              fire every deployment that is due
+syros workflows                         list workflows and their next run
+syros workflows create <name> [--cron "0 9 * * *"] --prompt "..." [--agent <name>] [--bigquery]
+syros workflows create <name> --tasks tasks.json  a chain instead (- for stdin)
+syros workflows runs <name>             run history for one workflow, task by task
+syros workflows show|run|pause|resume|delete <name>
+syros tick                              advance active runs, fire every due workflow
+syros presets                           list the example presets and what is installed
+syros presets show <name>               print one preset's full definition
+syros presets install [name...]         create them (everything, by default)
 syros artifacts                         list shared artifact spaces
 syros artifacts <space>                 list files in a space
 syros artifacts <space> push <path...>  upload local files/dirs into a space
@@ -29,6 +33,8 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list the skill catalog and where each is installed
+syros skills push <dir...> [--name X] [--replace]
+                                        upload local skill directories into the catalog
 syros skills files <name>               list one skill's files
 syros skills cat <name> <file>          print one skill file's content
 syros skills sync                       seed the catalog from the official anthropics/skills repo
@@ -530,6 +536,28 @@ async def _skills(args) -> None:
         for skipped in summary["skipped"]:
             print(f"    skipped {skipped['skill']}/{skipped['file']} ({skipped['size']} bytes)")
         return
+    if args.action == "push":
+        from pathlib import Path
+
+        # one directory per skill, so a glob like ./skills/* pushes them all
+        for raw in args.args:
+            try:
+                summary = await asyncio.to_thread(
+                    skills.push,
+                    project,
+                    bucket,
+                    Path(raw),
+                    max_bytes=MAX_PREVIEW_BYTES,
+                    name=args.name,
+                    replace=args.replace,
+                )
+            except (OSError, ValueError) as exc:
+                raise SystemExit(str(exc)) from exc
+            pruned = f", pruned {summary['deleted']}" if summary["deleted"] else ""
+            print(f"pushed {summary['files']} file(s) to skill {summary['skill']}{pruned}")
+            for skipped in summary["skipped"]:
+                print(f"    skipped {skipped['file']} ({skipped['size']} bytes)")
+        return
     if args.action == "files":
         if not args.args:
             raise SystemExit("usage: syros skills files <name>")
@@ -615,6 +643,64 @@ async def _skills(args) -> None:
         print(
             f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']:>9} bytes"
             f"  {', '.join(installs.get(name, [])) or '(not installed)'}"
+        )
+
+
+def _summary(text: str, width: int = 60) -> str:
+    """First sentence of a preset description, trimmed to one column."""
+    first = text.split(". ")[0].rstrip(".")
+    return first if len(first) <= width else first[: width - 1] + "…"
+
+
+async def _presets(args) -> None:
+    from . import presets
+    from .console.objects import GcsObjects
+
+    # `show` reads the catalog and nothing else — resolving a project first
+    # would make reading a definition impossible before there is one to install
+    # into, which is exactly when you want to read it.
+    if args.action == "show":
+        if not args.args:
+            raise SystemExit("usage: syros presets show <name>")
+        print(json.dumps(presets.definition(args.args[0]), indent=2))
+        return
+
+    project = _project(args)
+    objects = GcsObjects(project, env.default_bucket(args.bucket, project))
+    store = _store(args)
+
+    if args.action == "install":
+        summary = await presets.install(
+            args.args or None,
+            store=store,
+            objects=objects,
+            options=_options(args),
+            created_by=getpass.getuser(),
+            force=args.force,
+        )
+        for row in summary["installed"] + summary["skipped"]:
+            verb = (
+                "skipped" if "reason" in row else ("replaced" if row["replaced"] else "installed")
+            )
+            note = f"  ({row['reason']})" if "reason" in row else ""
+            files = f"  +{row['files']} file(s)" if row["files"] else ""
+            print(f"{verb:<10}  {row['kind']}/{row['name']}{note}{files}")
+        print(
+            f"\n{len(summary['installed'])} installed, {len(summary['skipped'])} skipped,"
+            f" {summary['files']} file(s) written"
+        )
+        if summary["kept"]:
+            print(f"{summary['kept']} existing file(s) left as they are")
+        if summary["skipped"] and not args.force:
+            print("--force replaces what already exists (including edits you made to it)")
+        return
+
+    for row in await presets.status(store=store, objects=objects):
+        scope = f" @{row['workspace']}" if row["workspace"] else ""
+        print(
+            f"{row['name']:<20}  {row['kind']:<10}"
+            f"  {'installed' if row['installed'] else '-':<10}"
+            f"  {row['object'] + scope:<20}  {_summary(row['description'])}"
         )
 
 
@@ -976,7 +1062,17 @@ def main() -> None:
         "action",
         nargs="?",
         default="list",
-        choices=["list", "files", "cat", "sync", "install", "uninstall", "installed", "migrate"],
+        choices=[
+            "list",
+            "push",
+            "files",
+            "cat",
+            "sync",
+            "install",
+            "uninstall",
+            "installed",
+            "migrate",
+        ],
     )
     skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
@@ -987,7 +1083,28 @@ def main() -> None:
         default=None,
         help="install target: this workspace instead of the global default",
     )
+    skills.add_argument(
+        "--name", default=None, help="push: skill name (default: the directory's basename)"
+    )
+    skills.add_argument(
+        "--replace",
+        action="store_true",
+        help="push: clear the skill first, so files deleted locally are dropped",
+    )
     skills.set_defaults(func=_skills)
+
+    presets_parser = sub.add_parser(
+        "presets", help="example agents, workspace, workflows and skills to start from"
+    )
+    presets_parser.add_argument(
+        "action", nargs="?", default="list", choices=["list", "show", "install"]
+    )
+    presets_parser.add_argument("args", nargs="*", help="preset names; omit to install everything")
+    presets_parser.add_argument(
+        "--force", action="store_true", help="replace presets that already exist"
+    )
+    presets_parser.add_argument("--bucket", default=None)
+    presets_parser.set_defaults(func=_presets)
 
     connectors = sub.add_parser("connectors")
     connectors.add_argument(
@@ -1029,12 +1146,17 @@ def main() -> None:
             parser.error("push requires at least one path")
         if args.action == "publish" and len(args.args) < 2:
             parser.error("publish requires a session_id and at least one file")
+    if args.command == "skills" and args.action == "push":
+        if not args.args:
+            parser.error("push requires a skill directory")
+        if args.name and len(args.args) > 1:
+            parser.error("--name names one skill, so it takes a single directory")
     try:
         asyncio.run(args.func(args))
     except KeyboardInterrupt:
         pass
     except SyrosError as exc:
-        # Bad cron, unknown deployment, unusable options: the user's problem to
+        # Bad cron, unknown workflow, unusable options: the user's problem to
         # fix, not a bug — print the message, skip the traceback.
         raise SystemExit(str(exc)) from exc
 

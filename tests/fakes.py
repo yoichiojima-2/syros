@@ -1,11 +1,17 @@
-"""In-memory Store fake mirroring syros.store.Store's surface."""
+"""In-memory fakes for the two backends: Firestore (FakeStore) and GCS
+(FakeObjects). Both mirror the protocols in syros.store / syros.console.objects,
+which is what lets the whole suite run without touching GCP."""
 
 from __future__ import annotations
 
 import time
 from typing import Any
 
+from syros.errors import SessionExists
+from syros.names import validate_file
+from syros.skills import parse_description, skill_prefix
 from syros.store import RUNTIME_FIELDS
+from syros.workspace import workspace_prefix
 
 
 def _set_path(doc: dict[str, Any], key: str, value: Any) -> None:
@@ -52,7 +58,7 @@ class FakeStore:
         agent=None,
     ):
         if session_id in self.sessions:
-            raise ValueError(f"session {session_id} exists")
+            raise SessionExists(f"session {session_id} exists")
         self.sessions[session_id] = {
             "options": options,
             "disabled": False,
@@ -388,3 +394,202 @@ class FakeStore:
 
     async def delete_agent(self, name):
         self.agents.pop(name, None)
+
+
+class FakeObjects:
+    """Implements syros.console.objects.ObjectStoreProtocol over a name->bytes dict."""
+
+    def __init__(self, workspaces=None, spaces=None, skills=None):
+        # workspaces' shared directories live under the workspaces/ GCS prefix
+        self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
+        self.spaces: dict[str, dict[str, bytes]] = spaces or {}
+        self.skills: dict[str, dict[str, bytes]] = skills or {}
+        # tags live beside the bytes, keyed (kind, owner, file) — mirrors GCS
+        # custom metadata surviving independently of content rewrites
+        self.tags: dict[tuple[str, str, str], list[str]] = {}
+
+    @staticmethod
+    def _stats(files):
+        return {
+            "file_count": len(files),
+            "total_size": sum(map(len, files.values())),
+            "updated": None,
+        }
+
+    async def workspace_stats(self):
+        return {name: self._stats(files) for name, files in self.workspaces.items()}
+
+    async def workspace_files(self, name):
+        files = self.workspaces.get(name, {})
+        return [
+            {"name": n, "size": len(b), "updated": None, "tags": self.tags.get(("ws", name, n), [])}
+            for n, b in files.items()
+        ]
+
+    @staticmethod
+    def _check(name, file):
+        """GcsObjects validates by building the prefix; mirror that so the fake
+        rejects the same names the real object store would."""
+        workspace_prefix(name)
+        validate_file("workspace file", file)
+
+    async def read_workspace_file(self, name, file):
+        import mimetypes
+
+        self._check(name, file)
+        files = self.workspaces.get(name, {})
+        if file not in files:
+            raise FileNotFoundError(file)
+        if len(files[file]) > 100:
+            raise ValueError("too large")
+        return files[file], mimetypes.guess_type(file)[0] or "application/octet-stream"
+
+    async def write_workspace_file(self, name, file, data):
+        self._check(name, file)
+        self.workspaces.setdefault(name, {})[file] = data
+
+    async def delete_workspace_file(self, name, file):
+        self._check(name, file)
+        files = self.workspaces.get(name, {})
+        if file not in files:
+            raise FileNotFoundError(file)
+        del files[file]
+        self.tags.pop(("ws", name, file), None)
+
+    def _rename(self, kind, files, owner, src, dst):
+        if src not in files:
+            raise FileNotFoundError(src)
+        if src != dst and dst in files:
+            raise FileExistsError(dst)
+        files[dst] = files.pop(src)
+        if (kind, owner, src) in self.tags:
+            self.tags[(kind, owner, dst)] = self.tags.pop((kind, owner, src))
+
+    def _delete_prefix(self, files, kind, owner, subpath, max_files):
+        matching = [n for n in files if subpath is None or n.startswith(subpath)]
+        if len(matching) > max_files:
+            raise ValueError(f"{len(matching)} files (limit {max_files})")
+        for n in matching:
+            del files[n]
+            self.tags.pop((kind, owner, n), None)
+        return len(matching)
+
+    async def rename_workspace_file(self, name, src, dst):
+        self._check(name, src)
+        validate_file("workspace file", dst)
+        self._rename("ws", self.workspaces.get(name, {}), name, src, dst)
+
+    async def set_workspace_tags(self, name, file, tags):
+        self._check(name, file)
+        if file not in self.workspaces.get(name, {}):
+            raise FileNotFoundError(file)
+        self.tags[("ws", name, file)] = tags
+
+    async def delete_workspace_prefix(self, name, subpath, max_files):
+        workspace_prefix(name)
+        return self._delete_prefix(self.workspaces.get(name, {}), "ws", name, subpath, max_files)
+
+    async def space_stats(self):
+        return {name: self._stats(files) for name, files in self.spaces.items()}
+
+    async def list_artifacts(self, space):
+        files = self.spaces.get(space, {})
+        return [
+            {
+                "name": n,
+                "size": len(b),
+                "updated": None,
+                "tags": self.tags.get(("space", space, n), []),
+            }
+            for n, b in files.items()
+        ]
+
+    async def read_artifact(self, space, name):
+        import mimetypes
+
+        files = self.spaces.get(space, {})
+        if name not in files:
+            raise FileNotFoundError(name)
+        if len(files[name]) > 100:
+            raise ValueError("too large")
+        return files[name], mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+    async def write_artifact_file(self, space, name, data):
+        validate_file("artifact", name)
+        self.spaces.setdefault(space, {})[name] = data
+
+    async def delete_artifact_file(self, space, name):
+        validate_file("artifact", name)
+        files = self.spaces.get(space, {})
+        if name not in files:
+            raise FileNotFoundError(name)
+        del files[name]
+        self.tags.pop(("space", space, name), None)
+
+    async def rename_artifact_file(self, space, src, dst):
+        validate_file("artifact", src)
+        validate_file("artifact", dst)
+        self._rename("space", self.spaces.get(space, {}), space, src, dst)
+
+    async def set_artifact_tags(self, space, name, tags):
+        validate_file("artifact", name)
+        if name not in self.spaces.get(space, {}):
+            raise FileNotFoundError(name)
+        self.tags[("space", space, name)] = tags
+
+    async def delete_artifact_prefix(self, space, subpath, max_files):
+        count = self._delete_prefix(self.spaces.get(space, {}), "space", space, subpath, max_files)
+        if count and not self.spaces.get(space):
+            self.spaces.pop(space, None)
+        return count
+
+    @staticmethod
+    def _check_skill(name, file):
+        skill_prefix(name)
+        validate_file("skill file", file)
+
+    @staticmethod
+    def _skill_stat(files):
+        stat = FakeObjects._stats(files)
+        described = parse_description(files.get("SKILL.md", b""))
+        return {**stat, "description": described} if described else stat
+
+    async def skill_stats(self):
+        return {name: self._skill_stat(files) for name, files in self.skills.items()}
+
+    async def skill_files(self, name):
+        files = self.skills.get(name, {})
+        return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
+
+    async def read_skill_file(self, name, file):
+        import mimetypes
+
+        self._check_skill(name, file)
+        files = self.skills.get(name, {})
+        if file not in files:
+            raise FileNotFoundError(file)
+        if len(files[file]) > 100:
+            raise ValueError("too large")
+        return files[file], mimetypes.guess_type(file)[0] or "application/octet-stream"
+
+    async def write_skill_file(self, name, file, data):
+        self._check_skill(name, file)
+        self.skills.setdefault(name, {})[file] = data
+
+    async def delete_skill_file(self, name, file):
+        self._check_skill(name, file)
+        files = self.skills.get(name, {})
+        if file not in files:
+            raise FileNotFoundError(file)
+        del files[file]
+
+    async def delete_skill(self, name):
+        skill_prefix(name)
+        files = self.skills.pop(name, None)
+        if not files:
+            raise FileNotFoundError(name)
+        return len(files)
+
+    async def sync_official_skills(self):
+        self.skills.setdefault("pdf", {})["SKILL.md"] = b"# pdf"
+        return {"skills": ["pdf"], "files": 1, "skipped": []}

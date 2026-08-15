@@ -55,6 +55,9 @@ async with SyrosClient(AgentOptions()) as client:
     # client.interrupt() / client.terminate() / AgentOptions(resume=client.session_id)
 ```
 
+Runnable versions of both — plus the message types, an approval policy, and resume/rewind
+— are in [`examples/`](examples/), indexed in [examples/README.md](examples/README.md).
+
 Ops without a UI:
 
 ```
@@ -132,6 +135,50 @@ The frontend lives in `console/` (Next.js static export + TypeScript + Tailwind)
 rebuilds the bundle into `src/syros/console/static/` (gitignored) for local use; the
 Docker image builds its own copy in a Node stage, so deploys need no local build.
 
+## Presets
+
+A fresh install is empty, and a blank system-prompt textarea is a bad first look at a
+platform whose interesting parts — the option-resolution chain, workspace project memory,
+task DAGs, skill scoping — are invisible until something is using them. `syros presets`
+ships a small catalog of worked examples and creates them as ordinary objects:
+
+```
+syros presets                        # the catalog, and what's already installed
+syros presets show research-pipeline # one preset's full definition, as JSON
+syros presets install                # create everything
+syros presets install research-pipeline   # or one, with whatever it references
+```
+
+The console has the same action behind an **Install examples** button in the Agents,
+Workflows, and Workspaces empty states.
+
+| preset | kind | what it demonstrates |
+|---|---|---|
+| `research` | workspace | stored option defaults, a `CLAUDE.md` that loads as project memory, and an install list naming both skills below |
+| `brief` | skill | a two-file catalog skill (`SKILL.md` + `reference/`) |
+| `research-brief` | skill | the same idea narrowed to `research`, which is the only thing that installs it |
+| `researcher` | agent | web tools, an artifact space, a budget cap, no workspace |
+| `writer` | agent | workspace-bound editing under `acceptEdits` |
+| `reviewer` | agent | least privilege — read-only tools, writes denied outright |
+| `analyst` | agent | the built-in BigQuery MCP server with `mcp__bq__query` pre-allowed |
+| `daily-brief` | workflow | one task on a cron — the classic scheduled prompt |
+| `research-pipeline` | workflow | a five-task DAG: fan-out, fan-in, and result piping |
+
+Installed presets are **yours** — ordinary documents and blobs in the usual collections,
+with no version pointer back to the catalog and nothing that re-syncs them. Edit or delete
+them freely. Re-running the installer skips whatever already exists (so a partial install
+completes cleanly), and `--force` is the explicit opt-out that replaces definitions and
+files, including edits you made.
+
+Two deliberate choices worth knowing. **Scheduled presets install paused**: `daily-brief`
+carries a cron but arrives disabled, so clicking Install never starts spending — resume it
+once its prompt says what you actually want briefed, and the next slot re-bases on the
+current time. And **`research-pipeline` shares an artifact space rather than a workspace**:
+its two middle tasks run in parallel, and a workspace's exclusive lease cannot be held by
+both — `workflows.create` rejects that definition outright. Artifact spaces take no lease.
+The serial tail of the chain does take the workspace, from the agents it names, where
+one-at-a-time is the point.
+
 ## Agents
 
 An agent is a named, stored run configuration — the persona a session runs as: system
@@ -162,6 +209,32 @@ syros agents show|update|delete reviewer
 
 The console has an Agents view with the same create/edit/delete surface, and sessions
 show which agent they ran as. Workflow tasks can reference an agent too (below).
+`syros presets install` creates four worked examples if you'd rather start from something
+than from a blank form — see [Presets](#presets).
+
+### The default agent
+
+A persona is what you get for naming an agent or writing one — not the price of not
+naming one. With no `system_prompt` in any layer, a session resolves to the harness's own
+default prompt (the same floor that lands the model on `"sonnet"`), so the SDK, the CLI
+and the console all behave the same way: no agent, no persona, just the stock agent.
+
+```python
+from syros import query, AgentOptions
+
+async for message in query(                    # the default agent, no configuration
+    prompt="collect today's news",
+    options=AgentOptions(allowed_tools=["Read", "Write", "Bash", "WebSearch"]),
+):
+    ...
+```
+
+`system_prompt="..."` replaces that prompt with a persona. To keep it and add to it,
+`default_prompt("Be terse.")` builds the preset with the instructions appended — what
+the console's **Default** tab sends as *extra instructions*, and what the `append` toggle
+on the agent/workspace/settings forms stores. `system_prompt=""` is the escape hatch for
+a run with no system prompt at all. Tool calls are gated as always — unlisted tools still
+pause for approval.
 
 ## Workflows
 
@@ -299,17 +372,31 @@ syros skills install pdf             # install everywhere (global settings)
 syros skills install pdf --workspace research
 syros skills uninstall pdf --workspace research
 syros skills installed --workspace research
+syros skills push ./my-skill         # upload a local skill directory into the catalog
 syros skills files pdf               # list one skill's files
 syros skills cat pdf SKILL.md        # print one skill file
 ```
 
+A skill is a directory, so uploading one is how you create one. `push` walks the
+directory, names the skill after its basename (`--name` overrides), and requires a
+`SKILL.md` at the root — without one nothing would discover the skill, so a push that
+found no SKILL.md would report success and mount nothing. Tooling state (`.git/`,
+`__pycache__/`, `node_modules/`, dotfiles) and symlinks are skipped, and files over
+10 MiB are skipped and reported so everything a push writes stays console-editable.
+Pushes merge; `--replace` clears the skill first, so files deleted locally are dropped.
+The console does the same thing from the browser: drop a folder onto the Skills page
+(or a workspace's skills card), or use the folder picker.
+
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
-tarball and copies each skill into the bucket — nothing is vendored, and the copies are
-editable snapshots: re-syncing overwrites official files but never touches skills (or
-files) the tarball doesn't carry. Syncing installs nothing; a synced skill is available
-to install. The console's Skills view is the catalog — browse a skill, edit a file in
-place, upload, or delete it, and see where each one is installed; installing happens in
-the Skills field on global settings, a workspace, an agent or a new session.
+tarball and copies each skill into the bucket — Anthropic's skills are fetched, never
+vendored, and the copies are editable snapshots: re-syncing overwrites official files but
+never touches skills (or files) the tarball doesn't carry. (The skills under
+[Presets](#presets) are the exception: those are syros' own, so they ship as package data
+rather than being fetched — same editable-copy semantics once installed.) Syncing installs
+nothing; a synced skill is available to install. The console's Skills view is the catalog —
+drop a skill directory to create one, edit a file in place, or delete it, and see where
+each skill is installed; installing happens in the Skills field on global settings, a
+workspace, an agent or a new session.
 
 Installing a skill does not copy it: every install points at the one catalog copy, so
 editing `SKILL.md` once updates every session that installs it, from the next run on.
@@ -469,6 +556,9 @@ gcloud builds submit --tag asia-northeast1-docker.pkg.dev/YOUR_PROJECT/syros/run
 # 3. Smoke test
 export SYROS_PROJECT=YOUR_PROJECT
 uv run python examples/hello.py
+
+# 4. Something to look at: example agents, a workspace, workflows and skills
+syros presets install
 ```
 
 Cloud Run resolves an image tag at deploy time, so a fresh project applies twice: the first
@@ -548,7 +638,8 @@ doing nothing.
 
 | claude_agent_sdk option | syros |
 |---|---|
-| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness) |
+| `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness), except that an unset `system_prompt` resolves to the default-agent preset rather than to no system prompt — pass `""` for that |
+| `system_prompt` presets | the default-agent preset only (`claude_code` on the wire) — the resolution floor, and `default_prompt()` when you want it with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
 | `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
@@ -556,7 +647,7 @@ doing nothing.
 | `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`), the skills the workspace installs, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
 | `skills` | syros-only: the catalog skills this run mounts, by name (`skills/{name}/` in the bucket). Nothing is mounted implicitly — an empty list means no skills — and the list is replaced by the nearest layer that sets one, never unioned. An installed name with no catalog prefix simply mounts nothing |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
-| `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
+| `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
 ## Workspaces and global settings
 
@@ -603,7 +694,8 @@ uv run ruff check . && uv run ruff format --check .   # CI lints the whole repo
 ```
 
 Layout: `src/syros/` (client SDK + sandbox runner in one package), `infra/` (Terraform),
-`examples/`, `tests/` (unit + fake-store integration; no GCP needed).
+[`examples/`](examples/) (runnable SDK snippets, checked by `tests/test_examples.py`),
+`tests/` (unit + fake-store integration; no GCP needed).
 
 ## Status
 

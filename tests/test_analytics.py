@@ -127,3 +127,95 @@ async def test_json_payloads_survive_exotic_leaves():
     when = datetime.datetime(2026, 8, 12, tzinfo=datetime.timezone.utc)
     row = tool_call_row("s", {"input": {"deadline": when, "args": ["ls"]}})
     assert row["input"] == {"deadline": str(when), "args": ["ls"]}
+
+
+def test_run_log_row_matches_declared_schema():
+    from syros.analytics import RUN_LOG_SCHEMA, run_log_row
+
+    row = run_log_row(
+        "sess_a",
+        {
+            "options": {"model": "m", "workspace": "shared"},
+            "created_by": "alice",
+            "workflow": "nightly",
+            "run_id": "r1",
+            "task": "review",
+            "agent": "reviewer",
+            "trigger": "cron",
+        },
+        branch="main",
+        stop_reason="success",
+        run_cost_usd=0.25,
+        cost_usd=1.25,
+        seq_head=6,
+        released_at=1700000000.0,
+    )
+    assert set(row) == {name for name, _, _ in RUN_LOG_SCHEMA}
+    assert row["session_id"] == "sess_a"
+    assert row["model"] == "m"
+    assert row["workspace"] == "shared"
+    assert row["run_cost_usd"] == 0.25
+    assert row["cost_usd"] == 1.25
+    assert row["workflow"] == "nightly"
+    assert row["released_at"] == "2023-11-14T22:13:20+00:00"
+
+
+def test_run_log_row_reads_legacy_team_as_workspace():
+    from syros.analytics import run_log_row
+
+    row = run_log_row(
+        "sess_old",
+        {"options": {"team": "legacy"}},
+        branch="main",
+        stop_reason="success",
+        run_cost_usd=0.0,
+        cost_usd=0.0,
+        seq_head=1,
+        released_at=1700000000.0,
+    )
+    assert row["workspace"] == "legacy"
+
+
+def test_run_log_insert_id_separates_branches():
+    """seq numbering is per-branch, so the dedupe key must carry the branch —
+    otherwise BigQuery drops a rewind branch's row as a duplicate of main's."""
+    from syros.analytics import run_log_insert_id
+
+    def key(branch, seq):
+        return run_log_insert_id({"session_id": "sess_a", "branch": branch, "seq_head": seq})
+
+    assert key("main", 6) != key("rewind-1", 6)
+    assert key("main", 6) == key("main", 6)
+    # a row with no branch reads as main, not as a distinct null branch
+    assert run_log_insert_id({"session_id": "sess_a", "seq_head": 6}) == key("main", 6)
+
+
+def test_run_log_is_not_part_of_the_truncating_export():
+    """The snapshot export replaces every table it knows about; run_log must
+    never be one of them or the audit trail is wiped on each run."""
+    from syros.analytics import FIELDS, RUN_LOG_TABLE, SCHEMAS
+
+    assert RUN_LOG_TABLE not in FIELDS
+    assert RUN_LOG_TABLE not in SCHEMAS
+
+
+def test_terraform_run_log_schema_matches_the_python_one():
+    """The table is created by Terraform but written by Python, so a column
+    added to one and not the other fails only in production, as a rejected
+    insert. Keep the two definitions pinned together."""
+    import pathlib
+    import re
+
+    from syros.analytics import RUN_LOG_SCHEMA
+
+    main_tf = pathlib.Path(__file__).resolve().parent.parent / "infra" / "main.tf"
+    block = re.search(
+        r'resource "google_bigquery_table" "run_log".*?schema\s*=\s*jsonencode\(\[(.*?)\]\)',
+        main_tf.read_text(),
+        re.DOTALL,
+    )
+    assert block, "run_log table schema not found in infra/main.tf"
+    declared = re.findall(
+        r'name\s*=\s*"(\w+)".*?type\s*=\s*"(\w+)".*?mode\s*=\s*"(\w+)"', block.group(1)
+    )
+    assert declared == RUN_LOG_SCHEMA
