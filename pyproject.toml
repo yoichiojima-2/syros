@@ -14,6 +14,7 @@ dependencies = [
     "google-cloud-run>=0.10",
     "google-cloud-secret-manager>=2.20",
     "google-auth-oauthlib>=1.2",
+    "anthropic>=0.40",
 ]
 
 [dependency-groups]

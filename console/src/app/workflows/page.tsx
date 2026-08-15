@@ -17,14 +17,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { RunBadge } from "@/components/run-badge";
-import { DeploymentForm } from "@/components/deployment-form";
-import { useAction, useNow, useDeployments } from "@/lib/hooks";
+import { WorkflowForm } from "@/components/workflow-form";
+import { useAction, useNow, useWorkflows } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { clockTime, relTime, untilTime } from "@/lib/format";
-import type { DeploymentSummary } from "@/lib/types";
+import type { WorkflowSummary } from "@/lib/types";
 
-export default function DeploymentsPage() {
-  const { deployments, refresh } = useDeployments();
+export default function WorkflowsPage() {
+  const { workflows, refresh } = useWorkflows();
   const now = useNow();
   const router = useRouter();
   const [flash, run] = useAction();
@@ -40,37 +40,38 @@ export default function DeploymentsPage() {
   return (
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-serif text-2xl tracking-tight">Deployments</h1>
+        <h1 className="font-serif text-2xl tracking-tight">Workflows</h1>
         {!creating && (
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus />
-            New deployment
+            New workflow
           </Button>
         )}
       </div>
       {creating && (
-        <DeploymentForm
+        <WorkflowForm
           onCancel={() => setCreating(false)}
           onCreated={(name) => {
             setCreating(false);
-            router.push(`/deployment?name=${encodeURIComponent(name)}`);
+            router.push(`/workflow?name=${encodeURIComponent(name)}`);
           }}
         />
       )}
       <Card>
         <CardContent className="px-2 py-2">
-          {deployments === null ? (
+          {workflows === null ? (
             <div className="space-y-2 p-2">
               <Skeleton className="h-8" />
               <Skeleton className="h-8" />
             </div>
-          ) : deployments.length === 0 ? (
+          ) : workflows.length === 0 ? (
             <p className="p-10 text-center text-[13px] text-muted-foreground">
-              No deployments yet — a deployment fires a fresh session on a cron.
+              No workflows yet — a workflow chains one-shot tasks, each run as a fresh session,
+              on a cron or on demand.
               <br />
               Create one above, or with{" "}
               <code className="font-mono text-xs">
-                syros deployments create nightly --cron &quot;0 9 * * *&quot; --prompt &quot;…&quot;
+                syros workflows create nightly --cron &quot;0 9 * * *&quot; --prompt &quot;…&quot;
               </code>
             </p>
           ) : (
@@ -78,6 +79,7 @@ export default function DeploymentsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
+                  <TableHead className="text-right">Tasks</TableHead>
                   <TableHead>Cron</TableHead>
                   <TableHead>Next run</TableHead>
                   <TableHead>Last run</TableHead>
@@ -86,8 +88,8 @@ export default function DeploymentsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {deployments.map((deployment) => (
-                  <DeploymentRow key={deployment.name} deployment={deployment} now={now} act={act} />
+                {workflows.map((workflow) => (
+                  <WorkflowRow key={workflow.name} workflow={workflow} now={now} act={act} />
                 ))}
               </TableBody>
             </Table>
@@ -99,53 +101,65 @@ export default function DeploymentsPage() {
   );
 }
 
-function DeploymentRow({
-  deployment,
+function WorkflowRow({
+  workflow,
   now,
   act,
 }: {
-  deployment: DeploymentSummary;
+  workflow: WorkflowSummary;
   now: number;
   act: (fn: () => Promise<string>) => void;
 }) {
   const router = useRouter();
-  const href = `/deployment?name=${encodeURIComponent(deployment.name)}`;
-  const paused = !deployment.enabled;
+  const href = `/workflow?name=${encodeURIComponent(workflow.name)}`;
+  const paused = !workflow.enabled;
+  const manual = !workflow.cron;
 
   return (
     <TableRow className="cursor-pointer" onClick={() => router.push(href)}>
       <TableCell className="font-mono text-[13px] font-medium">
         <Link href={href} onClick={(e) => e.stopPropagation()} className="hover:underline">
-          {deployment.name}
+          {workflow.name}
         </Link>
-        {deployment.last_error && (
+        {workflow.last_error && (
           <div className="max-w-[22rem] truncate text-[11px] text-destructive">
-            {deployment.last_error}
+            {workflow.last_error}
           </div>
         )}
       </TableCell>
+      <TableCell className="text-right font-mono text-xs tabular-nums">
+        {workflow.tasks.length}
+      </TableCell>
       <TableCell className="font-mono text-xs text-muted-foreground">
-        {deployment.cron}
-        <span className="pl-2 text-faint">{deployment.timezone}</span>
+        {manual ? (
+          <span className="text-faint">manual</span>
+        ) : (
+          <>
+            {workflow.cron}
+            <span className="pl-2 text-faint">{workflow.timezone}</span>
+          </>
+        )}
       </TableCell>
       <TableCell className="text-xs">
-        {paused ? (
+        {manual ? (
+          <span className="text-faint">—</span>
+        ) : paused ? (
           <Badge>
             <span className="size-[7px] rounded-full bg-faint" />
             paused
           </Badge>
         ) : (
-          <span title={clockTime(deployment.next_run_at)}>
-            {untilTime(deployment.next_run_at, now)}
+          <span title={clockTime(workflow.next_run_at)}>
+            {untilTime(workflow.next_run_at, now)}
           </span>
         )}
       </TableCell>
       <TableCell>
-        {deployment.last_run ? (
+        {workflow.last_run ? (
           <span className="flex items-center gap-2">
-            <RunBadge outcome={deployment.last_run.outcome} />
+            <RunBadge outcome={workflow.last_run.status} />
             <span className="text-[11px] text-muted-foreground">
-              {relTime(deployment.last_run_at, now)}
+              {relTime(workflow.last_run_at, now)}
             </span>
           </span>
         ) : (
@@ -153,13 +167,13 @@ function DeploymentRow({
         )}
       </TableCell>
       <TableCell className="text-right font-mono text-xs tabular-nums">
-        {deployment.runs}
-        {deployment.skips > 0 && (
+        {workflow.run_count}
+        {workflow.skip_count > 0 && (
           <span
             className="pl-2 text-[11px] text-faint"
             title="Slots that fired while the previous run was still active"
           >
-            {deployment.skips} skipped
+            {workflow.skip_count} skipped
           </span>
         )}
       </TableCell>
@@ -171,10 +185,10 @@ function DeploymentRow({
           title="Run now"
           onClick={() =>
             act(async () => {
-              const { session_id } = await post<{ session_id: string }>(
-                `/api/deployments/${encodeURIComponent(deployment.name)}/run`,
+              const { run_id } = await post<{ run_id: string }>(
+                `/api/workflows/${encodeURIComponent(workflow.name)}/run`,
               );
-              return `started ${session_id}`;
+              return `started ${run_id}`;
             })
           }
         >
@@ -187,10 +201,10 @@ function DeploymentRow({
           title={paused ? "Resume" : "Pause"}
           onClick={() =>
             act(async () => {
-              await post(`/api/deployments/${encodeURIComponent(deployment.name)}/enabled`, {
+              await post(`/api/workflows/${encodeURIComponent(workflow.name)}/enabled`, {
                 enabled: paused,
               });
-              return paused ? `resumed ${deployment.name}` : `paused ${deployment.name}`;
+              return paused ? `resumed ${workflow.name}` : `paused ${workflow.name}`;
             })
           }
         >
@@ -200,12 +214,12 @@ function DeploymentRow({
           variant="ghost"
           size="icon"
           className="size-7 hover:text-destructive"
-          title="Delete deployment"
+          title="Delete workflow"
           onClick={() => {
-            if (!confirm(`Delete deployment ${deployment.name}? Its past runs are kept.`)) return;
+            if (!confirm(`Delete workflow ${workflow.name}? Its task sessions are kept.`)) return;
             act(async () => {
-              await post(`/api/deployments/${encodeURIComponent(deployment.name)}/delete`);
-              return `deleted ${deployment.name}`;
+              await post(`/api/workflows/${encodeURIComponent(workflow.name)}/delete`);
+              return `deleted ${workflow.name}`;
             });
           }}
         >

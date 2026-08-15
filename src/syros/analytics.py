@@ -63,6 +63,12 @@ def _ts(name: str) -> Callable[[dict[str, Any]], Any]:
     return lambda doc: _timestamp(doc.get(name))
 
 
+def _opt_workspace(doc: dict[str, Any]) -> Any:
+    # Stored options predating the rename carry "team"; same column, new name.
+    options = doc.get("options") or {}
+    return options.get("workspace") or options.get("team")
+
+
 SESSION_FIELDS: list[Field] = [
     ("session_id", "STRING", "REQUIRED", lambda s: s["id"]),
     ("status", "STRING", "NULLABLE", lambda s: runtime(s).get("status")),
@@ -76,9 +82,11 @@ SESSION_FIELDS: list[Field] = [
     ),
     ("seq_head", "INT64", "NULLABLE", _get("seq_head")),
     ("model", "STRING", "NULLABLE", lambda s: (s.get("options") or {}).get("model")),
-    ("workspace", "STRING", "NULLABLE", lambda s: (s.get("options") or {}).get("workspace")),
+    ("workspace", "STRING", "NULLABLE", lambda s: _opt_workspace(s)),
     ("created_by", "STRING", "NULLABLE", _get("created_by")),
-    ("deployment", "STRING", "NULLABLE", _get("deployment")),
+    ("workflow", "STRING", "NULLABLE", _get("workflow")),
+    ("run_id", "STRING", "NULLABLE", _get("run_id")),
+    ("task", "STRING", "NULLABLE", _get("task")),
     ("agent", "STRING", "NULLABLE", _get("agent")),
     ("trigger", "STRING", "NULLABLE", _get("trigger")),
     ("created_at", "TIMESTAMP", "NULLABLE", _ts("created_at")),
@@ -132,7 +140,7 @@ AGENT_FIELDS: list[Field] = [
     ("description", "STRING", "NULLABLE", _get("description")),
     ("created_by", "STRING", "NULLABLE", _get("created_by")),
     ("model", "STRING", "NULLABLE", lambda a: (a.get("options") or {}).get("model")),
-    ("workspace", "STRING", "NULLABLE", lambda a: (a.get("options") or {}).get("workspace")),
+    ("workspace", "STRING", "NULLABLE", lambda a: _opt_workspace(a)),
     ("created_at", "TIMESTAMP", "NULLABLE", _ts("created_at")),
     ("updated_at", "TIMESTAMP", "NULLABLE", _ts("updated_at")),
     ("options", "JSON", "NULLABLE", lambda a: _json(a.get("options") or {})),

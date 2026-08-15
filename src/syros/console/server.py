@@ -29,6 +29,15 @@ CALL_TIMEOUT_SECONDS = 30.0
 # above the 10 MiB write cap in api.py to leave room for base64's ~33% overhead.
 MAX_BODY_BYTES = 16 * 1024 * 1024
 
+
+def _qworkspace(query: dict[str, list[str]]) -> str | None:
+    return (query.get("workspace") or [None])[0]
+
+
+def _bworkspace(body: dict) -> str | None:
+    return str(body["workspace"]) if body.get("workspace") else None
+
+
 # The API surface as data: (method, path pattern, handler). None segments are
 # wildcards, captured in order and passed to the handler after (api, body, query).
 ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
@@ -64,23 +73,23 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             sid, call_hash, allow=bool(body.get("allow")), message=body.get("message")
         ),
     ),
-    ("GET", ("api", "deployments"), lambda api, body, query: api.deployments()),
-    ("POST", ("api", "deployments"), lambda api, body, query: api.create_deployment(body)),
-    ("GET", ("api", "deployments", None), lambda api, body, query, name: api.deployment(name)),
+    ("GET", ("api", "workflows"), lambda api, body, query: api.workflows()),
+    ("POST", ("api", "workflows"), lambda api, body, query: api.create_workflow(body)),
+    ("GET", ("api", "workflows", None), lambda api, body, query, name: api.workflow(name)),
     (
         "POST",
-        ("api", "deployments", None, "enabled"),
-        lambda api, body, query, name: api.set_deployment_enabled(name, bool(body.get("enabled"))),
+        ("api", "workflows", None, "enabled"),
+        lambda api, body, query, name: api.set_workflow_enabled(name, bool(body.get("enabled"))),
     ),
     (
         "POST",
-        ("api", "deployments", None, "run"),
-        lambda api, body, query, name: api.run_deployment(name),
+        ("api", "workflows", None, "run"),
+        lambda api, body, query, name: api.run_workflow(name),
     ),
     (
         "POST",
-        ("api", "deployments", None, "delete"),
-        lambda api, body, query, name: api.delete_deployment(name),
+        ("api", "workflows", None, "delete"),
+        lambda api, body, query, name: api.delete_workflow(name),
     ),
     ("GET", ("api", "agents"), lambda api, body, query: api.agents()),
     ("POST", ("api", "agents"), lambda api, body, query: api.create_agent(body)),
@@ -99,13 +108,24 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     (
         "POST",
         ("api", "workspaces"),
-        lambda api, body, query: api.create_workspace(str(body.get("name") or "")),
+        lambda api, body, query: api.create_workspace(body),
     ),
     (
         "POST",
         ("api", "workspaces", None, "delete"),
         lambda api, body, query, name: api.delete_workspace(name),
     ),
+    (
+        "POST",
+        ("api", "workspaces", None, "update"),
+        lambda api, body, query, name: api.update_workspace(name, body),
+    ),
+    (
+        "POST",
+        ("api", "settings"),
+        lambda api, body, query: api.update_settings(body),
+    ),
+    ("GET", ("api", "settings"), lambda api, body, query: api.settings()),
     (
         "GET",
         ("api", "workspaces", None, "files"),
@@ -160,19 +180,25 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         ),
     ),
     ("GET", ("api", "connectors"), lambda api, body, query: api.connectors()),
-    ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
+    (
+        "GET",
+        ("api", "skills"),
+        lambda api, body, query: api.skills(_qworkspace(query)),
+    ),
     ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
     (
         "GET",
         ("api", "skills", None, "files"),
-        lambda api, body, query, name: api.skill_files(name),
+        lambda api, body, query, name: api.skill_files(name, _qworkspace(query)),
     ),
     # Skill file names may contain "/", so — as with workspaces — the file
     # rides the query string on GET and the JSON body on POST, never a segment.
     (
         "GET",
         ("api", "skills", None, "file"),
-        lambda api, body, query, name: api.skill_file(name, (query.get("name") or [""])[0]),
+        lambda api, body, query, name: api.skill_file(
+            name, (query.get("name") or [""])[0], _qworkspace(query)
+        ),
     ),
     (
         "POST",
@@ -182,17 +208,20 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             str(body.get("name") or ""),
             str(body.get("content") or ""),
             str(body.get("encoding") or "utf-8"),
+            _bworkspace(body),
         ),
     ),
     (
         "POST",
         ("api", "skills", None, "file", "delete"),
-        lambda api, body, query, name: api.delete_skill_file(name, str(body.get("name") or "")),
+        lambda api, body, query, name: api.delete_skill_file(
+            name, str(body.get("name") or ""), _bworkspace(body)
+        ),
     ),
     (
         "POST",
         ("api", "skills", None, "delete"),
-        lambda api, body, query, name: api.delete_skill(name),
+        lambda api, body, query, name: api.delete_skill(name, _bworkspace(body)),
     ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
     (
@@ -344,7 +373,7 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
                 self._json({"error": str(exc)}, 413)
             except (ValueError, TypeError, SyrosError) as exc:
                 # SyrosError covers the whole validation family — a rejected
-                # option, an unparsable cron, a deployment that isn't there.
+                # option, an unparsable cron, a workflow that isn't there.
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:
                 self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)

@@ -101,7 +101,7 @@ async def test_delete_agent():
         await api(store).delete_agent("reviewer")
 
 
-async def test_create_deployment_with_agent(monkeypatch):
+async def test_create_workflow_with_agent(monkeypatch):
     import syros.remote
 
     async def fake_trigger(project, region, job, session_id):
@@ -110,7 +110,7 @@ async def test_create_deployment_with_agent(monkeypatch):
     monkeypatch.setattr(syros.remote, "_trigger_job", fake_trigger)
     store = FakeStore()
     await seed(store)
-    result = await api(store).create_deployment(
+    result = await api(store).create_workflow(
         {
             "name": "nightly",
             "cron": "0 9 * * *",
@@ -119,9 +119,10 @@ async def test_create_deployment_with_agent(monkeypatch):
             "options": {},
         }
     )
-    assert result["deployment"]["agent"] == "reviewer"
+    assert result["workflow"]["tasks"][0]["agent"] == "reviewer"
     # firing it resolves the agent and tags the session
-    run = await api(store).run_deployment("nightly")
-    session = store.sessions[run["session_id"]]
+    run = await api(store).run_workflow("nightly")
+    session_id = store.runs["nightly"][run["run_id"]]["tasks"]["main"]["session_id"]
+    session = store.sessions[session_id]
     assert session["agent"] == "reviewer"
     assert session["options"]["system_prompt"] == "be careful"

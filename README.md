@@ -120,8 +120,9 @@ the rewind action itself is CLI/SDK-only. The state
 column is liveness rather than raw status: `starting` is a triggered job that hasn't
 claimed the session yet, `running` holds a live lease, and either one whose window lapsed
 shows as `stalled` — a job that died or never came up, and deletable as such. Shared
-workspaces are editable: open one to edit a file in place, upload, or delete — writes are
-refused while a run holds the lease, since its checkpoint would overwrite them. It also
+workspaces are editable: open one to edit a file in place (including its CLAUDE.md),
+upload, or delete — writes are refused while a run holds the lease, since its checkpoint
+would overwrite them. It also
 deploys to Cloud Run (`syros-console`, public URL behind IAP, IAM-gated), so the same console is
 reachable without a local checkout or GCP client libraries; see [Deploy](#deploy).
 
@@ -160,49 +161,70 @@ syros agents show|update|delete reviewer
 ```
 
 The console has an Agents view with the same create/edit/delete surface, and sessions
-show which agent they ran as. Deployments can reference an agent too (below).
+show which agent they ran as. Workflow tasks can reference an agent too (below).
 
-## Deployments
+## Workflows
 
-A deployment is a cron expression plus a prompt plus the usual run options, stored as one
-Firestore document. Each firing starts a *fresh ordinary session* — same list, transcript,
-approval queue, audit trail, kill switch — tagged with the deployment's name, so scheduled
-work is governed exactly like interactive work. Nothing in the runner knows deployments
-exist.
+A workflow is a named chain of one-shot tasks — each task a prompt, an optional agent
+reference, and per-task option overrides — plus an optional cron, stored as one Firestore
+document. Firing it creates a run, and every task runs as a *fresh ordinary session* —
+same list, transcript, approval queue, audit trail, kill switch — tagged with the
+workflow, run and task, so scheduled work is governed exactly like interactive work.
+A one-task workflow on a cron is the classic scheduled prompt; a chain is
+`claude -p | claude -p` as a platform object, Databricks-Jobs style
+(design notes: [docs/workflow-design.md](docs/workflow-design.md)).
 
 ```
-syros deployments create nightly-report \
+syros workflows create nightly-report \
   --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "profile the CSVs and rewrite report.md" \
   --model claude-sonnet-5 --workspace reports --allow Read --allow Write
 
-syros deployments                      # each deployment, its next slot, last run
-syros deployments runs nightly-report  # run history: outcome, trigger, cost
-syros deployments run nightly-report   # fire once, off-cycle (clock untouched)
-syros deployments pause|resume|delete nightly-report
+syros workflows create research-pipeline --tasks tasks.json   # a chain; omit --cron for manual-only
+
+syros workflows                      # each workflow, its next slot, last run
+syros workflows runs nightly-report  # run history, task by task
+syros workflows run nightly-report   # fire once, off-cycle (clock untouched)
+syros workflows pause|resume|delete nightly-report
 ```
 
-A deployment can name an agent (`--agent reviewer`) whose stored options become the run
-defaults — resolved fresh at each firing, so an agent edit reaches the next run without
-touching the deployment; the deployment's own options still override per field.
+`tasks.json` is the task list. `depends_on` omitted means "the previous task" (a pipe);
+explicit lists give fan-out/fan-in, and `{{tasks.<id>.result}}` in a prompt interpolates
+the upstream task's final result text (capped — big payloads go through a shared
+workspace or artifact space):
 
-The console has the same surface with a run-status view per deployment: outcome/duration
-bars over the run history (click a bar for that run's transcript), success rate, average
-duration, spend, and a create/pause/run-now/delete UI. Cron is the standard 5-field
-syntax (`@daily` etc. work), evaluated as wall-clock time in the deployment's IANA
-timezone, so a 9am deployment stays at 9am across DST.
+```json
+[
+  { "id": "research", "prompt": "find this week's numbers", "agent": "analyst" },
+  { "id": "report", "prompt": "write report.md from: {{tasks.research.result}}" }
+]
+```
 
-![Deployment detail: outcome/duration bars over the run history, success rate, spend](docs/img/console-deployment.png)
+A task can name an agent whose stored options become its defaults — resolved fresh at
+each firing, so an agent edit reaches the next run without touching the workflow; the
+task's own options override per field, over the workflow-level defaults, over the agent's.
 
-What advances the clock is `syros tick`, which fires every due deployment and exits;
-Terraform wires Cloud Scheduler → a `syros-scheduler` Cloud Run Job to run it every
-minute (`tick_schedule` to change — its cadence is the effective granularity of all
-deployments). The tick is transactional and idempotent: overlapping ticks can't
-double-fire, an outage catches up with one run rather than replaying missed slots, and
-a slot that comes due while the previous run is still active is skipped and counted
-(one live run per deployment — also what a shared workspace's lease would force anyway).
-Failures are visible, not silent: a deployment whose launch fails records `last_error`,
-and one whose cron can no longer fire is auto-paused with the reason on it.
+The console has the same surface with a run-status view per workflow: duration bars over
+the run history, per-run task chips (click one for that task's transcript), success rate,
+and a create/pause/run-now/delete UI. Cron is the standard 5-field syntax (`@daily` etc.
+work), evaluated as wall-clock time in the schedule's IANA timezone, so a 9am workflow
+stays at 9am across DST.
+
+![Workflow detail: duration bars over the run history, task chips per run](docs/img/console-deployment.png)
+
+What advances the clock is `syros tick`, which repairs active runs (a runner that died
+mid-chain), fires every due workflow, and exits; Terraform wires Cloud Scheduler → a
+`syros-scheduler` Cloud Run Job to run it every minute (`tick_schedule` to change — its
+cadence is the effective granularity of all schedules). Between ticks, chains advance
+eagerly: the runner records its task's result and launches what became ready the moment
+a session releases. Both paths funnel through one transaction on the run document, so
+they can race harmlessly. The tick is transactional and idempotent: overlapping ticks
+can't double-fire, an outage catches up with one run rather than replaying missed slots,
+and a slot that comes due while the previous run is still active is skipped and counted
+(one live run per workflow — also what a shared workspace's lease would force anyway).
+Failures are visible, not silent: a task failure skips its downstream tasks and fails the
+run with the reason on it, a workflow whose launch fails records `last_error`, and one
+whose cron can no longer fire is auto-paused with the reason on it.
 
 ## Connectors
 
@@ -226,6 +248,7 @@ syros connectors                     # catalog + credential status
 syros connectors auth slack          # browser OAuth (MCP-spec, dynamic client registration)
 syros connectors auth google --client-secrets oauth_client.json
 syros connectors set github          # paste a static token (prompted, or --token/--file)
+syros connectors test                # verify every stored credential against its servers
 syros connectors remove notion       # destroy the stored credential
 ```
 
@@ -233,14 +256,19 @@ syros connectors remove notion       # destroy the stored credential
 AgentOptions(connectors=["slack", "github"])   # tools arrive as mcp__slack__*, mcp__github__*
 ```
 
-Agents and deployments take the same list (an override replaces the persona's list, like
-`allowed_tools`); the console shows the catalog under Connectors and offers the picker in
-both forms. Notes: tokens are minted once per run, so a run longer than the token's
-lifetime (~1h for Google) loses that connector's tools until the next run; a missing or
-unrefreshable credential fails the run fast with `stop_reason=connector_error`; Slack may
-require a workspace admin to approve the app the OAuth flow registers. Rolling out: deploy
-the new image before creating connector-bearing sessions — older runner images reject the
-new option field.
+Agents and workflows take the same list — `--connector slack --connector github` (or
+comma-separated) on `agents create` / `workflows create`, and an override replaces the
+persona's list, like `allowed_tools`. The console shows the catalog under Connectors and
+offers the picker in the session, agent, and workflow forms. Notes: tokens are minted
+once per run, so a run longer than the token's lifetime (~1h for Google) loses that
+connector's tools until the next run; a missing or unrefreshable credential fails the run
+fast with `stop_reason=connector_error` — `syros connectors test` catches this before a
+run does. Rolling out: deploy the new image before creating connector-bearing sessions —
+older runner images reject the new option field.
+
+The full setup guide — per-platform authorization walkthroughs (including creating the
+Google OAuth client), verification, and troubleshooting — is in
+[docs/connectors.md](docs/connectors.md).
 
 ## Skills
 
@@ -262,8 +290,12 @@ syros skills sync                    # seed skills/ from the official anthropics
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
 tarball and copies each skill into the bucket — nothing is vendored, and the copies are
 editable snapshots: re-syncing overwrites official files but never touches skills (or
-files) the tarball doesn't carry. The console has a Skills view with the same surface as
-workspaces — browse a skill, edit a file in place, upload, or delete the skill.
+files) the tarball doesn't carry. Skills come in two scopes: global (`skills/`, mounted
+into every run) and per-workspace (`team-skills/{workspace}/`, mounted only for that workspace's
+sessions, shadowing a same-named global). The console has a Skills view with the same
+surface as workspaces — browse a skill, edit a file in place, upload, or delete the
+skill; a workspace's skills live on its workspace page. `syros skills --workspace
+<name>` scopes the CLI.
 
 ## Analysis
 
@@ -317,19 +349,19 @@ AgentOptions(
 ```
 
 The console has the same switch — a **BigQuery** toggle on the new-session, agent, and
-deployment forms — and the CLI has `--bigquery`; both set the reference above and
-pre-allow `mcp__bq__query`, which is what makes an unattended audit a deployment rather
+workflow forms — and the CLI has `--bigquery`; both set the reference above and
+pre-allow `mcp__bq__query`, which is what makes an unattended audit a scheduled workflow rather
 than a person:
 
 ```
-syros deployments create nightly-audit --cron "0 9 * * *" --tz Asia/Tokyo \
+syros workflows create nightly-audit --cron "0 9 * * *" --tz Asia/Tokyo \
   --prompt "Query the syros BigQuery tables: yesterday's spend by model, any
             denied or killed tool calls, approvals that timed out. Write
             findings.md to the audit artifact space." \
   --model claude-sonnet-5 --artifacts audit --bigquery
 ```
 
-Two things to know. The sandbox reads BigQuery only where the deployment allows it —
+Two things to know. The sandbox reads BigQuery only where the installation allows it —
 `terraform apply -var sandbox_bigquery=true` (see [Security model](#security-model)); off
 by default, the tool exists but every query comes back as a permission error. And the
 tables are a snapshot: as fresh as the last `syros export`, which runs with the caller's
@@ -497,9 +529,39 @@ doing nothing.
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
-| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`); transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
+| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`), the workspace's skills, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
 | `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
+
+## Workspaces and global settings
+
+A workspace is a shared directory with members: one GCS-backed working directory
+(`workspaces/{name}/`, exclusive lease — one live run at a time), a `CLAUDE.md` at its
+root loaded as project memory for every run under the workspace, the workspace's own
+skills (`team-skills/{name}/` — the GCS prefix keeps its pre-rename name; mounted
+alongside the global `skills/`, shadowing same-named globals), and stored option
+defaults. Its members are derived, not stored: the agents whose saved options name
+the workspace, shown in the console and `syros workspaces` listings.
+
+Options resolve at session creation, layered — explicitly-set fields always win:
+
+```
+explicit options  ←  agent  ←  workspace options  ←  global settings  ←  model "sonnet"
+```
+
+`settings/global` is one Firestore doc of option defaults inherited by everything;
+the final fallback pins the model to `sonnet` so a session never records no model.
+
+```
+syros workspaces create dev --model claude-sonnet-5
+syros workspaces claude-md dev --file CLAUDE.md   # print without --file
+syros settings update --model claude-sonnet-5   # syros settings to show
+```
+
+From the SDK: `AgentOptions(workspace="dev")`. Each console workspace page bundles
+the file browser, its CLAUDE.md editor, workspace skills, members, and the
+workspace's stored options; Settings edits the global defaults. Sessions display an
+LLM-written title and summary (a haiku call when a run goes idle) instead of a bare id.
 
 ## Out of scope
 

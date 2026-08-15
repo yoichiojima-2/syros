@@ -173,26 +173,26 @@ def test_model_env_ignores_ambient_key_on_vertex_backend(monkeypatch):
 
 
 def test_artifacts_str_means_one_rw_space():
-    options = AgentOptions(project="proj-1", artifacts="team")
+    options = AgentOptions(project="proj-1", artifacts="workspace")
     options.validate()
-    assert options.resolved_artifacts() == {"team": "rw"}
-    assert options.serialize()["artifacts"] == "team"
+    assert options.resolved_artifacts() == {"workspace": "rw"}
+    assert options.serialize()["artifacts"] == "workspace"
 
 
 def test_artifacts_dict_modes():
-    options = AgentOptions(project="proj-1", artifacts={"team": "rw", "inputs": "ro"})
+    options = AgentOptions(project="proj-1", artifacts={"workspace": "rw", "inputs": "ro"})
     options.validate()
-    assert options.resolved_artifacts() == {"team": "rw", "inputs": "ro"}
+    assert options.resolved_artifacts() == {"workspace": "rw", "inputs": "ro"}
 
 
 def test_artifacts_bad_name_raises():
     with pytest.raises(OptionsError, match="artifact space"):
-        AgentOptions(project="proj-1", artifacts="Team/Reports").validate()
+        AgentOptions(project="proj-1", artifacts="Workspace/Reports").validate()
 
 
 def test_artifacts_bad_mode_raises():
     with pytest.raises(OptionsError, match="mode must be"):
-        AgentOptions(project="proj-1", artifacts={"team": "write"}).validate()
+        AgentOptions(project="proj-1", artifacts={"workspace": "write"}).validate()
 
 
 def test_connectors_serialize_and_validate():
@@ -218,3 +218,14 @@ def test_connectors_mcp_server_collision_rejected():
     )
     with pytest.raises(OptionsError):
         options.validate()
+
+
+def test_options_from_doc_maps_legacy_team_to_workspace():
+    # Pre-rename session docs stored "team"; resume must keep working.
+    restored = options_from_doc({"team": "shared"})
+    assert restored.workspace == "shared"
+    original = {"team": "shared"}
+    options_from_doc(original)
+    assert original == {"team": "shared"}  # caller's dict untouched
+    # Canonical key wins when both are present.
+    assert options_from_doc({"workspace": "new", "team": "old"}).workspace == "new"

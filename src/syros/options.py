@@ -38,6 +38,10 @@ _SERIALIZED_FIELDS = (
 
 ArtifactMode = Literal["rw", "ro"]
 
+# The built-in floor of the option-resolution chain (agents.resolve): a session
+# never records no model, whatever the stored layers say.
+DEFAULT_MODEL = "sonnet"
+
 # Platform-owned in-process MCP servers, requested by reference because options
 # travel through Firestore. Resolved into live server objects in the sandbox
 # (runner.BUILTIN_SERVERS) — this module must stay importable on a client with
@@ -71,10 +75,13 @@ class AgentOptions:
     # them. Resolved when the session is created; the session stores the merged
     # result, so later edits to the agent never change a running session.
     agent: str | None = None
-    # Named shared GCS workspace: sessions with the same name share one working
-    # directory (workspaces/{name}/ in the bucket). HOME stays per-session, so
-    # transcripts and resume are unaffected. Fixed at session creation; on
-    # resume the stored options win, like every serialized field.
+    # Named workspace (workspaces/{name} in Firestore): sessions under the same
+    # workspace share one working directory (workspaces/{name}/ in the bucket,
+    # exclusive lease) and the workspace's skills, and inherit the workspace's
+    # stored options as defaults (under agent, over global settings). HOME
+    # stays per-session, so transcripts and resume are unaffected. Fixed at
+    # session creation; on resume the stored options win, like every
+    # serialized field.
     workspace: str | None = None
     # Shared artifact spaces mounted into the working directory: each space
     # appears at ./artifacts/{space}/ and the agent uses its ordinary file
@@ -190,6 +197,12 @@ def options_from_doc(doc: dict[str, Any]) -> AgentOptions:
     untrusted input takes when the console defines a deployment, and an option
     that quietly did nothing would be worse than a rejected form.
     """
+    # Sessions serialized while the workspace concept was called "team" stored
+    # "team"; same semantics, new name — accept it so resume keeps working.
+    if "team" in doc:
+        doc = dict(doc)
+        doc["workspace"] = doc.get("workspace") or doc.pop("team")
+        doc.pop("team", None)
     unknown = sorted(set(doc) - set(_SERIALIZED_FIELDS))
     if unknown:
         raise OptionsError(f"unknown option(s): {', '.join(unknown)}")

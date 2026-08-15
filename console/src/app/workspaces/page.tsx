@@ -74,7 +74,7 @@ export default function WorkspacesPage() {
             </div>
           ) : workspaces.length === 0 ? (
             <p className="p-6 text-center text-[13px] text-muted-foreground">
-              No shared workspaces yet — sessions created with{" "}
+              No workspaces yet — sessions created with{" "}
               <code className="font-mono text-xs">AgentOptions(workspace=&quot;name&quot;)</code>{" "}
               appear here.
             </p>
@@ -84,6 +84,8 @@ export default function WorkspacesPage() {
                 <TableRow>
                   <TableHead />
                   <TableHead>Name</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Members</TableHead>
                   <TableHead>Lease</TableHead>
                   <TableHead>Sessions</TableHead>
                   <TableHead className="text-right">Files</TableHead>
@@ -99,9 +101,7 @@ export default function WorkspacesPage() {
                     workspace={workspace}
                     now={now}
                     expanded={expanded === workspace.name}
-                    onToggle={() =>
-                      setExpanded(expanded === workspace.name ? null : workspace.name)
-                    }
+                    onToggle={() => setExpanded(expanded === workspace.name ? null : workspace.name)}
                     onDelete={() => remove(workspace)}
                   />
                 ))}
@@ -142,6 +142,22 @@ function WorkspaceRow({
           >
             {workspace.name}
           </Link>
+        </TableCell>
+        <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
+          {workspace.description || "—"}
+        </TableCell>
+        <TableCell>
+          {workspace.members.length === 0 ? (
+            <span className="text-[11px] text-faint">—</span>
+          ) : (
+            <span className="flex flex-wrap items-center gap-1">
+              {workspace.members.map((member) => (
+                <Badge key={member} className="font-mono text-[11px]">
+                  {member}
+                </Badge>
+              ))}
+            </span>
+          )}
         </TableCell>
         <TableCell>
           {workspace.busy ? (
@@ -233,7 +249,7 @@ function FilesRow({ name, now }: { name: string; now: number }) {
   return (
     <TableRow className="hover:bg-transparent">
       <TableCell />
-      <TableCell colSpan={7} className="py-2">
+      <TableCell colSpan={9} className="py-2">
         {files === null ? (
           <Skeleton className="h-5 w-48" />
         ) : files.length === 0 ? (

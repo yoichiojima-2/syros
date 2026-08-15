@@ -21,10 +21,10 @@ from claude_agent_sdk import ClaudeSDKClient
 from . import env
 from .gate import Gate
 from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, git_info
-from .options import AgentOptions, build_sdk_options, model_env
+from .options import AgentOptions, build_sdk_options, model_env, options_from_doc
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import artifacts, bigquery, connectors, workspace
+from . import artifacts, bigquery, connectors, titles, workflows, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -70,6 +70,20 @@ async def _watch_interrupt(store: Store, session_id: str, client: ClaudeSDKClien
         await asyncio.sleep(INTERRUPT_POLL_SECONDS)
 
 
+async def _advance_workflow(store: Store, config: env.RunnerEnv, session_id: str) -> None:
+    """After a workflow task session releases, move its run forward: record
+    the outcome and launch the tasks that became ready. Never fatal — the
+    reconciling tick repairs anything this missed, so a Firestore blip here
+    must not fail a session that already finished its work."""
+    try:
+        session = await store.get_session(session_id)
+        if not session or not session.get("workflow"):
+            return
+        await workflows.advance(store, AgentOptions(project=config.project), session)
+    except Exception as error:
+        print(f"workflow advance failed for {session_id}: {error}", file=sys.stderr)
+
+
 async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -> list[str]:
     """Poll the inbox for up to stay_alive seconds of idleness.
 
@@ -100,7 +114,7 @@ async def _heartbeat(
     interval: float,
     lost: asyncio.Event,
 ) -> None:
-    """Background task: keep the session (and workspace) lease alive.
+    """Background task: keep the session (and shared workspace) lease alive.
 
     A failed renewal means the lease was stolen or the session was killed —
     set the lost flag so the run stops instead of writing over the new owner.
@@ -150,7 +164,10 @@ async def run(session_id: str) -> None:
     if session is None:
         return  # another execution holds the lease, or the session is gone/terminated
 
-    options = AgentOptions(**session["options"], project=config.project)
+    # Through options_from_doc, not the raw constructor: pre-rename session
+    # docs store "team", which only the deserializer maps to workspace.
+    options = options_from_doc(dict(session["options"]))
+    options.project = config.project
 
     # Seed the journal cursor from the journal itself, never from the advisory
     # seq_head: after a mid-turn crash the doc lags the records, and trusting
@@ -203,6 +220,8 @@ async def run(session_id: str) -> None:
         )
     )
     try:
+        # stop_reason/lifecycle keep the "workspace_busy" name: it is a wire
+        # value the console and stored sessions already know.
         if options.workspace and not await store.claim_workspace(
             options.workspace, session_id, config.lease_ttl
         ):
@@ -231,6 +250,7 @@ async def run(session_id: str) -> None:
                 seq_head=writer.seq,
                 tip_uuid=writer.tip_uuid,
             )
+            await _advance_workflow(store, config, session_id)
             return
         if options.workspace:
             leased_workspace["name"] = options.workspace  # heartbeat renews it from here on
@@ -268,6 +288,7 @@ async def run(session_id: str) -> None:
                     seq_head=writer.seq,
                     tip_uuid=writer.tip_uuid,
                 )
+                await _advance_workflow(store, config, session_id)
                 return
             options.mcp_servers = {**servers, **options.mcp_servers}
 
@@ -281,12 +302,22 @@ async def run(session_id: str) -> None:
         home_prefix = workspace.session_prefix(session_id, "home")
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
-        # Mount every skill into HOME after the home restore, so the live skills/
-        # prefix wins over anything a stale checkpoint might carry. The SDK finds
-        # them via setting_sources=["user"] below.
+        # Mount skills into HOME after the home restore, so the live prefixes
+        # win over anything a stale checkpoint might carry: global skills for
+        # every run, then the workspace's own — restored second, so a workspace skill
+        # shadows a same-named global one. The SDK finds them via
+        # setting_sources=["user"] below.
         await asyncio.to_thread(
             workspace.restore, config.project, config.bucket, "skills/", home / ".claude" / "skills"
         )
+        if options.workspace:
+            await asyncio.to_thread(
+                workspace.restore,
+                config.project,
+                config.bucket,
+                f"team-skills/{options.workspace}/",
+                home / ".claude" / "skills",
+            )
         # Mount artifact spaces after the ws restore so the space's content wins.
         spaces = options.resolved_artifacts()
         for space in spaces:
@@ -328,14 +359,18 @@ async def run(session_id: str) -> None:
             env={**model_env(options), "HOME": str(home)},
             # "user" settings live in the sandboxed HOME above, so this only ever
             # loads syros-managed state — and it is what makes the mounted
-            # ~/.claude/skills visible to the harness.
-            setting_sources=["user"],
+            # ~/.claude/skills visible to the harness. "project" makes the
+            # workspace's CLAUDE.md (restored at the workspace root) load as the
+            # project memory for every session under the workspace.
+            setting_sources=["user", "project"],
         )
         sdk_options.hooks = gate.hooks()
         sdk_options.mcp_servers = resolve_mcp_servers(options.mcp_servers, config.project)
 
         cost = float(session.get("cost_usd") or 0.0)
         published = 0
+        run_prompts: list[str] = []
+        result_text: str | None = None
         claude_session_id = branch_claude or session.get("claude_session_id")
         stop_reason = "end_turn"
 
@@ -353,6 +388,7 @@ async def run(session_id: str) -> None:
                         # echoes tool results as user messages but never the prompt
                         # itself, and the chat view needs it.
                         await writer.append("prompt", {"text": text, "source": "inbox"})
+                        run_prompts.append(text)
                         await client.query(text)
                         async for message in client.receive_response():
                             # A lost lease mid-turn means another execution owns
@@ -371,6 +407,7 @@ async def run(session_id: str) -> None:
                                 cost += message.total_cost_usd or 0.0
                                 claude_session_id = message.session_id
                                 stop_reason = message.subtype
+                                result_text = message.result or result_text
                         if lost.is_set():
                             break  # skip the flush: the doc belongs to the new owner
                         if spaces:
@@ -415,8 +452,28 @@ async def run(session_id: str) -> None:
         # (a turn interrupted between publish and release, hook side effects).
         if spaces:
             published = await _publish_spaces(config, spaces, ws)
+        # Release the workspace lease before the labelling call below: the label
+        # never touches the workspace, and holding the one contended resource
+        # through an LLM round-trip would block a queued sibling session.
+        # Detach it from the heartbeat first, or the next beat re-claims it.
         if options.workspace:
+            leased_workspace["name"] = None
             await store.release_workspace(options.workspace, session_id)
+        # Label the session for the dashboard: a haiku call writes the title
+        # (once) and refreshes the summary each run. Never fatal — a session
+        # must release whether or not it got described.
+        if run_prompts or result_text:
+            try:
+                label = await asyncio.to_thread(titles.describe, options, run_prompts, result_text)
+            except Exception:
+                label = {"title": titles.fallback_title(run_prompts), "summary": None}
+            fields = {
+                key: value
+                for key, value in label.items()
+                if value and not (key == "title" and session.get("title"))
+            }
+            if fields:
+                await store.update_session(session_id, **fields)
         await writer.append("lifecycle", {"event": "released", "stop_reason": stop_reason})
         await store.release_session(
             session_id,
@@ -429,7 +486,12 @@ async def run(session_id: str) -> None:
             # File count in rw artifact spaces at release: a quick "did this
             # session actually leave anything behind" signal for `syros sessions`.
             **({"published": published} if spaces else {}),
+            # The final result text, capped: what a downstream workflow task's
+            # {{tasks.<id>.result}} interpolates. A durable field like
+            # title/summary — never nested under runtime.
+            **({"result": result_text[: workflows.RESULT_LIMIT]} if result_text else {}),
         )
+        await _advance_workflow(store, config, session_id)
     finally:
         beat.cancel()
 

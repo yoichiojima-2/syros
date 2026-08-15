@@ -23,7 +23,7 @@ from typing import Any
 
 from .errors import SyrosError
 from .names import validate_name
-from .options import _SERIALIZED_FIELDS, AgentOptions, options_from_doc
+from .options import _SERIALIZED_FIELDS, DEFAULT_MODEL, AgentOptions, options_from_doc
 from .store import Store, StoreProtocol
 
 
@@ -143,11 +143,25 @@ def merge(base: AgentOptions, overrides: AgentOptions) -> AgentOptions:
 
 
 async def resolve(store: StoreProtocol, options: AgentOptions) -> AgentOptions:
-    """Expand `options.agent` into concrete options: the agent's stored options
-    as defaults, explicitly-set fields on `options` as overrides. A no-op when
-    no agent is named."""
-    if not options.agent:
-        return options
-    agent = await require_agent(store, options.agent)
-    stored = options_from_doc(dict(agent.get("options") or {}))
-    return merge(stored, options)
+    """Expand references into concrete options, layered as
+
+        explicit options  <-  agent  <-  workspace options  <-  settings/global
+
+    Explicitly-set fields always win over any stored layer. Only the top-level
+    options may name an agent or workspace — a stored layer naming one is
+    ignored (merge never overrides a set field, and nesting would recurse).
+    The model lands on "sonnet" when no layer names one, so a session never
+    records no model. A named workspace without a stored doc contributes no
+    defaults; the shared directory and lease work by name alone."""
+    merged = options
+    if options.agent:
+        agent = await require_agent(store, options.agent)
+        merged = merge(options_from_doc(dict(agent.get("options") or {})), merged)
+    if merged.workspace:
+        workspace = await store.get_workspace(merged.workspace)
+        if workspace:
+            merged = merge(options_from_doc(dict(workspace.get("options") or {})), merged)
+    settings = await store.get_settings()
+    if settings:
+        merged = merge(options_from_doc(dict(settings.get("options") or {})), merged)
+    return replace(merged, model=merged.model or DEFAULT_MODEL)

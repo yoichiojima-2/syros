@@ -12,10 +12,10 @@ import type {
   ConnectorsResponse,
   ConnectorSummary,
   PollResponse,
-  RunSummary,
-  DeploymentResponse,
-  DeploymentSummary,
-  DeploymentsResponse,
+  WorkflowResponse,
+  WorkflowRun,
+  WorkflowSummary,
+  WorkflowsResponse,
   SessionsResponse,
   SessionSummary,
   SkillFilesResponse,
@@ -25,10 +25,10 @@ import type {
   SpaceSummary,
   SpacesResponse,
   StoredFile,
-  TranscriptEvent,
   WorkspaceFilesResponse,
   WorkspacesResponse,
   WorkspaceSummary,
+  TranscriptEvent,
 } from "./types";
 
 /** Ticker on the server's clock (see api.ts) driving countdowns and relative times. */
@@ -51,18 +51,28 @@ export function useOnline(): boolean {
   return online;
 }
 
-// `nonce` is the opt-in refresh handle: bumping it re-runs the effect, so an
-// action can pull fresh data without waiting out the interval.
-function usePolling(poll: () => void, intervalMs: number, nonce = 0) {
+// `deps` re-runs the effect when they change — a refresh nonce to pull fresh
+// data without waiting out the interval, or the name the poll closes over.
+// The poll gets an `alive` check so a response landing after the deps moved on
+// (or the component unmounted) can be dropped instead of applied.
+function usePolling(
+  poll: (alive: () => boolean) => void,
+  intervalMs: number,
+  deps: readonly unknown[] = [],
+) {
   useEffect(() => {
+    let alive = true;
     const tick = () => {
-      if (!document.hidden) poll();
+      if (!document.hidden) poll(() => alive);
     };
     tick();
     const timer = setInterval(tick, intervalMs);
-    return () => clearInterval(timer);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intervalMs, nonce]);
+  }, [intervalMs, ...deps]);
 }
 
 export function useSessions(intervalMs = 4000): SessionSummary[] | null {
@@ -75,35 +85,35 @@ export function useSessions(intervalMs = 4000): SessionSummary[] | null {
   return sessions;
 }
 
-export function useDeployments(intervalMs = 5000): {
-  deployments: DeploymentSummary[] | null;
+export function useWorkflows(intervalMs = 5000): {
+  workflows: WorkflowSummary[] | null;
   refresh: () => void;
 } {
-  const [deployments, setDeployments] = useState<DeploymentSummary[] | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[] | null>(null);
   const [nonce, setNonce] = useState(0);
   usePolling(
     () => {
-      api<DeploymentsResponse>("/api/deployments")
-        .then((data) => setDeployments(data.deployments))
+      api<WorkflowsResponse>("/api/workflows")
+        .then((data) => setWorkflows(data.workflows))
         .catch(() => {});
     },
     intervalMs,
-    nonce,
+    [nonce],
   );
-  return { deployments, refresh: () => setNonce((n) => n + 1) };
+  return { workflows, refresh: () => setNonce((n) => n + 1) };
 }
 
-/** One deployment and its run history — the run-status view's feed. */
-export function useDeployment(
+/** One workflow and its run history — the run-status view's feed. */
+export function useWorkflow(
   name: string | null,
   intervalMs = 4000,
 ): {
-  deployment: DeploymentSummary | null;
-  runs: RunSummary[] | null;
+  workflow: WorkflowSummary | null;
+  runs: WorkflowRun[] | null;
   missing: boolean;
   refresh: () => void;
 } {
-  const [data, setData] = useState<DeploymentResponse | null>(null);
+  const [data, setData] = useState<WorkflowResponse | null>(null);
   const [missing, setMissing] = useState(false);
   const [nonce, setNonce] = useState(0);
   useEffect(() => {
@@ -113,13 +123,13 @@ export function useDeployment(
     let cancelled = false;
     const poll = () => {
       if (document.hidden) return;
-      api<DeploymentResponse>(`/api/deployments/${encodeURIComponent(name)}`)
+      api<WorkflowResponse>(`/api/workflows/${encodeURIComponent(name)}`)
         .then((next) => {
           if (cancelled) return;
           setData(next);
           setMissing(false);
         })
-        // A deleted deployment 404s; say so rather than spinning on a skeleton.
+        // A deleted workflow 404s; say so rather than spinning on a skeleton.
         .catch((err: Error) => {
           if (!cancelled && /not found/i.test(err.message)) setMissing(true);
         });
@@ -132,7 +142,7 @@ export function useDeployment(
     };
   }, [name, intervalMs, nonce]);
   return {
-    deployment: data?.deployment ?? null,
+    workflow: data?.workflow ?? null,
     runs: data?.runs ?? null,
     missing,
     refresh: () => setNonce((n) => n + 1),
@@ -152,7 +162,7 @@ export function useAgents(intervalMs = 5000): {
         .catch(() => {});
     },
     intervalMs,
-    nonce,
+    [nonce],
   );
   return { agents, refresh: () => setNonce((n) => n + 1) };
 }
@@ -207,8 +217,8 @@ export function useWorkspaces(intervalMs = 4000): WorkspaceSummary[] | null {
   return workspaces;
 }
 
-/** Files in one workspace. Unlike the artifact equivalent this exposes a
- *  refresh, so a save or delete shows up without waiting out the poll. */
+/** Files in one workspace's shared directory. Unlike the artifact equivalent this exposes
+ *  a refresh, so a save or delete shows up without waiting out the poll. */
 export function useWorkspaceFiles(
   name: string | null,
   intervalMs = 8000,
@@ -217,27 +227,21 @@ export function useWorkspaceFiles(
   const [nonce, setNonce] = useState(0);
   // reset only when the workspace changes — a refresh must not flash a skeleton
   useEffect(() => setFiles(null), [name]);
-  useEffect(() => {
-    if (!name) return;
-    let cancelled = false;
-    const poll = () => {
-      if (document.hidden) return;
+  usePolling(
+    (alive) => {
+      if (!name) return;
       api<WorkspaceFilesResponse>(`/api/workspaces/${encodeURIComponent(name)}/files`)
         .then((data) => {
-          if (!cancelled) setFiles(data.files);
+          if (alive()) setFiles(data.files);
         })
         // an unknown workspace 404s; keep whatever we already had otherwise
         .catch(() => {
-          if (!cancelled) setFiles((prev) => prev ?? []);
+          if (alive()) setFiles((prev) => prev ?? []);
         });
-    };
-    poll();
-    const timer = setInterval(poll, intervalMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [name, intervalMs, nonce]);
+    },
+    intervalMs,
+    [name, nonce],
+  );
   return { files, refresh: () => setNonce((n) => n + 1) };
 }
 
@@ -253,47 +257,51 @@ export function useConnectors(intervalMs = 15000): ConnectorSummary[] | null {
   return connectors;
 }
 
-export function useSkills(intervalMs = 8000): SkillSummary[] | null {
+/** Skills in one scope: global (workspace null) or a workspace's own skill set. */
+export function useSkills(workspace: string | null = null, intervalMs = 8000): SkillSummary[] | null {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
-  usePolling(() => {
-    api<SkillsResponse>("/api/skills")
-      .then((data) => setSkills(data.skills))
-      .catch(() => {});
-  }, intervalMs);
+  useEffect(() => setSkills(null), [workspace]);
+  usePolling(
+    (alive) => {
+      api<SkillsResponse>(`/api/skills${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`)
+        .then((data) => {
+          if (alive()) setSkills(data.skills);
+        })
+        .catch(() => {});
+    },
+    intervalMs,
+    [workspace],
+  );
   return skills;
 }
 
-/** Files in one skill. Like useWorkspaceFiles this exposes a refresh, so a
- *  save or delete shows up without waiting out the poll. */
+/** Files in one skill (global or workspace-scoped). Like useWorkspaceFiles this exposes
+ *  a refresh, so a save or delete shows up without waiting out the poll. */
 export function useSkillFiles(
   name: string | null,
+  workspace: string | null = null,
   intervalMs = 8000,
 ): { files: StoredFile[] | null; refresh: () => void } {
   const [files, setFiles] = useState<StoredFile[] | null>(null);
   const [nonce, setNonce] = useState(0);
   // reset only when the skill changes — a refresh must not flash a skeleton
-  useEffect(() => setFiles(null), [name]);
-  useEffect(() => {
-    if (!name) return;
-    let cancelled = false;
-    const poll = () => {
-      if (document.hidden) return;
-      api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files`)
+  useEffect(() => setFiles(null), [name, workspace]);
+  usePolling(
+    (alive) => {
+      if (!name) return;
+      const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+      api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files${query}`)
         .then((data) => {
-          if (!cancelled) setFiles(data.files);
+          if (alive()) setFiles(data.files);
         })
         // an unknown skill 404s; keep whatever we already had otherwise
         .catch(() => {
-          if (!cancelled) setFiles((prev) => prev ?? []);
+          if (alive()) setFiles((prev) => prev ?? []);
         });
-    };
-    poll();
-    const timer = setInterval(poll, intervalMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [name, intervalMs, nonce]);
+    },
+    intervalMs,
+    [name, workspace, nonce],
+  );
   return { files, refresh: () => setNonce((n) => n + 1) };
 }
 

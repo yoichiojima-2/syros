@@ -171,7 +171,16 @@ export default function DashboardPage() {
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <StateBreakdown sessions={sessions} />
-        <ModelChart sessions={sessions} />
+        <CostBarChart
+          sessions={sessions}
+          title="Cost by model"
+          keyOf={(s) => s.model ?? "unknown"}
+        />
+        <CostBarChart
+          sessions={sessions}
+          title="Cost by user"
+          keyOf={(s) => s.created_by ?? "unknown"}
+        />
       </div>
     </div>
   );
@@ -297,22 +306,32 @@ function StateBreakdown({ sessions }: { sessions: SessionSummary[] | null }) {
   );
 }
 
-function ModelChart({ sessions }: { sessions: SessionSummary[] | null }) {
-  const byModel = sessions
+/** Horizontal cost breakdown over the listed sessions, keyed however the
+ *  caller likes — model and user share the one chart. */
+function CostBarChart({
+  sessions,
+  title,
+  keyOf,
+}: {
+  sessions: SessionSummary[] | null;
+  title: string;
+  keyOf: (s: SessionSummary) => string;
+}) {
+  const byKey = sessions
     ? sessions.reduce((acc, s) => {
-        const model = s.model ?? "unknown";
-        const row = acc.get(model) ?? { model, cost: 0, count: 0 };
+        const key = keyOf(s);
+        const row = acc.get(key) ?? { key, cost: 0, count: 0 };
         row.cost += s.cost_usd;
         row.count += 1;
-        return acc.set(model, row);
-      }, new Map<string, { model: string; cost: number; count: number }>())
+        return acc.set(key, row);
+      }, new Map<string, { key: string; cost: number; count: number }>())
     : null;
-  const rows = byModel && [...byModel.values()].sort((a, b) => b.cost - a.cost).slice(0, 8);
+  const rows = byKey && [...byKey.values()].sort((a, b) => b.cost - a.cost).slice(0, 8);
   const anyCost = rows?.some((r) => r.cost > 0);
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Cost by model</CardTitle>
+        <CardTitle>{title}</CardTitle>
         <CardDescription>Spend {`across the ${sessions?.length ?? 0} most recent sessions`}</CardDescription>
       </CardHeader>
       <CardContent>
@@ -335,7 +354,7 @@ function ModelChart({ sessions }: { sessions: SessionSummary[] | null }) {
               />
               <YAxis
                 type="category"
-                dataKey="model"
+                dataKey="key"
                 width={130}
                 tickFormatter={(v: string) => (v.length > 18 ? v.slice(0, 17) + "…" : v)}
                 tick={{ fill: "var(--muted-foreground)", fontSize: 11, fontFamily: "var(--font-mono)" }}
@@ -346,10 +365,10 @@ function ModelChart({ sessions }: { sessions: SessionSummary[] | null }) {
                 cursor={{ fill: "var(--secondary)", opacity: 0.6 }}
                 content={({ active, payload }) => {
                   if (!active || !payload?.length) return null;
-                  const row = payload[0].payload as { model: string; cost: number; count: number };
+                  const row = payload[0].payload as { key: string; cost: number; count: number };
                   return (
                     <ChartTooltip
-                      label={row.model}
+                      label={row.key}
                       value={`${cost(row.cost)} · ${row.count} session${row.count === 1 ? "" : "s"}`}
                     />
                   );

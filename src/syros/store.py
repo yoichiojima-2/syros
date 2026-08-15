@@ -20,10 +20,20 @@ Layout:
     sessions/{sid}/approvals/{hash}   {tool_name, input, status, ...} — the
                                       operational approval queue; the journal
                                       carries mirror "approval" records
-    workspaces/{name}                 {lease_session_id, lease_expires, ...} — the
-                                      exclusive lease on a shared workspace
-    deployments/{name}                  {cron, timezone, prompt, options, enabled,
-                                      next_run_at, ...} — a cron that fires runs
+    workspaces/{name}                 {options, description, lease_session_id,
+                                      lease_expires, ...} — a workspace's stored
+                                      option defaults plus the exclusive lease on
+                                      its shared directory (legacy docs live in
+                                      teams/{name}; reads fall back, writes
+                                      migrate forward)
+    settings/global                   {options} — option defaults inherited by
+                                      every workspace and session
+    workflows/{name}                  {tasks, options, schedule, enabled,
+                                      next_run_at, ...} — a named chain of
+                                      one-shot tasks, optionally on a cron
+    workflows/{name}/runs/{run_id}    one firing's orchestration state: the
+                                      task spec captured at launch plus each
+                                      task's status/session/result
     agents/{name}                     {options, description, ...} — a stored,
                                       named run configuration (persona)
 
@@ -37,6 +47,7 @@ from __future__ import annotations
 
 import secrets
 import time
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from .journal import MAIN_BRANCH
@@ -53,6 +64,10 @@ START_GRACE_SECONDS = 120.0
 
 def new_session_id() -> str:
     return f"sess_{secrets.token_hex(12)}"
+
+
+def new_run_id() -> str:
+    return f"run_{secrets.token_hex(8)}"
 
 
 def runtime(session: dict[str, Any] | None) -> dict[str, Any]:
@@ -134,16 +149,15 @@ class StoreProtocol(Protocol):
         session_id: str,
         options: dict[str, Any],
         created_by: str | None = None,
-        deployment: str | None = None,
+        workflow: str | None = None,
+        run_id: str | None = None,
+        task: str | None = None,
         trigger: str = "api",
         agent: str | None = None,
     ) -> None: ...
     async def get_session(self, session_id: str) -> dict[str, Any] | None: ...
     async def update_session(self, session_id: str, **fields: Any) -> None: ...
     async def list_sessions(self, limit: int | None = 20) -> list[dict[str, Any]]: ...
-    async def list_deployment_sessions(
-        self, deployment: str, limit: int = 50
-    ) -> list[dict[str, Any]]: ...
     async def delete_session(self, session_id: str) -> None: ...
     async def mark_starting(self, session_id: str) -> None: ...
     async def claim_session(
@@ -195,14 +209,25 @@ class StoreProtocol(Protocol):
     async def list_tool_calls(self, session_id: str) -> list[dict[str, Any]]: ...
     async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool: ...
     async def release_workspace(self, name: str, session_id: str) -> None: ...
+    async def create_workspace(self, name: str, doc: dict[str, Any]) -> None: ...
+    async def get_workspace(self, name: str) -> dict[str, Any] | None: ...
+    async def update_workspace(self, name: str, **fields: Any) -> None: ...
     async def list_workspaces(self) -> list[dict[str, Any]]: ...
     async def delete_workspace(self, name: str) -> None: ...
-    async def create_deployment(self, name: str, doc: dict[str, Any]) -> None: ...
-    async def get_deployment(self, name: str) -> dict[str, Any] | None: ...
-    async def update_deployment(self, name: str, **fields: Any) -> None: ...
-    async def list_deployments(self) -> list[dict[str, Any]]: ...
-    async def delete_deployment(self, name: str) -> None: ...
+    async def get_settings(self) -> dict[str, Any] | None: ...
+    async def update_settings(self, doc: dict[str, Any]) -> None: ...
+    async def create_workflow(self, name: str, doc: dict[str, Any]) -> None: ...
+    async def get_workflow(self, name: str) -> dict[str, Any] | None: ...
+    async def update_workflow(self, name: str, **fields: Any) -> None: ...
+    async def list_workflows(self) -> list[dict[str, Any]]: ...
+    async def delete_workflow(self, name: str) -> None: ...
     async def claim_slot(self, name: str, due: float, following: float) -> bool: ...
+    async def create_run(self, workflow: str, run_id: str, doc: dict[str, Any]) -> None: ...
+    async def get_run(self, workflow: str, run_id: str) -> dict[str, Any] | None: ...
+    async def list_runs(self, workflow: str, limit: int = 50) -> list[dict[str, Any]]: ...
+    async def transition_run(
+        self, workflow: str, run_id: str, mutate: Callable[[dict[str, Any]], dict[str, Any] | None]
+    ) -> dict[str, Any] | None: ...
     async def create_agent(self, name: str, doc: dict[str, Any]) -> None: ...
     async def get_agent(self, name: str) -> dict[str, Any] | None: ...
     async def update_agent(self, name: str, **fields: Any) -> None: ...
@@ -229,7 +254,9 @@ class Store:
         session_id: str,
         options: dict[str, Any],
         created_by: str | None = None,
-        deployment: str | None = None,
+        workflow: str | None = None,
+        run_id: str | None = None,
+        task: str | None = None,
         trigger: str = "api",
         agent: str | None = None,
     ) -> None:
@@ -263,11 +290,13 @@ class Store:
                     "triggered_at": 0.0,
                 },
                 "created_by": created_by,
-                # Run provenance: which deployment owns this session (None for an
-                # ordinary query) and what started it — "api", "console" for the
-                # console's new-session form, "deployment" for a cron firing,
-                # "manual" for a run-now on a deployment.
-                "deployment": deployment,
+                # Run provenance: which workflow run and task this session
+                # executes (all None for an ordinary query) and what started it —
+                # "api", "console" for the console's new-session form,
+                # "schedule" for a cron firing, "manual" for a run-now.
+                "workflow": workflow,
+                "run_id": run_id,
+                "task": task,
                 "trigger": trigger,
                 # Which stored agent the options were resolved from, if any —
                 # provenance only; the merged options above are authoritative.
@@ -292,23 +321,6 @@ class Store:
         query = self._db.collection("sessions").order_by("created_at", direction="DESCENDING")
         if limit is not None:
             query = query.limit(limit)
-        return [{"id": s.id, **s.to_dict()} async for s in query.stream()]
-
-    async def list_deployment_sessions(
-        self, deployment: str, limit: int = 50
-    ) -> list[dict[str, Any]]:
-        """One deployment's runs, newest first.
-
-        Equality plus an order_by on another field needs the composite index
-        declared in infra/main.tf — without it Firestore rejects the query
-        rather than serving it slowly.
-        """
-        query = (
-            self._db.collection("sessions")
-            .where(filter=self._firestore.FieldFilter("deployment", "==", deployment))
-            .order_by("created_at", direction="DESCENDING")
-            .limit(limit)
-        )
         return [{"id": s.id, **s.to_dict()} async for s in query.stream()]
 
     async def delete_session(self, session_id: str) -> None:
@@ -675,24 +687,35 @@ class Store:
         # predate the journal and want tool_name/input/decision at top level.
         return [_tool_call_row(s.to_dict()) async for s in query.stream()]
 
-    # --- workspaces (shared ws/ across sessions) ---
+    # --- workspaces (shared ws/ + option defaults; one doc holds config and
+    # lease). Docs written before the rename live in the legacy teams/{name}
+    # collection: reads fall back to it, writes migrate the doc forward. ---
 
     def _workspace(self, name: str):
         return self._db.collection("workspaces").document(name)
+
+    def _legacy_team(self, name: str):
+        return self._db.collection("teams").document(name)
 
     async def claim_workspace(self, name: str, session_id: str, ttl_seconds: float) -> bool:
         """Atomically take the workspace lease. One live execution per
         workspace; the holder is the session, so the same session re-claims."""
         transaction = self._db.transaction()
         reference = self._workspace(name)
+        legacy_reference = self._legacy_team(name)
         firestore = self._firestore
 
         @firestore.async_transactional
         async def _claim(transaction):
+            # Read both docs inside the transaction: a live lease still being
+            # renewed on the legacy teams/{name} doc must register as busy.
             snapshot = await reference.get(transaction=transaction)
+            legacy_snapshot = await legacy_reference.get(transaction=transaction)
             doc = snapshot.to_dict() if snapshot.exists else None
-            if lease_active(doc) and doc.get("lease_session_id") != session_id:
-                return False
+            legacy_doc = legacy_snapshot.to_dict() if legacy_snapshot.exists else None
+            for candidate in (doc, legacy_doc):
+                if lease_active(candidate) and candidate.get("lease_session_id") != session_id:
+                    return False
             fields = {
                 "lease_session_id": session_id,
                 "lease_expires": time.time() + ttl_seconds,
@@ -701,53 +724,46 @@ class Store:
             if snapshot.exists:
                 transaction.update(reference, fields)
             else:
-                transaction.set(reference, {**fields, "created_at": firestore.SERVER_TIMESTAMP})
+                # First claim since the rename: carry the legacy config forward.
+                base = {k: v for k, v in (legacy_doc or {}).items() if k != "created_at"}
+                transaction.set(
+                    reference, {**base, **fields, "created_at": firestore.SERVER_TIMESTAMP}
+                )
             return True
 
         return await _claim(transaction)
 
     async def release_workspace(self, name: str, session_id: str) -> None:
         """Drop the lease, but only if this session still holds it — an
-        expired-and-reclaimed workspace must not be released by the old runner."""
+        expired-and-reclaimed workspace must not be released by the old
+        runner. Checks the legacy teams/{name} doc too, so a lease taken
+        before the rename still releases."""
         transaction = self._db.transaction()
-        reference = self._workspace(name)
+        references = [self._workspace(name), self._legacy_team(name)]
         firestore = self._firestore
 
         @firestore.async_transactional
         async def _release(transaction):
-            snapshot = await reference.get(transaction=transaction)
-            if not snapshot.exists or snapshot.to_dict().get("lease_session_id") != session_id:
-                return
-            transaction.update(
-                reference,
-                {
-                    "lease_session_id": None,
-                    "lease_expires": 0.0,
-                    "updated_at": firestore.SERVER_TIMESTAMP,
-                },
-            )
+            snapshots = [await ref.get(transaction=transaction) for ref in references]
+            for reference, snapshot in zip(references, snapshots):
+                if not snapshot.exists or snapshot.to_dict().get("lease_session_id") != session_id:
+                    continue
+                transaction.update(
+                    reference,
+                    {
+                        "lease_session_id": None,
+                        "lease_expires": 0.0,
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                    },
+                )
 
         await _release(transaction)
 
-    async def list_workspaces(self) -> list[dict[str, Any]]:
-        """Every workspace lease doc, whether or not the lease is live."""
-        return [
-            {"name": s.id, **s.to_dict()} async for s in self._db.collection("workspaces").stream()
-        ]
-
-    async def delete_workspace(self, name: str) -> None:
-        """Remove the lease doc; no-op when absent. The caller (console) has
-        already deleted the GCS prefix and verified no live lease."""
-        await self._workspace(name).delete()
-
-    # --- deployments (cron -> runs) ---
-
-    def _deployment(self, name: str):
-        return self._db.collection("deployments").document(name)
-
-    async def create_deployment(self, name: str, doc: dict[str, Any]) -> None:
-        """Create; the document id is the name, so this fails on a duplicate."""
-        await self._deployment(name).create(
+    async def create_workspace(self, name: str, doc: dict[str, Any]) -> None:
+        """Create; the document id is the name, so this fails on a duplicate.
+        (Duplicates against a legacy teams/ doc are rejected by callers, which
+        check get_workspace first.)"""
+        await self._workspace(name).create(
             {
                 **doc,
                 "created_at": self._firestore.SERVER_TIMESTAMP,
@@ -755,23 +771,110 @@ class Store:
             }
         )
 
-    async def get_deployment(self, name: str) -> dict[str, Any] | None:
-        snapshot = await self._deployment(name).get()
+    async def get_workspace(self, name: str) -> dict[str, Any] | None:
+        snapshot = await self._workspace(name).get()
+        if not snapshot.exists:
+            snapshot = await self._legacy_team(name).get()
         return {"name": name, **snapshot.to_dict()} if snapshot.exists else None
 
-    async def update_deployment(self, name: str, **fields: Any) -> None:
+    async def update_workspace(self, name: str, **fields: Any) -> None:
         fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
-        await self._deployment(name).update(fields)
+        snapshot = await self._workspace(name).get()
+        if snapshot.exists:
+            await self._workspace(name).update(fields)
+            return
+        legacy_snapshot = await self._legacy_team(name).get()
+        if legacy_snapshot.exists:
+            # Migrate the legacy doc forward with the update applied.
+            base = {k: v for k, v in legacy_snapshot.to_dict().items() if k != "created_at"}
+            await self._workspace(name).set(
+                {**base, **fields, "created_at": self._firestore.SERVER_TIMESTAMP}
+            )
+            return
+        await self._workspace(name).update(fields)  # raises NotFound, like before
 
-    async def list_deployments(self) -> list[dict[str, Any]]:
-        """Every deployment. Unfiltered and unordered on purpose: the tick wants
-        them all, and an installation's deployments number in the tens."""
+    async def list_workspaces(self) -> list[dict[str, Any]]:
+        """Every workspace doc, config and lease state together. Merges the
+        legacy teams/ collection; a migrated doc's new copy wins."""
+        docs = {
+            s.id: {"name": s.id, **s.to_dict()} async for s in self._db.collection("teams").stream()
+        }
+        docs.update(
+            {
+                s.id: {"name": s.id, **s.to_dict()}
+                async for s in self._db.collection("workspaces").stream()
+            }
+        )
+        return list(docs.values())
+
+    async def delete_workspace(self, name: str) -> None:
+        """Remove the workspace doc (both collections); no-op when absent. The
+        caller (console/CLI) has already deleted the GCS prefix and verified
+        no live lease."""
+        await self._workspace(name).delete()
+        await self._legacy_team(name).delete()
+
+    # --- global settings (option defaults inherited by everything) ---
+
+    def _settings(self):
+        return self._db.collection("settings").document("global")
+
+    async def get_settings(self) -> dict[str, Any] | None:
+        snapshot = await self._settings().get()
+        return snapshot.to_dict() if snapshot.exists else None
+
+    async def update_settings(self, doc: dict[str, Any]) -> None:
+        """Replace the global settings doc (create-if-missing)."""
+        await self._settings().set({**doc, "updated_at": self._firestore.SERVER_TIMESTAMP})
+
+    # --- workflows (task chains, optionally on a cron) and their runs ---
+
+    def _workflow(self, name: str):
+        return self._db.collection("workflows").document(name)
+
+    def _run(self, workflow: str, run_id: str):
+        return self._workflow(workflow).collection("runs").document(run_id)
+
+    async def create_workflow(self, name: str, doc: dict[str, Any]) -> None:
+        """Create; the document id is the name, so this fails on a duplicate."""
+        await self._workflow(name).create(
+            {
+                **doc,
+                "created_at": self._firestore.SERVER_TIMESTAMP,
+                "updated_at": self._firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+    async def get_workflow(self, name: str) -> dict[str, Any] | None:
+        snapshot = await self._workflow(name).get()
+        return {"name": name, **snapshot.to_dict()} if snapshot.exists else None
+
+    async def update_workflow(self, name: str, **fields: Any) -> None:
+        fields["updated_at"] = self._firestore.SERVER_TIMESTAMP
+        await self._workflow(name).update(fields)
+
+    async def list_workflows(self) -> list[dict[str, Any]]:
+        """Every workflow. Unfiltered and unordered on purpose: the tick wants
+        them all, and an installation's workflows number in the tens."""
         return [
-            {"name": s.id, **s.to_dict()} async for s in self._db.collection("deployments").stream()
+            {"name": s.id, **s.to_dict()} async for s in self._db.collection("workflows").stream()
         ]
 
-    async def delete_deployment(self, name: str) -> None:
-        await self._deployment(name).delete()
+    async def delete_workflow(self, name: str) -> None:
+        """Remove the workflow and its run history. Deleting a document doesn't
+        cascade in Firestore, so the runs subcollection is drained first."""
+        reference = self._workflow(name)
+        batch = self._db.batch()
+        pending = 0
+        async for snapshot in reference.collection("runs").stream():
+            batch.delete(snapshot.reference)
+            pending += 1
+            if pending == DELETE_BATCH_SIZE:
+                await batch.commit()
+                batch = self._db.batch()
+                pending = 0
+        batch.delete(reference)
+        await batch.commit()
 
     async def claim_slot(self, name: str, due: float, following: float) -> bool:
         """Atomically take one firing slot: advance next_run_at past `due`.
@@ -782,7 +885,7 @@ class Store:
         off, and the slot is consumed exactly once.
         """
         transaction = self._db.transaction()
-        reference = self._deployment(name)
+        reference = self._workflow(name)
         firestore = self._firestore
 
         @firestore.async_transactional
@@ -790,8 +893,8 @@ class Store:
             snapshot = await reference.get(transaction=transaction)
             if not snapshot.exists:
                 return False
-            deployment = snapshot.to_dict()
-            if not deployment.get("enabled") or float(deployment.get("next_run_at") or 0) != due:
+            workflow = snapshot.to_dict()
+            if not workflow.get("enabled") or float(workflow.get("next_run_at") or 0) != due:
                 return False
             transaction.update(
                 reference,
@@ -800,6 +903,58 @@ class Store:
             return True
 
         return await _claim(transaction)
+
+    async def create_run(self, workflow: str, run_id: str, doc: dict[str, Any]) -> None:
+        await self._run(workflow, run_id).create(
+            {
+                **doc,
+                "created_at": self._firestore.SERVER_TIMESTAMP,
+                "updated_at": self._firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+    async def get_run(self, workflow: str, run_id: str) -> dict[str, Any] | None:
+        snapshot = await self._run(workflow, run_id).get()
+        return {"id": run_id, **snapshot.to_dict()} if snapshot.exists else None
+
+    async def list_runs(self, workflow: str, limit: int = 50) -> list[dict[str, Any]]:
+        """One workflow's runs, newest first."""
+        query = (
+            self._workflow(workflow)
+            .collection("runs")
+            .order_by("started_at", direction="DESCENDING")
+            .limit(limit)
+        )
+        return [{"id": s.id, **s.to_dict()} async for s in query.stream()]
+
+    async def transition_run(
+        self, workflow: str, run_id: str, mutate: Callable[[dict[str, Any]], dict[str, Any] | None]
+    ) -> dict[str, Any] | None:
+        """Transactionally rewrite one run doc: `mutate` gets the current doc
+        and returns the full replacement, or None to leave it untouched.
+
+        This is the one primitive behind workflow advancement — the runner
+        finishing a task and the reconciling tick both funnel through it, so
+        racing advancers serialize here instead of double-launching tasks.
+        `mutate` must be pure: the transaction may retry it.
+        """
+        transaction = self._db.transaction()
+        reference = self._run(workflow, run_id)
+        firestore = self._firestore
+
+        @firestore.async_transactional
+        async def _apply(transaction):
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            doc = mutate(snapshot.to_dict())
+            if doc is None:
+                return None
+            transaction.set(reference, {**doc, "updated_at": firestore.SERVER_TIMESTAMP})
+            return doc
+
+        result = await _apply(transaction)
+        return {"id": run_id, **result} if result is not None else None
 
     # --- agents (stored run configurations) ---
 

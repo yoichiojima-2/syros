@@ -24,16 +24,30 @@ from .workspace import _bucket
 OFFICIAL_SKILLS_TARBALL = "https://github.com/anthropics/skills/archive/refs/heads/main.tar.gz"
 
 
-def skill_prefix(name: str) -> str:
+def skill_prefix(name: str, workspace: str | None = None) -> str:
+    """Global skills live under skills/{name}/; workspace skills under their
+    own top-level team-skills/{workspace}/{name}/ prefix (the GCS prefix keeps
+    its pre-rename name), so workspace and global names can never collide in
+    GCS. A workspace skill shadows a same-named global at mount."""
+    if workspace:
+        return (
+            f"team-skills/{validate_name('workspace', workspace)}/{validate_name('skill', name)}/"
+        )
     return f"skills/{validate_name('skill', name)}/"
 
 
 def read_file(
-    project: str, bucket_name: str, name: str, file: str, *, max_bytes: int
+    project: str,
+    bucket_name: str,
+    name: str,
+    file: str,
+    *,
+    max_bytes: int,
+    workspace: str | None = None,
 ) -> tuple[bytes, str]:
     """Download one skill file: (data, content type). Raises FileNotFoundError
     for a missing blob and ValueError when it exceeds max_bytes."""
-    prefix = skill_prefix(name)
+    prefix = skill_prefix(name, workspace)
     blob = _bucket(project, bucket_name).blob(prefix + validate_file("skill file", file))
     if not blob.exists():
         raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
@@ -43,26 +57,30 @@ def read_file(
     return blob.download_as_bytes(), mimetypes.guess_type(file)[0] or "application/octet-stream"
 
 
-def write_file(project: str, bucket_name: str, name: str, file: str, data: bytes) -> None:
-    prefix = skill_prefix(name)
+def write_file(
+    project: str, bucket_name: str, name: str, file: str, data: bytes, workspace: str | None = None
+) -> None:
+    prefix = skill_prefix(name, workspace)
     blob = _bucket(project, bucket_name).blob(prefix + validate_file("skill file", file))
     blob.upload_from_string(
         data, content_type=mimetypes.guess_type(file)[0] or "application/octet-stream"
     )
 
 
-def delete_file(project: str, bucket_name: str, name: str, file: str) -> None:
-    prefix = skill_prefix(name)
+def delete_file(
+    project: str, bucket_name: str, name: str, file: str, workspace: str | None = None
+) -> None:
+    prefix = skill_prefix(name, workspace)
     blob = _bucket(project, bucket_name).blob(prefix + validate_file("skill file", file))
     if not blob.exists():
         raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
     blob.delete()
 
 
-def delete_skill(project: str, bucket_name: str, name: str) -> int:
+def delete_skill(project: str, bucket_name: str, name: str, workspace: str | None = None) -> int:
     """Remove every blob under the skill — a skill is a directory, and deleting
     it file-by-file from the console would be unusable."""
-    prefix = skill_prefix(name)
+    prefix = skill_prefix(name, workspace)
     bucket = _bucket(project, bucket_name)
     blobs = list(bucket.list_blobs(prefix=prefix))
     if not blobs:

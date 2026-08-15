@@ -117,8 +117,9 @@ async def test_runner_full_turn(env, store, fake_harness):
     assert client.options.env["ANTHROPIC_VERTEX_PROJECT_ID"] == "proj-1"
     assert "HOME" in client.options.env
     assert client.options.hooks and "PreToolUse" in client.options.hooks
-    # skills mounted into HOME are only visible with user settings enabled
-    assert client.options.setting_sources == ["user"]
+    # skills mounted into HOME need user settings; the workspace's CLAUDE.md at the
+    # workspace root needs project settings
+    assert client.options.setting_sources == ["user", "project"]
 
     # thinking_tokens progress events are dropped; everything else is journaled
     events = feed(store)
@@ -212,7 +213,10 @@ async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gc
     await run(SID)
 
     checkpointed = [("workspaces/shared/", "ws"), (f"sessions/{SID}/state/home/", "home")]
-    assert gcs_sync["restore"] == checkpointed + [("skills/", "skills")]
+    assert gcs_sync["restore"] == checkpointed + [
+        ("skills/", "skills"),
+        ("team-skills/shared/", "skills"),
+    ]
     assert gcs_sync["checkpoint"] == checkpointed
     # claimed during the run, released after
     assert store.workspaces["shared"]["lease_session_id"] is None
@@ -220,7 +224,7 @@ async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gc
 
 
 async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync):
-    await store.create_session(SID, {"artifacts": {"team": "rw", "inputs": "ro"}})
+    await store.create_session(SID, {"artifacts": {"workspace": "rw", "inputs": "ro"}})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)
@@ -229,17 +233,17 @@ async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync)
         (f"sessions/{SID}/state/ws/", "ws"),
         (f"sessions/{SID}/state/home/", "home"),
         ("skills/", "skills"),
-        ("artifacts/team/", "team"),
+        ("artifacts/workspace/", "workspace"),
         ("artifacts/inputs/", "inputs"),
     ]
     # rw spaces checkpoint to their own prefix — once at the end of the turn
     # and once more at release; ro spaces never checkpoint, and the ws
     # checkpoint excludes the mounts.
     assert gcs_sync["checkpoint"] == [
-        ("artifacts/team/", "team"),
+        ("artifacts/workspace/", "workspace"),
         (f"sessions/{SID}/state/ws/", "ws"),
         (f"sessions/{SID}/state/home/", "home"),
-        ("artifacts/team/", "team"),
+        ("artifacts/workspace/", "workspace"),
     ]
     assert gcs_sync["exclude"] == [
         (f"sessions/{SID}/state/ws/", ("artifacts/",)),
@@ -249,7 +253,7 @@ async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync)
 
 async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_sync):
     await store.create_session(
-        SID, {"system_prompt": "sp", "artifacts": {"team": "rw", "inputs": "ro"}}
+        SID, {"system_prompt": "sp", "artifacts": {"workspace": "rw", "inputs": "ro"}}
     )
     await store.push_inbox(SID, "message", "go")
 
@@ -258,7 +262,7 @@ async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_syn
     (client,) = fake_harness
     prompt = client.options.system_prompt
     assert prompt.startswith("sp\n\n")
-    assert "./artifacts/team/ (read-write" in prompt
+    assert "./artifacts/workspace/ (read-write" in prompt
     assert "./artifacts/inputs/ (read-only" in prompt
     # rw-space file count lands on the session for `syros sessions`
     session = await store.get_session(SID)
@@ -268,7 +272,7 @@ async def test_runner_tells_agent_about_mounts(env, store, fake_harness, gcs_syn
 async def test_runner_mount_prompt_stands_alone_without_system_prompt(
     env, store, fake_harness, gcs_sync
 ):
-    await store.create_session(SID, {"artifacts": "team"})
+    await store.create_session(SID, {"artifacts": "workspace"})
     await store.push_inbox(SID, "message", "go")
 
     await run(SID)

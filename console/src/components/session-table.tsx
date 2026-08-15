@@ -111,8 +111,19 @@ export function SessionTable({
                 />
               </TableCell>
             )}
-            <TableCell className="font-mono text-xs" title={s.id}>
-              {shortId(s.id)}
+            <TableCell title={s.id}>
+              {s.title ? (
+                <span className="flex flex-col">
+                  <span className="text-[13px]">{s.title}</span>
+                  {!compact && (
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {shortId(s.id)}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="font-mono text-xs">{shortId(s.id)}</span>
+              )}
             </TableCell>
             <TableCell>
               <StateBadge state={s.state} />

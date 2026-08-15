@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from .. import agents, deployments, remote
+from .. import agents, remote, workflows, workspaces
 from .. import connectors as connectors_mod
 from ..journal import MAIN_BRANCH, active_branch
 from ..names import validate_name, validate_tags
@@ -122,9 +122,14 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "created_at": session.get("created_at"),
             "updated_at": session.get("updated_at"),
             "model": options.get("model"),
-            "workspace": options.get("workspace"),
-            # Run provenance, for sessions a deployment created
-            "deployment": session.get("deployment"),
+            "workspace": options.get("workspace") or options.get("team"),
+            "title": session.get("title"),
+            "summary": session.get("summary"),
+            "created_by": session.get("created_by"),
+            # Run provenance, for sessions a workflow task created
+            "workflow": session.get("workflow"),
+            "run_id": session.get("run_id"),
+            "task": session.get("task"),
             "trigger": session.get("trigger") or "api",
             # Which stored agent the options were resolved from, if any
             "agent": session.get("agent"),
@@ -196,6 +201,14 @@ class ConsoleAPI:
             )
         return self._objects
 
+    def _parse_run_options(self, doc: Any) -> "AgentOptions":
+        """Body options -> validated AgentOptions, defaulted to the console's
+        project — the shared parse for every endpoint that accepts options."""
+        run_options = options_from_doc(dict(doc or {}))
+        run_options.project = run_options.project or self._options.project
+        run_options.validate()
+        return run_options
+
     async def _session(self, session_id: str) -> dict[str, Any]:
         session = await self._store.get_session(session_id)
         if session is None:
@@ -214,7 +227,7 @@ class ConsoleAPI:
         document, queue the prompt, trigger the job — so a console-started
         session is an ordinary session and nothing downstream knows the console
         exists. Run options arrive as the serialized dict a session stores, like
-        create_deployment, so an option the console doesn't know is rejected by
+        create_workflow, so an option the console doesn't know is rejected by
         options_from_doc rather than silently dropped.
         """
         prompt = str(body.get("prompt") or "")
@@ -223,7 +236,7 @@ class ConsoleAPI:
         run_options = options_from_doc(dict(body.get("options") or {}))
         # An agent reference resolves now, once — stored options as defaults,
         # the form's explicit fields as overrides — and the merged result is
-        # snapshotted onto the session, exactly as a deployment firing does.
+        # snapshotted onto the session, exactly as a workflow task firing does.
         agent_name = (str(body["agent"]).strip() or None) if body.get("agent") else None
         run_options.agent = agent_name
         run_options = await agents.resolve(self._store, run_options)
@@ -370,101 +383,136 @@ class ConsoleAPI:
             ],
         }
 
-    # --- deployments ---
+    # --- workflows ---
 
-    async def _deployment_row(self, deployment: dict[str, Any]) -> dict[str, Any]:
-        """A deployment plus the run it last started, for the deployments list."""
-        session_id = deployment.get("last_session_id")
-        session = await self._store.get_session(session_id) if session_id else None
-        if session is not None:
-            session["id"] = session_id
+    @staticmethod
+    def _run_row(run: dict[str, Any]) -> dict[str, Any]:
+        """One workflow run: orchestration state, task-by-task. Results are
+        clipped to a preview — the full text lives in each task's session."""
+        tasks = {}
+        for task_id, state in (run.get("tasks") or {}).items():
+            result = state.get("result")
+            tasks[task_id] = {
+                "status": state.get("status"),
+                "session_id": state.get("session_id"),
+                "error": state.get("error"),
+                "started_at": state.get("started_at"),
+                "finished_at": state.get("finished_at"),
+                "result_preview": (result or "")[:200] or None,
+            }
         return to_jsonable(
             {
-                "name": deployment.get("name"),
-                "cron": deployment.get("cron"),
-                "timezone": deployment.get("timezone") or deployments.DEFAULT_TIMEZONE,
-                "prompt": deployment.get("prompt") or "",
-                "agent": deployment.get("agent"),
-                "options": deployment.get("options") or {},
-                "enabled": bool(deployment.get("enabled")),
-                "next_run_at": float(deployment.get("next_run_at") or 0.0) or None,
-                "last_run_at": deployment.get("last_run_at"),
-                "last_skipped_at": deployment.get("last_skipped_at"),
-                "last_error": deployment.get("last_error"),
-                "runs": int(deployment.get("runs") or 0),
-                "skips": int(deployment.get("skips") or 0),
-                "created_by": deployment.get("created_by"),
-                "created_at": deployment.get("created_at"),
-                "last_run": _run(session) if session else None,
+                "id": run.get("id"),
+                "status": run.get("status"),
+                "trigger": run.get("trigger"),
+                "started_at": run.get("started_at"),
+                "finished_at": run.get("finished_at"),
+                "spec": run.get("spec") or [],
+                "tasks": tasks,
             }
         )
 
-    async def deployments(self) -> dict[str, Any]:
-        rows = await deployments.list_all(store=self._store)
+    async def _workflow_row(self, workflow: dict[str, Any]) -> dict[str, Any]:
+        """A workflow plus the run it last started, for the workflows list."""
+        run_id = workflow.get("last_run_id")
+        last_run = await self._store.get_run(workflow["name"], run_id) if run_id else None
+        schedule = workflow.get("schedule") or {}
+        return to_jsonable(
+            {
+                "name": workflow.get("name"),
+                "tasks": workflow.get("tasks") or [],
+                "options": workflow.get("options") or {},
+                "cron": schedule.get("cron"),
+                "timezone": schedule.get("timezone") or workflows.DEFAULT_TIMEZONE,
+                "enabled": bool(workflow.get("enabled")),
+                "next_run_at": float(workflow.get("next_run_at") or 0.0) or None,
+                "last_run_at": workflow.get("last_run_at"),
+                "last_skipped_at": workflow.get("last_skipped_at"),
+                "last_error": workflow.get("last_error"),
+                "run_count": int(workflow.get("run_count") or 0),
+                "skip_count": int(workflow.get("skip_count") or 0),
+                "created_by": workflow.get("created_by"),
+                "created_at": workflow.get("created_at"),
+                "last_run": self._run_row(last_run) if last_run else None,
+            }
+        )
+
+    async def workflows(self) -> dict[str, Any]:
+        rows = await workflows.list_all(store=self._store)
         return {
             "now": time.time(),
-            "deployments": await asyncio.gather(*(self._deployment_row(s) for s in rows)),
+            "workflows": await asyncio.gather(*(self._workflow_row(s) for s in rows)),
         }
 
-    async def _require_deployment(self, name: str) -> dict[str, Any]:
-        deployment = await self._store.get_deployment(name)
-        if deployment is None:
-            raise NotFound(f"deployment {name} not found")
-        return deployment
+    async def _require_workflow(self, name: str) -> dict[str, Any]:
+        workflow = await self._store.get_workflow(name)
+        if workflow is None:
+            raise NotFound(f"workflow {name} not found")
+        return workflow
 
-    async def deployment(self, name: str, limit: int = 50) -> dict[str, Any]:
-        """One deployment and its run history — the run-status view's payload."""
-        deployment = await self._require_deployment(name)
-        runs = await deployments.runs(name, limit=limit, store=self._store)
+    async def workflow(self, name: str, limit: int = 50) -> dict[str, Any]:
+        """One workflow and its run history — the run-status view's payload."""
+        workflow = await self._require_workflow(name)
+        runs = await workflows.runs(name, limit=limit, store=self._store)
         return {
             "now": time.time(),
-            "deployment": await self._deployment_row(deployment),
-            "runs": [_run(r) for r in runs],
+            "workflow": await self._workflow_row(workflow),
+            "runs": [self._run_row(r) for r in runs],
         }
 
-    async def create_deployment(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Define a deployment from the console's form.
+    async def create_workflow(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Define a workflow from the console's form.
 
         Run options arrive as the same serialized dict a session stores, so the
         console never has to track which options the sandbox honours — options
         it doesn't know about are the SDK's problem, and unknown ones are
-        rejected by options_from_doc rather than silently dropped.
+        rejected by options_from_doc rather than silently dropped. The form
+        sends either `tasks` (a chain) or `prompt`/`agent` (one task).
         """
         name = str(body.get("name") or "").strip()
-        if await self._store.get_deployment(name) is not None:
-            raise Conflict(f"deployment {name} already exists")
-        run_options = options_from_doc(dict(body.get("options") or {}))
-        run_options.project = run_options.project or self._options.project
-        deployment = await deployments.create(
+        if await self._store.get_workflow(name) is not None:
+            raise Conflict(f"workflow {name} already exists")
+        defaults = options_from_doc(dict(body.get("options") or {}))
+        defaults.project = defaults.project or self._options.project
+        tasks = body.get("tasks") or None
+        single = (
+            {}
+            if tasks
+            else {
+                "prompt": str(body.get("prompt") or ""),
+                "agent": (str(body["agent"]).strip() or None) if body.get("agent") else None,
+            }
+        )
+        workflow = await workflows.create(
             name,
-            str(body.get("cron") or ""),
-            str(body.get("prompt") or ""),
-            run_options,
+            tasks,
+            **single,
+            defaults=defaults,
             options=self._options,
-            agent=(str(body["agent"]).strip() or None) if body.get("agent") else None,
-            timezone=str(body.get("timezone") or deployments.DEFAULT_TIMEZONE),
+            cron_expression=(str(body["cron"]).strip() or None) if body.get("cron") else None,
+            timezone=str(body.get("timezone") or workflows.DEFAULT_TIMEZONE),
             enabled=bool(body.get("enabled", True)),
             created_by=_decided_by(),
             store=self._store,
         )
-        return {"now": time.time(), "deployment": await self._deployment_row(deployment)}
+        return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
 
-    async def set_deployment_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
-        await self._require_deployment(name)
-        await deployments.set_enabled(name, enabled, store=self._store)
+    async def set_workflow_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        await self._require_workflow(name)
+        await workflows.set_enabled(name, enabled, store=self._store)
         return {"now": time.time(), "ok": True, "enabled": enabled}
 
-    async def run_deployment(self, name: str) -> dict[str, Any]:
-        """Fire a deployment off-cycle. Its own clock is untouched."""
-        await self._require_deployment(name)
-        session_id = await deployments.run_now(
+    async def run_workflow(self, name: str) -> dict[str, Any]:
+        """Fire a workflow off-cycle. Its own clock is untouched."""
+        await self._require_workflow(name)
+        run_id = await workflows.run_now(
             name, options=self._options, store=self._store, created_by=_decided_by()
         )
-        return {"now": time.time(), "ok": True, "session_id": session_id}
+        return {"now": time.time(), "ok": True, "run_id": run_id}
 
-    async def delete_deployment(self, name: str) -> dict[str, Any]:
-        await self._require_deployment(name)
-        await deployments.delete(name, store=self._store)
+    async def delete_workflow(self, name: str) -> dict[str, Any]:
+        await self._require_workflow(name)
+        await workflows.delete(name, store=self._store)
         return {"now": time.time(), "ok": True}
 
     # --- agents (stored run configurations) ---
@@ -554,16 +602,23 @@ class ConsoleAPI:
         ]
         return {"now": time.time(), "connectors": to_jsonable(rows)}
 
-    # --- shared workspaces ---
+    # --- workspaces (shared directory + stored option defaults + members) ---
 
     async def workspaces(self) -> dict[str, Any]:
-        """Every shared workspace: GCS contents + Firestore lease + the
-        sessions configured to use it."""
-        stats = await self._bucket_objects().workspace_stats()
-        leases = {w["name"]: w for w in await self._store.list_workspaces()}
+        """Every workspace: GCS directory contents + Firestore doc (config +
+        lease) + the sessions configured to run under it + its members (the
+        agents whose stored options name it)."""
+        stats, workspace_docs, sessions, agent_docs = await asyncio.gather(
+            self._bucket_objects().workspace_stats(),
+            self._store.list_workspaces(),
+            self._store.list_sessions(limit=50),
+            self._store.list_agents(),
+        )
+        docs = {w["name"]: w for w in workspace_docs}
         by_workspace: dict[str, list[dict[str, Any]]] = {}
-        for session in await self._store.list_sessions(limit=50):
-            name = ((session.get("options") or {}).get("workspace")) or None
+        for session in sessions:
+            options = session.get("options") or {}
+            name = options.get("workspace") or options.get("team") or None
             if name:
                 by_workspace.setdefault(name, []).append(
                     {
@@ -573,17 +628,18 @@ class ConsoleAPI:
                     }
                 )
         rows = []
-        for name in sorted(set(stats) | set(leases) | set(by_workspace)):
-            lease = leases.get(name) or {}
+        for name in sorted(set(stats) | set(docs) | set(by_workspace)):
+            doc = docs.get(name) or {}
             stat = stats.get(name) or {"file_count": 0, "total_size": 0, "updated": None}
             rows.append(
                 {
                     "name": name,
-                    "busy": lease_active(lease),
-                    "lease_session_id": lease.get("lease_session_id")
-                    if lease_active(lease)
-                    else None,
+                    "busy": lease_active(doc),
+                    "lease_session_id": doc.get("lease_session_id") if lease_active(doc) else None,
+                    "description": doc.get("description"),
+                    "options": doc.get("options") or {},
                     "sessions": by_workspace.get(name, []),
+                    "members": workspaces.members(name, agent_docs),
                     **stat,
                 }
             )
@@ -603,7 +659,7 @@ class ConsoleAPI:
         edit saved mid-run would be silently overwritten by the job's own copy.
         Better to say no than to lose the edit.
         """
-        lease = next((w for w in await self._store.list_workspaces() if w["name"] == name), None)
+        lease = await self._store.get_workspace(name)
         if lease_active(lease):
             raise Conflict(
                 f"workspace {name} is busy — session {lease.get('lease_session_id')} holds"
@@ -687,23 +743,65 @@ class ConsoleAPI:
             raise NotFound(f"folder {folder} not found in workspace {name}")
         return {"now": time.time(), "ok": True, "name": name, "count": count}
 
-    async def create_workspace(self, name: str) -> dict[str, Any]:
-        """Materialise an empty workspace as a hidden .keep blob so it lists."""
+    async def create_workspace(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Create the workspace doc plus a hidden .keep blob so it lists."""
+        name = str(body.get("name") or "")
         validate_name("workspace", name)
         existing = set(await self._bucket_objects().workspace_stats()) | {
             w["name"] for w in await self._store.list_workspaces()
         }
         if name in existing:
             raise Conflict(f"workspace {name} already exists")
+        run_options = self._parse_run_options(body.get("options"))
+        await self._store.create_workspace(
+            name,
+            workspaces.build(
+                name,
+                run_options,
+                description=str(body["description"]) if body.get("description") else None,
+                created_by=_decided_by(),
+            ),
+        )
         await self._bucket_objects().write_workspace_file(name, ".keep", b"")
         return {"now": time.time(), "ok": True, "name": name}
 
+    async def update_workspace(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace the workspace's stored options/description. Running sessions
+        keep the options they were created with."""
+        fields: dict[str, Any] = {}
+        if "options" in body:
+            fields["options"] = self._parse_run_options(body.get("options")).serialize()
+        if "description" in body:
+            fields["description"] = str(body["description"]) if body["description"] else None
+        if not fields:
+            raise ValueError("nothing to update: pass options and/or description")
+        if not await self._store.get_workspace(name):
+            # An ad-hoc workspace has files but no doc yet — created on first
+            # edit so update-from-console always works.
+            await self._store.create_workspace(
+                name, workspaces.build(name, created_by=_decided_by())
+            )
+        await self._store.update_workspace(name, **fields)
+        return {"now": time.time(), "ok": True, "name": name}
+
     async def delete_workspace(self, name: str) -> dict[str, Any]:
-        """Remove every blob under the workspace plus its Firestore lease doc."""
+        """Remove every blob under the workspace plus its Firestore doc."""
         await self._require_free(name)
         count = await self._bucket_objects().delete_workspace_prefix(name, None, MAX_PREFIX_DELETE)
         await self._store.delete_workspace(name)
         return {"now": time.time(), "ok": True, "name": name, "count": count}
+
+    # --- global settings ---
+
+    async def settings(self) -> dict[str, Any]:
+        settings = await self._store.get_settings() or {}
+        return {"now": time.time(), "options": to_jsonable(settings.get("options") or {})}
+
+    async def update_settings(self, body: dict[str, Any]) -> dict[str, Any]:
+        await self._store.update_settings(
+            {"options": self._parse_run_options(body.get("options")).serialize()}
+        )
+        return {"now": time.time(), "ok": True}
 
     # --- skills ---
     #
@@ -711,46 +809,55 @@ class ConsoleAPI:
     # sandbox HOME at start, so a console edit never races a live run's
     # checkpoint the way a workspace edit would.
 
-    async def skills(self) -> dict[str, Any]:
-        stats = await self._bucket_objects().skill_stats()
+    async def skills(self, workspace: str | None = None) -> dict[str, Any]:
+        stats = await self._bucket_objects().skill_stats(workspace)
         rows = [{"name": name, **stat} for name, stat in sorted(stats.items())]
-        return {"now": time.time(), "skills": to_jsonable(rows)}
+        return {"now": time.time(), "workspace": workspace, "skills": to_jsonable(rows)}
 
-    async def skill_files(self, name: str) -> dict[str, Any]:
-        files = await self._bucket_objects().skill_files(name)
+    async def skill_files(self, name: str, workspace: str | None = None) -> dict[str, Any]:
+        files = await self._bucket_objects().skill_files(name, workspace)
         if not files:
             raise NotFound(f"skill {name} not found")
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
 
-    async def skill_file(self, name: str, file: str) -> tuple[bytes, str]:
+    async def skill_file(
+        self, name: str, file: str, workspace: str | None = None
+    ) -> tuple[bytes, str]:
         """Raw bytes + content type, same contract as artifact_file."""
         try:
-            return await self._bucket_objects().read_skill_file(name, file)
+            return await self._bucket_objects().read_skill_file(name, file, workspace)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         except ValueError as exc:
             raise TooLarge(str(exc)) from exc
 
     async def write_skill_file(
-        self, name: str, file: str, content: str, encoding: str = "utf-8"
+        self,
+        name: str,
+        file: str,
+        content: str,
+        encoding: str = "utf-8",
+        workspace: str | None = None,
     ) -> dict[str, Any]:
         data = _decode_content(content, encoding)
         if len(data) > MAX_PREVIEW_BYTES:
             raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
-        await self._bucket_objects().write_skill_file(name, file, data)
+        await self._bucket_objects().write_skill_file(name, file, data, workspace)
         return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
 
-    async def delete_skill_file(self, name: str, file: str) -> dict[str, Any]:
+    async def delete_skill_file(
+        self, name: str, file: str, workspace: str | None = None
+    ) -> dict[str, Any]:
         try:
-            await self._bucket_objects().delete_skill_file(name, file)
+            await self._bucket_objects().delete_skill_file(name, file, workspace)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "file": file}
 
-    async def delete_skill(self, name: str) -> dict[str, Any]:
+    async def delete_skill(self, name: str, workspace: str | None = None) -> dict[str, Any]:
         try:
-            deleted = await self._bucket_objects().delete_skill(name)
+            deleted = await self._bucket_objects().delete_skill(name, workspace)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "deleted": deleted}

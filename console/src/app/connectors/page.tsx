@@ -16,7 +16,7 @@ import { relTime } from "@/lib/format";
 
 // A connector is an official, vendor-hosted remote MCP server plus one
 // credential in Secret Manager (syros-connector-{name}). Sessions opt in with
-// connectors=["slack", ...] on an agent, deployment, or run; every tool call
+// connectors=["slack", ...] on an agent, workflow, or run; every tool call
 // still flows through the audit trail and the approval gate. Credentials are
 // written from an operator's machine — `syros connectors auth <name>` (OAuth)
 // or `set` (static tokens) — never through this console.
@@ -83,7 +83,9 @@ export default function ConnectorsPage() {
       <p className="text-[12px] text-muted-foreground">
         Connectors mount the platform&apos;s official hosted MCP server into a session; credentials
         live in Secret Manager and are injected inside the sandbox at run start. Tool calls stay
-        audited and gateable like any other tool.
+        audited and gateable like any other tool. Verify a stored credential with{" "}
+        <span className="font-mono">syros connectors test</span>; see{" "}
+        <span className="font-mono">docs/connectors.md</span> for the full setup guide.
       </p>
     </div>
   );

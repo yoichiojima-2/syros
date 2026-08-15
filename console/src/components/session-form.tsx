@@ -1,18 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  BIGQUERY_SERVER,
-  BIGQUERY_TOOL,
   BigQueryToggle,
+  buildOptionsPayload,
   ChoiceField,
+  ConnectorPicker,
   Field,
   MODELS,
-  TOOLS,
+  ToolPicker,
+  useOptionsDraft,
 } from "@/components/option-fields";
 import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
@@ -37,18 +38,18 @@ export function SessionForm({
   const workspaces = useWorkspaces();
   const spaces = useArtifactSpaces();
   const { agents } = useAgents();
+  const draft = useOptionsDraft();
   const [mode, setMode] = useState<Mode>("agent");
   const [prompt, setPrompt] = useState("");
   const [agent, setAgent] = useState("");
-  const [model, setModel] = useState("");
-  const [workspace, setWorkspace] = useState("");
-  const [artifacts, setArtifacts] = useState("");
-  const [tools, setTools] = useState<string[]>([]);
-  const [extraTools, setExtraTools] = useState("");
-  const [bigquery, setBigquery] = useState(false);
-  const [budget, setBudget] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // With no stored agents the agent tab is a dead end, so land on custom.
+  const noAgents = agents !== null && agents.length === 0;
+  useEffect(() => {
+    if (noAgents) setMode("custom");
+  }, [noAgents]);
 
   const selectedAgent = (agents ?? []).find((a) => a.name === agent) ?? null;
   const ready = prompt.trim() && (mode === "custom" || agent.trim());
@@ -58,28 +59,11 @@ export function SessionForm({
     if (busy || !ready) return;
     setBusy(true);
     setError("");
-    // Only send what was filled in: an empty string is "unset", not "".
     // On the agent tab the run options stay with the agent; only the budget
     // rides along, since it's a per-run cap rather than part of the persona.
     const options: Record<string, unknown> = {};
-    if (budget.trim()) options.max_budget_usd = Number(budget);
-    if (mode === "custom") {
-      if (model.trim()) options.model = model.trim();
-      if (workspace.trim()) options.workspace = workspace.trim();
-      if (artifacts.trim()) options.artifacts = artifacts.trim();
-      const allowed = [
-        ...tools,
-        ...extraTools
-          .split(",")
-          .map((tool) => tool.trim())
-          .filter((tool) => tool && !tools.includes(tool)),
-      ];
-      if (bigquery) {
-        options.mcp_servers = { bq: BIGQUERY_SERVER };
-        if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
-      }
-      if (allowed.length) options.allowed_tools = allowed;
-    }
+    if (mode === "custom") Object.assign(options, buildOptionsPayload(draft));
+    else if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
     try {
       const { session_id } = await post<{ session_id: string }>("/api/sessions", {
         prompt: prompt.trim(),
@@ -153,8 +137,8 @@ export function SessionForm({
                 </Field>
                 <Field label="Budget (USD)" hint="per-run cap">
                   <Input
-                    value={budget}
-                    onChange={(e) => setBudget(e.target.value)}
+                    value={draft.budget}
+                    onChange={(e) => draft.setBudget(e.target.value)}
                     inputMode="decimal"
                     placeholder="none"
                     className="font-mono"
@@ -168,25 +152,25 @@ export function SessionForm({
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Field label="Model">
                   <ChoiceField
-                    value={model}
-                    onChange={setModel}
+                    value={draft.model}
+                    onChange={draft.setModel}
                     choices={MODELS}
                     noneLabel="default"
                   />
                 </Field>
                 <Field label="Workspace">
                   <ChoiceField
-                    value={workspace}
-                    onChange={setWorkspace}
-                    choices={(workspaces ?? []).map((w) => w.name)}
+                    value={draft.workspace}
+                    onChange={draft.setWorkspace}
+                    choices={(workspaces ?? []).map((t) => t.name)}
                     noneLabel="none"
                     customLabel="new workspace…"
                   />
                 </Field>
                 <Field label="Artifact space">
                   <ChoiceField
-                    value={artifacts}
-                    onChange={setArtifacts}
+                    value={draft.artifacts}
+                    onChange={draft.setArtifacts}
                     choices={(spaces ?? []).map((s) => s.name)}
                     noneLabel="none"
                     customLabel="new space…"
@@ -194,8 +178,8 @@ export function SessionForm({
                 </Field>
                 <Field label="Budget (USD)">
                   <Input
-                    value={budget}
-                    onChange={(e) => setBudget(e.target.value)}
+                    value={draft.budget}
+                    onChange={(e) => draft.setBudget(e.target.value)}
                     inputMode="decimal"
                     placeholder="none"
                     className="font-mono"
@@ -203,38 +187,13 @@ export function SessionForm({
                 </Field>
               </div>
               <Field label="Allowed tools" hint="click to toggle">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {TOOLS.map((tool) => {
-                    const on = tools.includes(tool);
-                    return (
-                      <button
-                        key={tool}
-                        type="button"
-                        aria-pressed={on}
-                        onClick={() =>
-                          setTools(on ? tools.filter((t) => t !== tool) : [...tools, tool])
-                        }
-                        className={cn(
-                          "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
-                          on
-                            ? "border-transparent bg-primary-soft text-foreground"
-                            : "border-border text-muted-foreground hover:bg-secondary",
-                        )}
-                      >
-                        {tool}
-                      </button>
-                    );
-                  })}
-                  <Input
-                    value={extraTools}
-                    onChange={(e) => setExtraTools(e.target.value)}
-                    placeholder="more, comma separated"
-                    className="h-7 w-52 font-mono text-[11px]"
-                  />
-                </div>
+                <ToolPicker draft={draft} />
+              </Field>
+              <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
+                <ConnectorPicker value={draft.connectors} onChange={draft.setConnectors} />
               </Field>
               <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
-                <BigQueryToggle on={bigquery} onChange={setBigquery} />
+                <BigQueryToggle on={draft.bigquery} onChange={draft.setBigquery} />
               </Field>
             </>
           )}

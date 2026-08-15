@@ -1,7 +1,13 @@
 """Minimal ops CLI — the UI syros deliberately doesn't have.
 
 syros sessions                          list recent sessions
-syros workspaces                        list shared workspaces and their leases
+syros workspaces                        list workspaces, members, and leases
+syros workspaces create <name> [--model ...] [--description ...]
+syros workspaces show|update|delete <name>
+syros workspaces claude-md <name>       print the workspace's CLAUDE.md
+syros workspaces claude-md <name> --file p  replace it from a local file
+syros settings                          show global option defaults (inherited by everything)
+syros settings update [--model ...]     replace global option defaults
 syros tail <session_id>                 follow a session's journal (messages + audit)
 syros rewind <session_id> <event_uuid>  branch the transcript from a past event
 syros approvals <session_id>            list pending approvals
@@ -23,7 +29,7 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
-syros skills files <name>               list one skill's files
+syros skills files <name>               list one skill's files (--workspace for workspace skills)
 syros skills cat <name> <file>          print one skill file's content
 syros skills sync                       seed skills/ from the official anthropics/skills repo
 syros connectors                        list platform connectors and credential status
@@ -92,18 +98,94 @@ async def _sessions(args) -> None:
             f"  ${float(session.get('cost_usd') or 0):.4f}"
             f"  {state.get('stop_reason') or '':<14}"
             f"  {'' if published is None else f'{published} published':<14}"
-            f"  {(session.get('options') or {}).get('workspace') or ''}"
+            f"  {(session.get('options') or {}).get('workspace') or (session.get('options') or {}).get('team') or ''}"
         )
 
 
 async def _workspaces(args) -> None:
+    from . import workspaces
     from .store import lease_active
 
     store = _store(args)
-    for doc in sorted(await store.list_workspaces(), key=lambda d: d["name"]):
-        busy = lease_active(doc)
-        holder = doc.get("lease_session_id") if busy else ""
-        print(f"{doc['name']:<24}  {'busy' if busy else 'free':<6}  {holder or ''}")
+
+    if args.action == "list":
+        agent_docs = await store.list_agents()
+        for doc in sorted(await store.list_workspaces(), key=lambda d: d["name"]):
+            busy = lease_active(doc)
+            holder = doc.get("lease_session_id") if busy else ""
+            opts = doc.get("options") or {}
+            member_names = ",".join(workspaces.members(doc["name"], agent_docs))
+            print(
+                f"{doc['name']:<24}  {'busy' if busy else 'free':<6}"
+                f"  {opts.get('model') or '-':<24}  {member_names or '-':<24}"
+                f"  {holder or doc.get('description') or ''}"
+            )
+        return
+
+    if not args.name:
+        raise SystemExit(f"workspaces {args.action} requires a name")
+
+    if args.action == "claude-md":
+        project = _project(args)
+        bucket = env.default_bucket(args.bucket, project)
+        if args.file:
+            from pathlib import Path
+
+            text = Path(args.file).read_text()
+            await asyncio.to_thread(workspaces.write_claude_md, project, bucket, args.name, text)
+            print(f"wrote CLAUDE.md for workspace {args.name}")
+            return
+        text = await asyncio.to_thread(workspaces.read_claude_md, project, bucket, args.name)
+        if text is None:
+            raise SystemExit(f"workspace {args.name} has no CLAUDE.md")
+        print(text, end="")
+        return
+
+    if args.action == "create":
+        workspace = await workspaces.create(
+            args.name, _run_options(args), description=args.description, store=store
+        )
+        print(f"created workspace {workspace['name']}")
+        return
+    if args.action == "show":
+        workspace = await workspaces.get(args.name, store=store)
+        if workspace is None:
+            raise SystemExit(f"no such workspace: {args.name}")
+        workspace["members"] = workspaces.members(args.name, await store.list_agents())
+        print(json.dumps(workspace, indent=2, default=str))
+        return
+    if args.action == "update":
+        await workspaces.update(
+            args.name, _run_options(args), description=args.description, store=store
+        )
+        print(f"updated workspace {args.name}")
+        return
+    if args.action == "delete":
+        await workspaces.delete(args.name, store=store)
+        print(f"deleted workspace {args.name}")
+        return
+
+
+async def _settings(args) -> None:
+    from .options import options_from_doc
+
+    store = _store(args)
+    if args.action == "update":
+        run_options = _run_options(args)
+        run_options.validate()
+        await store.update_settings({"options": run_options.serialize()})
+        print("updated global settings")
+        return
+    settings = await store.get_settings()
+    if not settings:
+        from .options import DEFAULT_MODEL
+
+        print(f"no global settings stored (built-in default: model {DEFAULT_MODEL})")
+        return
+    # Echo the parsed form, so a doc the parser would reject can't masquerade
+    # as live configuration.
+    parsed = options_from_doc(dict(settings.get("options") or {}))
+    print(json.dumps(parsed.serialize(), indent=2, default=str))
 
 
 async def _tail(args) -> None:
@@ -178,7 +260,10 @@ def _run_options(args) -> AgentOptions:
         mcp_servers["bq"] = {"type": "builtin", "name": "bigquery"}
         if "mcp__bq__query" not in allow:
             allow.append("mcp__bq__query")
+    flags = getattr(args, "connector", None) or []
+    connectors = [name for flag in flags for name in flag.split(",") if name]
     return AgentOptions(
+        connectors=connectors or None,
         model=args.model,
         system_prompt=args.system_prompt,
         allowed_tools=allow,
@@ -251,79 +336,116 @@ async def _agents(args) -> None:
     )
 
 
-async def _deployments(args) -> None:
-    from . import deployments
+def _parse_tasks(args) -> list[dict] | None:
+    """--tasks tasks.json (or `-` for stdin): the chain; --prompt: one task."""
+    if not args.tasks:
+        return None
+    import sys as _sys
+
+    raw = _sys.stdin.read() if args.tasks == "-" else open(args.tasks).read()
+    tasks = json.loads(raw)
+    if isinstance(tasks, dict):
+        tasks = tasks.get("tasks")
+    return tasks
+
+
+async def _workflows(args) -> None:
+    from . import workflows
 
     options = _options(args)
     store = _store(args)
 
     if args.action == "list":
-        for deployment in await deployments.list_all(store=store):
-            timezone = deployment.get("timezone") or deployments.DEFAULT_TIMEZONE
-            state = "paused" if not deployment.get("enabled") else "on"
-            print(
-                f"{deployment['name']:<24}  {deployment.get('cron', ''):<16}  {state:<7}"
-                f"  next {_local(deployment.get('next_run_at'), timezone)} {timezone}"
-                f"  {deployment.get('runs') or 0} runs"
-                f"  {deployment.get('last_session_id') or ''}"
+        for workflow in await workflows.list_all(store=store):
+            schedule = workflow.get("schedule") or {}
+            timezone = schedule.get("timezone") or workflows.DEFAULT_TIMEZONE
+            state = "paused" if not workflow.get("enabled") else "on"
+            when = (
+                f"next {_local(workflow.get('next_run_at'), timezone)} {timezone}"
+                if schedule.get("cron")
+                else "manual"
             )
-            if deployment.get("last_error"):
-                print(f"    error: {deployment['last_error']}")
+            print(
+                f"{workflow['name']:<24}  {schedule.get('cron') or '-':<16}  {state:<7}"
+                f"  {len(workflow.get('tasks') or []):>2} tasks  {when}"
+                f"  {workflow.get('run_count') or 0} runs"
+            )
+            if workflow.get("last_error"):
+                print(f"    error: {workflow['last_error']}")
         return
 
     if not args.name:
-        raise SystemExit(f"deployments {args.action} requires a name")
+        raise SystemExit(f"workflows {args.action} requires a name")
 
     if args.action == "create":
-        if not args.cron or not args.prompt:
-            raise SystemExit("create requires --cron and --prompt")
-        deployment = await deployments.create(
+        tasks = _parse_tasks(args)
+        if not tasks and not args.prompt:
+            raise SystemExit("create requires --prompt (one task) or --tasks tasks.json (a chain)")
+        workflow = await workflows.create(
             args.name,
-            args.cron,
-            args.prompt,
-            _run_options(args),
+            tasks,
+            # Option flags land as workflow-level defaults either way; the
+            # single-task shorthand only adds the prompt and agent binding.
+            **({} if tasks else {"prompt": args.prompt, "agent": args.agent}),
+            defaults=_run_options(args),
             options=options,
-            agent=args.agent,
+            cron_expression=args.cron,
             timezone=args.tz,
             created_by=getpass.getuser(),
             store=store,
         )
-        print(f"created {args.name}: {deployment['cron']} ({args.tz})")
-        print(f"    next run {_local(deployment['next_run_at'], args.tz)} {args.tz}")
+        schedule = workflow.get("schedule") or {}
+        if schedule.get("cron"):
+            print(f"created {args.name}: {schedule['cron']} ({args.tz})")
+            print(f"    next run {_local(workflow['next_run_at'], args.tz)} {args.tz}")
+        else:
+            print(f"created {args.name} (manual-only; fire it with `syros workflows run`)")
         return
 
     if args.action in ("pause", "resume"):
-        deployment = await deployments.set_enabled(args.name, args.action == "resume", store=store)
+        workflow = await workflows.set_enabled(args.name, args.action == "resume", store=store)
         print(f"{args.action}d {args.name}")
-        if args.action == "resume":
-            timezone = deployment.get("timezone") or deployments.DEFAULT_TIMEZONE
-            print(f"    next run {_local(deployment['next_run_at'], timezone)} {timezone}")
+        schedule = workflow.get("schedule") or {}
+        if args.action == "resume" and schedule.get("cron"):
+            timezone = schedule.get("timezone") or workflows.DEFAULT_TIMEZONE
+            print(f"    next run {_local(workflow['next_run_at'], timezone)} {timezone}")
         return
 
     if args.action == "delete":
-        await deployments.delete(args.name, store=store)
-        print(f"deleted {args.name}  (its past runs stay in `syros sessions`)")
+        await workflows.delete(args.name, store=store)
+        print(f"deleted {args.name}  (its task sessions stay in `syros sessions`)")
         return
 
     if args.action == "run":
-        session_id = await deployments.run_now(
+        run_id = await workflows.run_now(
             args.name, options=options, store=store, created_by=getpass.getuser()
         )
-        print(f"started {session_id}")
+        print(f"started {run_id}")
         return
 
-    # runs: the deployment's own history
-    from .store import runtime
-
-    for session in await deployments.runs(args.name, limit=args.limit, store=store):
-        state = runtime(session)
+    if args.action == "show":
+        workflow = await workflows.get(args.name, store=store)
+        if workflow is None:
+            raise SystemExit(f"no such workflow: {args.name}")
         print(
-            f"{session['id']}  {state.get('status'):<10}"
-            f"  {session.get('trigger') or '':<9}"
-            f"  ${float(session.get('cost_usd') or 0):.4f}"
-            f"  {state.get('stop_reason') or '':<22}"
-            f"  {_local(_epoch(session.get('created_at')))}"
+            json.dumps(
+                {k: v for k, v in workflow.items() if k not in ("created_at", "updated_at")},
+                indent=2,
+                default=str,
+            )
         )
+        return
+
+    # runs: the workflow's own history, one line per run plus a line per task
+    for run in await workflows.runs(args.name, limit=args.limit, store=store):
+        print(
+            f"{run['id']}  {run.get('status'):<10}  {run.get('trigger') or '':<9}"
+            f"  {_local(_epoch(run.get('started_at')))}"
+        )
+        for task_id, task in (run.get("tasks") or {}).items():
+            print(f"    {task_id:<20}  {task.get('status'):<10}  {task.get('session_id') or ''}")
+            if task.get("error"):
+                print(f"        error: {task['error']}")
 
 
 def _epoch(value) -> float | None:
@@ -333,15 +455,15 @@ def _epoch(value) -> float | None:
 
 
 async def _tick(args) -> None:
-    from . import deployments
+    from . import workflows
 
-    result = await deployments.tick(_options(args), store=_store(args))
+    result = await workflows.tick(_options(args), store=_store(args))
     for run in result["fired"]:
-        print(f"fired    {run['deployment']}  {run['session_id']}")
+        print(f"fired    {run['workflow']}  {run['run_id']}")
     for run in result["skipped"]:
-        print(f"skipped  {run['deployment']}  (previous run {run['session_id']} still active)")
+        print(f"skipped  {run['workflow']}  (previous run {run['run_id']} still active)")
     for failure in result["errors"]:
-        print(f"error    {failure['deployment']}  {failure['error']}")
+        print(f"error    {failure['workflow']}  {failure['error']}")
     if not any((result["fired"], result["skipped"], result["errors"])):
         print("nothing due")
 
@@ -402,7 +524,9 @@ async def _skills(args) -> None:
     if args.action == "files":
         if not args.args:
             raise SystemExit("usage: syros skills files <name>")
-        files = await GcsObjects(project, bucket).skill_files(args.args[0])
+        files = await GcsObjects(project, bucket).skill_files(
+            args.args[0], workspace=args.workspace
+        )
         if not files:
             raise SystemExit(f"no such skill: {args.args[0]}")
         for item in files:
@@ -422,6 +546,7 @@ async def _skills(args) -> None:
                 args.args[0],
                 args.args[1],
                 max_bytes=MAX_PREVIEW_BYTES,
+                workspace=args.workspace,
             )
         except FileNotFoundError as exc:
             raise SystemExit(f"not found: {exc}") from exc
@@ -560,14 +685,43 @@ async def _connectors(args) -> None:
 
     if args.action == "list":
         status = await asyncio.to_thread(connectors.credential_status, project)
+        print(f"{'NAME':<8}  {'LABEL':<18}  {'AUTH':<7}  {'STATUS':<12}  UPDATED")
         for connector in connectors.CATALOG.values():
             state = status.get(connector.name) or {}
             configured = bool(state.get("configured"))
+            hint = f"run `syros connectors auth {connector.name}`"
+            if connector.auth == "token":
+                hint = f"run `syros connectors set {connector.name}`"
             print(
                 f"{connector.name:<8}  {connector.label:<18}  {connector.auth:<7}"
-                f"  {'configured' if configured else '—':<12}"
-                f"  {_local(state.get('updated')) if configured else ''}"
+                f"  {'configured' if configured else 'not set':<12}"
+                f"  {_local(state.get('updated')) if configured else hint}"
             )
+        return
+
+    if args.action == "test":
+        if args.name:
+            names = [args.name]
+        else:
+            status = await asyncio.to_thread(connectors.credential_status, project)
+            names = [name for name, state in status.items() if state.get("configured")]
+            if not names:
+                raise SystemExit(
+                    "no connector has a stored credential — run `syros connectors auth <name>`"
+                )
+        failed = False
+        for name in names:
+            try:
+                results = await asyncio.to_thread(connectors.probe, project, name)
+            except connectors.ConnectorError as error:
+                print(f"{name:<8}  {'-':<16}  {error}")
+                failed = True
+                continue
+            for key, (ok, detail) in results.items():
+                print(f"{name:<8}  {key:<16}  {detail}")
+                failed = failed or not ok
+        if failed:
+            raise SystemExit(1)
         return
 
     if not args.name:
@@ -635,6 +789,29 @@ async def _console(args) -> None:
     await run(api, args.host, args.port, open_browser=local and not args.no_open)
 
 
+def _run_option_flags(parser: argparse.ArgumentParser) -> None:
+    """The shared run-option flags: the AgentOptions subset worth typing."""
+    parser.add_argument(
+        "--connector",
+        action="append",
+        metavar="NAME",
+        help="attach a platform connector (repeatable, or comma-separated)",
+    )
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--system-prompt", default=None)
+    parser.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
+    parser.add_argument("--permission-mode", default=None)
+    parser.add_argument("--workspace", "--team", dest="workspace", default=None)
+    parser.add_argument("--artifacts", default=None, metavar="SPACE")
+    parser.add_argument("--max-turns", type=int, default=None)
+    parser.add_argument("--max-budget-usd", type=float, default=None)
+    parser.add_argument(
+        "--bigquery",
+        action="store_true",
+        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="syros")
     parser.add_argument("--project", default=None)
@@ -642,7 +819,24 @@ def main() -> None:
 
     sub.add_parser("sessions").set_defaults(func=_sessions)
 
-    sub.add_parser("workspaces").set_defaults(func=_workspaces)
+    workspaces = sub.add_parser("workspaces", aliases=["teams"])
+    workspaces.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "create", "show", "update", "delete", "claude-md"],
+    )
+    workspaces.add_argument("name", nargs="?")
+    workspaces.add_argument("--description", default=None)
+    workspaces.add_argument("--file", default=None, help="claude-md: local file to upload")
+    workspaces.add_argument("--bucket", default=None)
+    _run_option_flags(workspaces)
+    workspaces.set_defaults(func=_workspaces)
+
+    settings = sub.add_parser("settings")
+    settings.add_argument("action", nargs="?", default="show", choices=["show", "update"])
+    _run_option_flags(settings)
+    settings.set_defaults(func=_settings)
 
     tail = sub.add_parser("tail")
     tail.add_argument("session_id")
@@ -673,54 +867,33 @@ def main() -> None:
     )
     agents.add_argument("name", nargs="?")
     agents.add_argument("--description", default=None)
-    # Run options: the subset of AgentOptions worth having on the command line.
-    agents.add_argument("--model", default=None)
-    agents.add_argument("--system-prompt", default=None)
-    agents.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
-    agents.add_argument("--permission-mode", default=None)
-    agents.add_argument("--workspace", default=None)
-    agents.add_argument("--artifacts", default=None, metavar="SPACE")
-    agents.add_argument("--max-turns", type=int, default=None)
-    agents.add_argument("--max-budget-usd", type=float, default=None)
-    agents.add_argument(
-        "--bigquery",
-        action="store_true",
-        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
-    )
+    _run_option_flags(agents)
     agents.set_defaults(func=_agents)
 
-    deployments = sub.add_parser("deployments")
-    deployments.add_argument(
+    workflows = sub.add_parser("workflows")
+    workflows.add_argument(
         "action",
         nargs="?",
         default="list",
-        choices=["list", "create", "pause", "resume", "delete", "run", "runs"],
+        choices=["list", "create", "show", "pause", "resume", "delete", "run", "runs"],
     )
-    deployments.add_argument("name", nargs="?")
-    deployments.add_argument("--cron", default=None, help="5-field cron, or an @alias")
-    deployments.add_argument("--tz", default="UTC", help="IANA timezone the cron is read in")
-    deployments.add_argument("--prompt", default=None)
-    deployments.add_argument("--agent", default=None, help="stored agent the runs default to")
-    # Run options: the subset of AgentOptions worth having on the command line.
-    deployments.add_argument("--model", default=None)
-    deployments.add_argument("--system-prompt", default=None)
-    deployments.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
-    deployments.add_argument("--permission-mode", default=None)
-    deployments.add_argument("--workspace", default=None)
-    deployments.add_argument("--artifacts", default=None, metavar="SPACE")
-    deployments.add_argument("--max-turns", type=int, default=None)
-    deployments.add_argument("--max-budget-usd", type=float, default=None)
-    deployments.add_argument(
-        "--bigquery",
-        action="store_true",
-        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
+    workflows.add_argument("name", nargs="?")
+    workflows.add_argument(
+        "--cron", default=None, help="5-field cron or an @alias; omit for manual-only"
     )
-    deployments.add_argument("--limit", type=int, default=50, help="runs to list")
-    deployments.add_argument("--region", default=None)
-    deployments.add_argument("--job", default=None)
-    deployments.set_defaults(func=_deployments)
+    workflows.add_argument("--tz", default="UTC", help="IANA timezone the cron is read in")
+    workflows.add_argument("--prompt", default=None, help="single-task shorthand")
+    workflows.add_argument("--agent", default=None, help="stored agent the single task runs as")
+    workflows.add_argument(
+        "--tasks", default=None, help="JSON file with the task chain (- for stdin)"
+    )
+    _run_option_flags(workflows)
+    workflows.add_argument("--limit", type=int, default=50, help="runs to list")
+    workflows.add_argument("--region", default=None)
+    workflows.add_argument("--job", default=None)
+    workflows.set_defaults(func=_workflows)
 
-    tick = sub.add_parser("tick", help="fire due deployments; the scheduler job's entrypoint")
+    tick = sub.add_parser("tick", help="advance and fire due workflows; the scheduler entrypoint")
     tick.add_argument("--region", default=None)
     tick.add_argument("--job", default=None)
     tick.set_defaults(func=_tick)
@@ -740,11 +913,18 @@ def main() -> None:
     )
     skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
+    skills.add_argument(
+        "--workspace",
+        "--team",
+        dest="workspace",
+        default=None,
+        help="operate on a workspace's skills",
+    )
     skills.set_defaults(func=_skills)
 
     connectors = sub.add_parser("connectors")
     connectors.add_argument(
-        "action", nargs="?", default="list", choices=["list", "auth", "set", "remove"]
+        "action", nargs="?", default="list", choices=["list", "auth", "set", "test", "remove"]
     )
     connectors.add_argument("name", nargs="?")
     connectors.add_argument("--token", default=None, help="credential value for `set`")
