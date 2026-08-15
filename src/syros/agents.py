@@ -2,7 +2,7 @@
 
 An agent is one Firestore document holding the same serialized `AgentOptions`
 subset a session stores: system prompt, model, tools, permission mode,
-workspace, artifact spaces, budgets. Referencing it (`AgentOptions(agent=...)`
+team, artifact spaces, budgets. Referencing it (`AgentOptions(agent=...)`
 or a deployment's `agent` field) resolves the stored options as defaults, with
 any explicitly-set option on the caller's side overriding them. Resolution
 happens when a session is created and the merged result is snapshotted onto
@@ -143,11 +143,25 @@ def merge(base: AgentOptions, overrides: AgentOptions) -> AgentOptions:
 
 
 async def resolve(store: StoreProtocol, options: AgentOptions) -> AgentOptions:
-    """Expand `options.agent` into concrete options: the agent's stored options
-    as defaults, explicitly-set fields on `options` as overrides. A no-op when
-    no agent is named."""
-    if not options.agent:
-        return options
-    agent = await require_agent(store, options.agent)
-    stored = options_from_doc(dict(agent.get("options") or {}))
-    return merge(stored, options)
+    """Expand references into concrete options, layered as
+
+        explicit options  <-  agent  <-  team options  <-  settings/global
+
+    Explicitly-set fields always win over any stored layer. Only the top-level
+    options may name an agent or team — a stored layer naming one is ignored
+    (merge never overrides a set field, and nesting would recurse). The model
+    lands on "sonnet" when no layer names one, so a session never records no
+    model. A named team without a stored doc contributes no defaults; the
+    shared directory and lease work by name alone."""
+    merged = options
+    if options.agent:
+        agent = await require_agent(store, options.agent)
+        merged = merge(options_from_doc(dict(agent.get("options") or {})), merged)
+    if merged.team:
+        team = await store.get_team(merged.team)
+        if team:
+            merged = merge(options_from_doc(dict(team.get("options") or {})), merged)
+    settings = await store.get_settings()
+    if settings:
+        merged = merge(options_from_doc(dict(settings.get("options") or {})), merged)
+    return replace(merged, model=merged.model or "sonnet")

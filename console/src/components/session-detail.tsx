@@ -15,7 +15,7 @@ import { deriveArtifacts } from "@/lib/artifacts";
 import { eventMessage } from "@/lib/types";
 import { useAction, useNow, useSessionPoll } from "@/lib/hooks";
 import { post } from "@/lib/api";
-import { cost } from "@/lib/format";
+import { cost, shortId } from "@/lib/format";
 
 export function SessionDetail({ sid }: { sid: string }) {
   const router = useRouter();
@@ -147,9 +147,21 @@ export function SessionDetail({ sid }: { sid: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-surface px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3">
-        <span className="min-w-0 max-w-full truncate font-mono text-[13px]" title={sid}>
-          {sid}
+        <span
+          className={
+            session?.title
+              ? "min-w-0 max-w-full truncate text-[13px] font-medium"
+              : "min-w-0 max-w-full truncate font-mono text-[13px]"
+          }
+          title={sid}
+        >
+          {session?.title || sid}
         </span>
+        {session?.title && (
+          <span className="font-mono text-[11px] text-muted-foreground" title={sid}>
+            {shortId(sid)}
+          </span>
+        )}
         {session && (
           <>
             <StateBadge state={session.state} />
@@ -219,6 +231,12 @@ export function SessionDetail({ sid }: { sid: string }) {
           <Trash2 /> <span className="hidden sm:inline">Delete</span>
         </Button>
       </div>
+
+      {session?.summary && (
+        <p className="border-b border-border bg-surface px-3 pb-2 text-[12px] text-muted-foreground sm:px-5">
+          {session.summary}
+        </p>
+      )}
 
       {/* Below lg an open panel takes the row over and the transcript hides —
           but approvals and the composer live outside it, so a pending decision

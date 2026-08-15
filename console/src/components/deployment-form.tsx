@@ -15,7 +15,7 @@ import {
   MODELS,
   TOOLS,
 } from "@/components/option-fields";
-import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
+import { useAgents, useArtifactSpaces, useTeams } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -46,7 +46,7 @@ export function DeploymentForm({
   onCreated: (name: string) => void;
   onCancel: () => void;
 }) {
-  const workspaces = useWorkspaces();
+  const teams = useTeams();
   const spaces = useArtifactSpaces();
   const { agents } = useAgents();
   const [name, setName] = useState("");
@@ -55,7 +55,7 @@ export function DeploymentForm({
   const [timezone, setTimezone] = useState(browserZone());
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("");
-  const [workspace, setWorkspace] = useState("");
+  const [team, setTeam] = useState("");
   const [artifacts, setArtifacts] = useState("");
   const [tools, setTools] = useState<string[]>([]);
   const [extraTools, setExtraTools] = useState("");
@@ -73,7 +73,7 @@ export function DeploymentForm({
     // Only send what was filled in: an empty string is "unset", not "".
     const options: Record<string, unknown> = {};
     if (model.trim()) options.model = model.trim();
-    if (workspace.trim()) options.workspace = workspace.trim();
+    if (team.trim()) options.team = team.trim();
     if (artifacts.trim()) options.artifacts = artifacts.trim();
     const allowed = [
       ...tools,
@@ -166,7 +166,7 @@ export function DeploymentForm({
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
               required
-              placeholder="Profile the CSVs in the workspace and write report.md"
+              placeholder="Profile the CSVs in the team workspace and write report.md"
               className="rounded-lg border border-input bg-card px-3 py-2 text-[13px]"
             />
           </Field>
@@ -187,13 +187,13 @@ export function DeploymentForm({
                 noneLabel="default"
               />
             </Field>
-            <Field label="Workspace">
+            <Field label="Team">
               <ChoiceField
-                value={workspace}
-                onChange={setWorkspace}
-                choices={(workspaces ?? []).map((w) => w.name)}
+                value={team}
+                onChange={setTeam}
+                choices={(teams ?? []).map((t) => t.name)}
                 noneLabel="none"
-                customLabel="new workspace…"
+                customLabel="new team…"
               />
             </Field>
             <Field label="Artifact space">

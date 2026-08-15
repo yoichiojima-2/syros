@@ -1,7 +1,13 @@
 """Minimal ops CLI — the UI syros deliberately doesn't have.
 
 syros sessions                          list recent sessions
-syros workspaces                        list shared workspaces and their leases
+syros teams                             list teams and their workspace leases
+syros teams create <name> [--model ...] [--description ...]
+syros teams show|update|delete <name>
+syros teams claude-md <name>            print the team's CLAUDE.md
+syros teams claude-md <name> --file p   replace it from a local file
+syros settings                          show global option defaults (inherited by everything)
+syros settings update [--model ...]     replace global option defaults
 syros tail <session_id>                 follow a session's journal (messages + audit)
 syros rewind <session_id> <event_uuid>  branch the transcript from a past event
 syros approvals <session_id>            list pending approvals
@@ -23,7 +29,7 @@ syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
 syros skills                            list skills in the bucket
-syros skills files <name>               list one skill's files
+syros skills files <name>               list one skill's files (--team for team skills)
 syros skills cat <name> <file>          print one skill file's content
 syros skills sync                       seed skills/ from the official anthropics/skills repo
 syros connectors                        list platform connectors and credential status
@@ -92,18 +98,84 @@ async def _sessions(args) -> None:
             f"  ${float(session.get('cost_usd') or 0):.4f}"
             f"  {state.get('stop_reason') or '':<14}"
             f"  {'' if published is None else f'{published} published':<14}"
-            f"  {(session.get('options') or {}).get('workspace') or ''}"
+            f"  {(session.get('options') or {}).get('team') or ''}"
         )
 
 
-async def _workspaces(args) -> None:
+async def _teams(args) -> None:
+    from . import teams
     from .store import lease_active
 
     store = _store(args)
-    for doc in sorted(await store.list_workspaces(), key=lambda d: d["name"]):
-        busy = lease_active(doc)
-        holder = doc.get("lease_session_id") if busy else ""
-        print(f"{doc['name']:<24}  {'busy' if busy else 'free':<6}  {holder or ''}")
+
+    if args.action == "list":
+        for doc in sorted(await store.list_teams(), key=lambda d: d["name"]):
+            busy = lease_active(doc)
+            holder = doc.get("lease_session_id") if busy else ""
+            opts = doc.get("options") or {}
+            print(
+                f"{doc['name']:<24}  {'busy' if busy else 'free':<6}"
+                f"  {opts.get('model') or '-':<24}  {holder or doc.get('description') or ''}"
+            )
+        return
+
+    if not args.name:
+        raise SystemExit(f"teams {args.action} requires a name")
+
+    if args.action == "claude-md":
+        project = _project(args)
+        bucket = env.default_bucket(args.bucket, project)
+        if args.file:
+            from pathlib import Path
+
+            text = Path(args.file).read_text()
+            await asyncio.to_thread(teams.write_claude_md, project, bucket, args.name, text)
+            print(f"wrote CLAUDE.md for team {args.name}")
+            return
+        text = await asyncio.to_thread(teams.read_claude_md, project, bucket, args.name)
+        if text is None:
+            raise SystemExit(f"team {args.name} has no CLAUDE.md")
+        print(text, end="")
+        return
+
+    if args.action == "create":
+        team = await teams.create(
+            args.name, _run_options(args), description=args.description, store=store
+        )
+        print(f"created team {team['name']}")
+        return
+    if args.action == "show":
+        team = await teams.get(args.name, store=store)
+        if team is None:
+            raise SystemExit(f"no such team: {args.name}")
+        print(json.dumps(team, indent=2, default=str))
+        return
+    if args.action == "update":
+        await teams.update(args.name, _run_options(args), description=args.description, store=store)
+        print(f"updated team {args.name}")
+        return
+    if args.action == "delete":
+        await teams.delete(args.name, store=store)
+        print(f"deleted team {args.name}")
+        return
+
+
+async def _settings(args) -> None:
+    from .options import options_from_doc
+
+    store = _store(args)
+    if args.action == "update":
+        run_options = _run_options(args)
+        run_options.validate()
+        await store.update_settings({"options": run_options.serialize()})
+        print("updated global settings")
+        return
+    settings = await store.get_settings()
+    if not settings:
+        print("no global settings stored (built-in default: model sonnet)")
+        return
+    options_from_doc(dict(settings.get("options") or {}))  # validate what we echo
+    print(json.dumps(settings.get("options") or {}, indent=2, default=str))
 
 
 async def _tail(args) -> None:
@@ -187,7 +259,7 @@ def _run_options(args) -> AgentOptions:
         allowed_tools=allow,
         mcp_servers=mcp_servers,
         permission_mode=args.permission_mode,
-        workspace=args.workspace,
+        team=args.team,
         artifacts=args.artifacts,
         max_turns=args.max_turns,
         max_budget_usd=args.max_budget_usd,
@@ -405,7 +477,7 @@ async def _skills(args) -> None:
     if args.action == "files":
         if not args.args:
             raise SystemExit("usage: syros skills files <name>")
-        files = await GcsObjects(project, bucket).skill_files(args.args[0])
+        files = await GcsObjects(project, bucket).skill_files(args.args[0], team=args.team)
         if not files:
             raise SystemExit(f"no such skill: {args.args[0]}")
         for item in files:
@@ -425,6 +497,7 @@ async def _skills(args) -> None:
                 args.args[0],
                 args.args[1],
                 max_bytes=MAX_PREVIEW_BYTES,
+                team=args.team,
             )
         except FileNotFoundError as exc:
             raise SystemExit(f"not found: {exc}") from exc
@@ -667,6 +740,29 @@ async def _console(args) -> None:
     await run(api, args.host, args.port, open_browser=local and not args.no_open)
 
 
+def _run_option_flags(parser: argparse.ArgumentParser) -> None:
+    """The shared run-option flags: the AgentOptions subset worth typing."""
+    parser.add_argument(
+        "--connector",
+        action="append",
+        metavar="NAME",
+        help="attach a platform connector (repeatable, or comma-separated)",
+    )
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--system-prompt", default=None)
+    parser.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
+    parser.add_argument("--permission-mode", default=None)
+    parser.add_argument("--team", default=None)
+    parser.add_argument("--artifacts", default=None, metavar="SPACE")
+    parser.add_argument("--max-turns", type=int, default=None)
+    parser.add_argument("--max-budget-usd", type=float, default=None)
+    parser.add_argument(
+        "--bigquery",
+        action="store_true",
+        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="syros")
     parser.add_argument("--project", default=None)
@@ -674,7 +770,24 @@ def main() -> None:
 
     sub.add_parser("sessions").set_defaults(func=_sessions)
 
-    sub.add_parser("workspaces").set_defaults(func=_workspaces)
+    teams = sub.add_parser("teams")
+    teams.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "create", "show", "update", "delete", "claude-md"],
+    )
+    teams.add_argument("name", nargs="?")
+    teams.add_argument("--description", default=None)
+    teams.add_argument("--file", default=None, help="claude-md: local file to upload")
+    teams.add_argument("--bucket", default=None)
+    _run_option_flags(teams)
+    teams.set_defaults(func=_teams)
+
+    settings = sub.add_parser("settings")
+    settings.add_argument("action", nargs="?", default="show", choices=["show", "update"])
+    _run_option_flags(settings)
+    settings.set_defaults(func=_settings)
 
     tail = sub.add_parser("tail")
     tail.add_argument("session_id")
@@ -705,26 +818,7 @@ def main() -> None:
     )
     agents.add_argument("name", nargs="?")
     agents.add_argument("--description", default=None)
-    # Run options: the subset of AgentOptions worth having on the command line.
-    agents.add_argument(
-        "--connector",
-        action="append",
-        metavar="NAME",
-        help="attach a platform connector (repeatable, or comma-separated)",
-    )
-    agents.add_argument("--model", default=None)
-    agents.add_argument("--system-prompt", default=None)
-    agents.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
-    agents.add_argument("--permission-mode", default=None)
-    agents.add_argument("--workspace", default=None)
-    agents.add_argument("--artifacts", default=None, metavar="SPACE")
-    agents.add_argument("--max-turns", type=int, default=None)
-    agents.add_argument("--max-budget-usd", type=float, default=None)
-    agents.add_argument(
-        "--bigquery",
-        action="store_true",
-        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
-    )
+    _run_option_flags(agents)
     agents.set_defaults(func=_agents)
 
     deployments = sub.add_parser("deployments")
@@ -739,26 +833,7 @@ def main() -> None:
     deployments.add_argument("--tz", default="UTC", help="IANA timezone the cron is read in")
     deployments.add_argument("--prompt", default=None)
     deployments.add_argument("--agent", default=None, help="stored agent the runs default to")
-    # Run options: the subset of AgentOptions worth having on the command line.
-    deployments.add_argument(
-        "--connector",
-        action="append",
-        metavar="NAME",
-        help="attach a platform connector (repeatable, or comma-separated)",
-    )
-    deployments.add_argument("--model", default=None)
-    deployments.add_argument("--system-prompt", default=None)
-    deployments.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
-    deployments.add_argument("--permission-mode", default=None)
-    deployments.add_argument("--workspace", default=None)
-    deployments.add_argument("--artifacts", default=None, metavar="SPACE")
-    deployments.add_argument("--max-turns", type=int, default=None)
-    deployments.add_argument("--max-budget-usd", type=float, default=None)
-    deployments.add_argument(
-        "--bigquery",
-        action="store_true",
-        help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
-    )
+    _run_option_flags(deployments)
     deployments.add_argument("--limit", type=int, default=50, help="runs to list")
     deployments.add_argument("--region", default=None)
     deployments.add_argument("--job", default=None)
@@ -784,6 +859,7 @@ def main() -> None:
     )
     skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
+    skills.add_argument("--team", default=None, help="operate on a team's skills")
     skills.set_defaults(func=_skills)
 
     connectors = sub.add_parser("connectors")

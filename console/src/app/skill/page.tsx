@@ -15,12 +15,14 @@ import type { OkResponse, StoredFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // One skill (skills/{name}/ in the bucket), editable. Same master–detail
-// editor as the workspace page, without the lease gating: skills are copied
+// editor as the team page, without the lease gating: skills are copied
 // into each sandbox HOME at run start, so a console edit never races a live
 // run's checkpoint — it simply applies from the next run onward.
 
-function fileUrl(skill: string, file: string): string {
-  return `/api/skills/${encodeURIComponent(skill)}/file?name=${encodeURIComponent(file)}`;
+function fileUrl(skill: string, file: string, team: string | null): string {
+  const query = new URLSearchParams({ name: file });
+  if (team) query.set("team", team);
+  return `/api/skills/${encodeURIComponent(skill)}/file?${query}`;
 }
 
 /** Decoded-as-text bytes that clearly weren't text. Cheap and good enough to
@@ -46,7 +48,8 @@ function SkillInner() {
   const params = useSearchParams();
   const name = params.get("name");
   const file = params.get("file");
-  const { files, refresh } = useSkillFiles(name);
+  const team = params.get("team");
+  const { files, refresh } = useSkillFiles(name, team);
   const now = useNow();
   const [flash, run] = useAction();
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -54,6 +57,7 @@ function SkillInner() {
   const select = (nextFile: string | null) => {
     if (!name) return;
     const query = new URLSearchParams({ name });
+    if (team) query.set("team", team);
     if (nextFile) query.set("file", nextFile);
     router.replace(`/skill?${query}`);
   };
@@ -72,6 +76,7 @@ function SkillInner() {
         name: picked.name,
         content,
         encoding: "base64",
+        ...(team ? { team } : {}),
       });
       refresh();
       select(picked.name);
@@ -87,6 +92,7 @@ function SkillInner() {
       await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
         name: created,
         content: "",
+        ...(team ? { team } : {}),
       });
       refresh();
       select(created);
@@ -112,16 +118,18 @@ function SkillInner() {
       <aside className="flex max-h-[45svh] shrink-0 flex-col gap-3 overflow-y-auto border-b border-border p-4 lg:max-h-none lg:w-72 lg:border-r lg:border-b-0">
         <div>
           <Link
-            href="/skills"
+            href={team ? `/team?name=${encodeURIComponent(team)}` : "/skills"}
             className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground hover:text-foreground"
           >
-            <ArrowLeft className="size-3" /> Skills
+            <ArrowLeft className="size-3" /> {team ? `Team ${team}` : "Skills"}
           </Link>
           <h1 className="px-1 pt-1 font-mono text-lg font-semibold tracking-tight break-all">
             {name}
           </h1>
           <p className="px-1 pt-2 text-[11px] text-muted-foreground">
-            Mounted into every session at run start — edits apply from the next run.
+            {team
+              ? `Mounted into ${team}'s sessions at run start — edits apply from the next run.`
+              : "Mounted into every session at run start — edits apply from the next run."}
           </p>
         </div>
 
@@ -189,6 +197,7 @@ function SkillInner() {
         {file ? (
           <FileEditor
             skill={name}
+            team={team}
             file={file}
             files={files}
             onChanged={refresh}
@@ -207,12 +216,14 @@ function SkillInner() {
 
 function FileEditor({
   skill,
+  team,
   file,
   files,
   onChanged,
   onDeleted,
 }: {
   skill: string;
+  team: string | null;
   file: string;
   files: StoredFile[] | null;
   onChanged: () => void;
@@ -234,7 +245,7 @@ function FileEditor({
     setError(null);
     setBinary(false);
     let cancelled = false;
-    fetch(fileUrl(skill, file))
+    fetch(fileUrl(skill, file, team))
       .then(async (response) => {
         if (response.status === 413) throw new Error("too large to edit — download instead");
         if (!response.ok) {
@@ -260,7 +271,7 @@ function FileEditor({
     };
     // refetch when the blob changes upstream, not on every poll
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [skill, file, updated]);
+  }, [skill, team, file, updated]);
 
   const dirty = saved !== null && draft !== saved;
 
@@ -269,6 +280,7 @@ function FileEditor({
       await post<OkResponse>(`/api/skills/${encodeURIComponent(skill)}/file`, {
         name: file,
         content: draft,
+        ...(team ? { team } : {}),
       });
       setSaved(draft);
       onChanged();
@@ -280,6 +292,7 @@ function FileEditor({
     run(async () => {
       await post<OkResponse>(`/api/skills/${encodeURIComponent(skill)}/file/delete`, {
         name: file,
+        ...(team ? { team } : {}),
       });
       onChanged();
       onDeleted();
@@ -305,7 +318,7 @@ function FileEditor({
           title="Download"
           onClick={() => {
             if (saved !== null) download(file.split("/").pop() || file, draft);
-            else window.open(fileUrl(skill, file), "_blank");
+            else window.open(fileUrl(skill, file, team), "_blank");
           }}
         >
           <Download />

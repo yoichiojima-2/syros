@@ -49,13 +49,13 @@ def test_build_context_snapshot():
         cwd="/work/ws",
         model="m",
         permission_mode="default",
-        workspace="shared",
+        team="shared",
         lease_id="l1",
         claude_session_id="c1",
     )
     assert context["cwd"] == "/work/ws"
     assert context["model"] == "m"
-    assert context["workspace"] == "shared"
+    assert context["team"] == "shared"
     assert context["lease_id"] == "l1"
     assert context["claude_session_id"] == "c1"
     assert "version" in context and "git" in context

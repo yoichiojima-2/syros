@@ -24,7 +24,7 @@ from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, g
 from .options import AgentOptions, build_sdk_options, model_env
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import artifacts, bigquery, connectors, workspace
+from . import artifacts, bigquery, connectors, titles, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -94,18 +94,18 @@ async def _heartbeat(
     store: Store,
     session_id: str,
     lease_id: str,
-    workspace_ref: dict[str, str | None],
+    team_ref: dict[str, str | None],
     *,
     ttl: float,
     interval: float,
     lost: asyncio.Event,
 ) -> None:
-    """Background task: keep the session (and workspace) lease alive.
+    """Background task: keep the session (and team workspace) lease alive.
 
     A failed renewal means the lease was stolen or the session was killed —
     set the lost flag so the run stops instead of writing over the new owner.
-    workspace_ref["name"] is filled in by run() only once the workspace lease
-    is actually held, so the heartbeat never claims a workspace the run is
+    team_ref["name"] is filled in by run() only once the team lease
+    is actually held, so the heartbeat never claims a team the run is
     still allowed to lose to a busy check. Transient store errors are
     swallowed: the ttl leaves slack for a retry.
     """
@@ -113,8 +113,8 @@ async def _heartbeat(
         await asyncio.sleep(interval)
         try:
             alive = await store.renew_lease(session_id, lease_id, ttl)
-            if alive and workspace_ref.get("name"):
-                alive = await store.claim_workspace(workspace_ref["name"], session_id, ttl)
+            if alive and team_ref.get("name"):
+                alive = await store.claim_team(team_ref["name"], session_id, ttl)
         except Exception:
             continue
         if not alive:
@@ -178,7 +178,7 @@ async def run(session_id: str) -> None:
             cwd=str(ws),
             model=options.model,
             permission_mode=options.permission_mode,
-            workspace=options.workspace,
+            team=options.team,
             lease_id=lease_id,
             claude_session_id=session.get("claude_session_id"),
         ),
@@ -187,31 +187,27 @@ async def run(session_id: str) -> None:
 
     # The heartbeat spans the whole leased run — GCS restore and checkpoint
     # included: with a short renewable ttl those phases alone can outlive
-    # one lease. The workspace name is handed to it only once that lease is
-    # actually held, so a busy workspace still fails fast below.
+    # one lease. The team name is handed to it only once that lease is
+    # actually held, so a busy team still fails fast below.
     lost = asyncio.Event()
-    leased_workspace: dict[str, str | None] = {"name": None}
+    leased_team: dict[str, str | None] = {"name": None}
     beat = asyncio.create_task(
         _heartbeat(
             store,
             session_id,
             lease_id,
-            leased_workspace,
+            leased_team,
             ttl=config.lease_ttl,
             interval=config.heartbeat,
             lost=lost,
         )
     )
     try:
-        if options.workspace and not await store.claim_workspace(
-            options.workspace, session_id, config.lease_ttl
-        ):
-            # Another session is live in this workspace: fail fast with an error
+        if options.team and not await store.claim_team(options.team, session_id, config.lease_ttl):
+            # Another session is live in this team's workspace: fail fast with an error
             # result so the waiting client terminates. The prompt stays queued in
             # the inbox and is consumed when the session is re-triggered.
-            await writer.append(
-                "lifecycle", {"event": "workspace_busy", "workspace": options.workspace}
-            )
+            await writer.append("lifecycle", {"event": "workspace_busy", "team": options.team})
             doc = message_to_doc(
                 ResultMessage(
                     subtype="workspace_busy",
@@ -232,8 +228,8 @@ async def run(session_id: str) -> None:
                 tip_uuid=writer.tip_uuid,
             )
             return
-        if options.workspace:
-            leased_workspace["name"] = options.workspace  # heartbeat renews it from here on
+        if options.team:
+            leased_team["name"] = options.team  # heartbeat renews it from here on
 
         # Expand connectors into mcp_servers before any restore work: a missing or
         # unrefreshable credential fails the run fast, mirroring workspace_busy.
@@ -259,8 +255,8 @@ async def run(session_id: str) -> None:
                     )
                 )
                 await writer.append("message", doc)
-                if options.workspace:
-                    await store.release_workspace(options.workspace, session_id)
+                if options.team:
+                    await store.release_team(options.team, session_id)
                 await store.release_session(
                     session_id,
                     status="idle",
@@ -274,19 +270,29 @@ async def run(session_id: str) -> None:
         ws.mkdir(parents=True, exist_ok=True)
         home.mkdir(parents=True, exist_ok=True)
         ws_prefix = (
-            workspace.workspace_prefix(options.workspace)
-            if options.workspace
+            workspace.workspace_prefix(options.team)
+            if options.team
             else workspace.session_prefix(session_id, "ws")
         )
         home_prefix = workspace.session_prefix(session_id, "home")
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
-        # Mount every skill into HOME after the home restore, so the live skills/
-        # prefix wins over anything a stale checkpoint might carry. The SDK finds
-        # them via setting_sources=["user"] below.
+        # Mount skills into HOME after the home restore, so the live prefixes
+        # win over anything a stale checkpoint might carry: global skills for
+        # every run, then the team's own — restored second, so a team skill
+        # shadows a same-named global one. The SDK finds them via
+        # setting_sources=["user"] below.
         await asyncio.to_thread(
             workspace.restore, config.project, config.bucket, "skills/", home / ".claude" / "skills"
         )
+        if options.team:
+            await asyncio.to_thread(
+                workspace.restore,
+                config.project,
+                config.bucket,
+                f"team-skills/{options.team}/",
+                home / ".claude" / "skills",
+            )
         # Mount artifact spaces after the ws restore so the space's content wins.
         spaces = options.resolved_artifacts()
         for space in spaces:
@@ -328,14 +334,18 @@ async def run(session_id: str) -> None:
             env={**model_env(options), "HOME": str(home)},
             # "user" settings live in the sandboxed HOME above, so this only ever
             # loads syros-managed state — and it is what makes the mounted
-            # ~/.claude/skills visible to the harness.
-            setting_sources=["user"],
+            # ~/.claude/skills visible to the harness. "project" makes the
+            # team's CLAUDE.md (restored at the workspace root) load as the
+            # project memory for every session under the team.
+            setting_sources=["user", "project"],
         )
         sdk_options.hooks = gate.hooks()
         sdk_options.mcp_servers = resolve_mcp_servers(options.mcp_servers, config.project)
 
         cost = float(session.get("cost_usd") or 0.0)
         published = 0
+        run_prompts: list[str] = []
+        result_text: str | None = None
         claude_session_id = branch_claude or session.get("claude_session_id")
         stop_reason = "end_turn"
 
@@ -353,6 +363,7 @@ async def run(session_id: str) -> None:
                         # echoes tool results as user messages but never the prompt
                         # itself, and the chat view needs it.
                         await writer.append("prompt", {"text": text, "source": "inbox"})
+                        run_prompts.append(text)
                         await client.query(text)
                         async for message in client.receive_response():
                             # A lost lease mid-turn means another execution owns
@@ -371,6 +382,7 @@ async def run(session_id: str) -> None:
                                 cost += message.total_cost_usd or 0.0
                                 claude_session_id = message.session_id
                                 stop_reason = message.subtype
+                                result_text = message.result or result_text
                         if lost.is_set():
                             break  # skip the flush: the doc belongs to the new owner
                         if spaces:
@@ -415,8 +427,24 @@ async def run(session_id: str) -> None:
         # (a turn interrupted between publish and release, hook side effects).
         if spaces:
             published = await _publish_spaces(config, spaces, ws)
-        if options.workspace:
-            await store.release_workspace(options.workspace, session_id)
+        # Label the session for the dashboard: a haiku call writes the title
+        # (once) and refreshes the summary each run. Never fatal — a session
+        # must release whether or not it got described.
+        if run_prompts or result_text:
+            label: dict[str, str | None] = {}
+            try:
+                label = await asyncio.to_thread(titles.describe, options, run_prompts, result_text)
+            except Exception:
+                label = {"title": titles.fallback_title(run_prompts), "summary": None}
+            fields = {
+                key: value
+                for key, value in label.items()
+                if value and not (key == "title" and session.get("title"))
+            }
+            if fields:
+                await store.update_session(session_id, **fields)
+        if options.team:
+            await store.release_team(options.team, session_id)
         await writer.append("lifecycle", {"event": "released", "stop_reason": stop_reason})
         await store.release_session(
             session_id,

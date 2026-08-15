@@ -45,7 +45,7 @@ async def _populated_store() -> FakeStore:
     await store.create_agent(
         "reviewer",
         {
-            "options": {"model": "claude-haiku-4-5", "workspace": "shared"},
+            "options": {"model": "claude-haiku-4-5", "team": "shared"},
             "description": "nightly review persona",
             "created_by": "alice",
         },
@@ -71,8 +71,8 @@ async def test_agent_rows_flatten_the_stored_persona():
     agent = tables["agents"][0]
     assert agent["description"] == "nightly review persona"
     assert agent["model"] == "claude-haiku-4-5"
-    assert agent["workspace"] == "shared"
-    assert agent["options"] == {"model": "claude-haiku-4-5", "workspace": "shared"}
+    assert agent["team"] == "shared"
+    assert agent["options"] == {"model": "claude-haiku-4-5", "team": "shared"}
     # the sessions table carries the join key back to the persona a run used
     by_id = {r["session_id"]: r for r in tables["sessions"]}
     assert by_id["sess_b"]["agent"] == "reviewer"
@@ -113,9 +113,9 @@ async def test_timestamps_normalize_to_iso8601():
 
 
 async def test_workspace_column_reads_from_options():
-    assert session_row({"id": "s", "options": {"workspace": "shared"}})["workspace"] == "shared"
-    assert session_row({"id": "s"})["workspace"] is None
-    assert ("workspace", "STRING", "NULLABLE") in SCHEMAS["sessions"]
+    assert session_row({"id": "s", "options": {"team": "shared"}})["team"] == "shared"
+    assert session_row({"id": "s"})["team"] is None
+    assert ("team", "STRING", "NULLABLE") in SCHEMAS["sessions"]
 
 
 async def test_unknown_cost_stays_null_not_zero():
