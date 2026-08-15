@@ -60,10 +60,10 @@ BUILTIN_MCP_SERVERS = ("bigquery",)
 def default_prompt(append: str | None = None) -> dict[str, Any]:
     """The `system_prompt` value that runs the harness's default agent.
 
-    Not the same as leaving `system_prompt` unset — that is *no* system prompt
-    at all. This asks for the harness's own, the one a plain string would
-    replace. With `append`, that prompt keeps its place and the extra
-    instructions are added after it, so a nudge stays a nudge.
+    An unset `system_prompt` already resolves to this (agents.resolve), so
+    naming it explicitly is for the two cases that differ: adding instructions
+    after that prompt instead of replacing it (`append`), and pinning it over a
+    persona a stored layer would otherwise contribute.
     """
     prompt: dict[str, Any] = {"type": "preset", "preset": DEFAULT_PROMPT_PRESET}
     if append:
@@ -109,9 +109,10 @@ def _validate_system_prompt(system_prompt: Any) -> None:
 @dataclass
 class AgentOptions:
     # --- mirrored from claude_agent_sdk; same semantics, run in the sandbox ---
-    # A plain string replaces the system prompt; default_prompt() asks for the
-    # harness's own instead (optionally with instructions appended). Left unset,
-    # a run has no system prompt at all — claude_agent_sdk's default.
+    # A plain string is a persona, replacing the harness's own prompt;
+    # default_prompt() keeps that prompt and optionally appends to it. Left
+    # unset in every layer, a session resolves to default_prompt() — an
+    # explicit "" is what asks for no system prompt at all.
     system_prompt: str | dict[str, Any] | None = None
     model: str | None = None
     tools: list[str] | None = None
