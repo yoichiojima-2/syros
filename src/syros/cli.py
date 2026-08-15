@@ -172,10 +172,14 @@ async def _settings(args) -> None:
         return
     settings = await store.get_settings()
     if not settings:
-        print("no global settings stored (built-in default: model sonnet)")
+        from .options import DEFAULT_MODEL
+
+        print(f"no global settings stored (built-in default: model {DEFAULT_MODEL})")
         return
-    options_from_doc(dict(settings.get("options") or {}))  # validate what we echo
-    print(json.dumps(settings.get("options") or {}, indent=2, default=str))
+    # Echo the parsed form, so a doc the parser would reject can't masquerade
+    # as live configuration.
+    parsed = options_from_doc(dict(settings.get("options") or {}))
+    print(json.dumps(parsed.serialize(), indent=2, default=str))
 
 
 async def _tail(args) -> None:

@@ -29,6 +29,15 @@ CALL_TIMEOUT_SECONDS = 30.0
 # above the 10 MiB write cap in api.py to leave room for base64's ~33% overhead.
 MAX_BODY_BYTES = 16 * 1024 * 1024
 
+
+def _qteam(query: dict[str, list[str]]) -> str | None:
+    return (query.get("team") or [None])[0]
+
+
+def _bteam(body: dict) -> str | None:
+    return str(body["team"]) if body.get("team") else None
+
+
 # The API surface as data: (method, path pattern, handler). None segments are
 # wildcards, captured in order and passed to the handler after (api, body, query).
 ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
@@ -172,13 +181,13 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
     (
         "GET",
         ("api", "skills"),
-        lambda api, body, query: api.skills((query.get("team") or [None])[0]),
+        lambda api, body, query: api.skills(_qteam(query)),
     ),
     ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
     (
         "GET",
         ("api", "skills", None, "files"),
-        lambda api, body, query, name: api.skill_files(name, (query.get("team") or [None])[0]),
+        lambda api, body, query, name: api.skill_files(name, _qteam(query)),
     ),
     # Skill file names may contain "/", so — as with teams — the file
     # rides the query string on GET and the JSON body on POST, never a segment.
@@ -186,7 +195,7 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         "GET",
         ("api", "skills", None, "file"),
         lambda api, body, query, name: api.skill_file(
-            name, (query.get("name") or [""])[0], (query.get("team") or [None])[0]
+            name, (query.get("name") or [""])[0], _qteam(query)
         ),
     ),
     (
@@ -197,22 +206,20 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             str(body.get("name") or ""),
             str(body.get("content") or ""),
             str(body.get("encoding") or "utf-8"),
-            str(body["team"]) if body.get("team") else None,
+            _bteam(body),
         ),
     ),
     (
         "POST",
         ("api", "skills", None, "file", "delete"),
         lambda api, body, query, name: api.delete_skill_file(
-            name, str(body.get("name") or ""), str(body["team"]) if body.get("team") else None
+            name, str(body.get("name") or ""), _bteam(body)
         ),
     ),
     (
         "POST",
         ("api", "skills", None, "delete"),
-        lambda api, body, query, name: api.delete_skill(
-            name, str(body["team"]) if body.get("team") else None
-        ),
+        lambda api, body, query, name: api.delete_skill(name, _bteam(body)),
     ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
     (

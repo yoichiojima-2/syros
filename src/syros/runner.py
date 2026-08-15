@@ -206,6 +206,8 @@ async def run(session_id: str) -> None:
         )
     )
     try:
+        # stop_reason/lifecycle keep the "workspace_busy" name: it is a wire
+        # value the console and stored sessions already know.
         if options.team and not await store.claim_team(options.team, session_id, config.lease_ttl):
             # Another session is live in this team's workspace: fail fast with an error
             # result so the waiting client terminates. The prompt stays queued in
@@ -430,11 +432,17 @@ async def run(session_id: str) -> None:
         # (a turn interrupted between publish and release, hook side effects).
         if spaces:
             published = await _publish_spaces(config, spaces, ws)
+        # Release the team lease before the labelling call below: the label
+        # never touches the workspace, and holding the one contended resource
+        # through an LLM round-trip would block a queued sibling session.
+        # Detach it from the heartbeat first, or the next beat re-claims it.
+        if options.team:
+            leased_team["name"] = None
+            await store.release_team(options.team, session_id)
         # Label the session for the dashboard: a haiku call writes the title
         # (once) and refreshes the summary each run. Never fatal — a session
         # must release whether or not it got described.
         if run_prompts or result_text:
-            label: dict[str, str | None] = {}
             try:
                 label = await asyncio.to_thread(titles.describe, options, run_prompts, result_text)
             except Exception:
@@ -446,8 +454,6 @@ async def run(session_id: str) -> None:
             }
             if fields:
                 await store.update_session(session_id, **fields)
-        if options.team:
-            await store.release_team(options.team, session_id)
         await writer.append("lifecycle", {"event": "released", "stop_reason": stop_reason})
         await store.release_session(
             session_id,

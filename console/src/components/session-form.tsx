@@ -6,18 +6,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  BIGQUERY_SERVER,
-  BIGQUERY_TOOL,
   BigQueryToggle,
+  buildOptionsPayload,
   ChoiceField,
   ConnectorPicker,
   Field,
   MODELS,
-  TOOLS,
+  ToolPicker,
+  useOptionsDraft,
 } from "@/components/option-fields";
 import { useAgents, useArtifactSpaces, useTeams } from "@/lib/hooks";
 import { post } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 /** New-session form: a prompt plus the same run options a deployment carries.
  *  Starting one here is what a client's query() does — the session is ordinary,
@@ -32,16 +31,9 @@ export function SessionForm({
   const teams = useTeams();
   const spaces = useArtifactSpaces();
   const { agents } = useAgents();
+  const draft = useOptionsDraft();
   const [prompt, setPrompt] = useState("");
   const [agent, setAgent] = useState("");
-  const [model, setModel] = useState("");
-  const [team, setTeam] = useState("");
-  const [artifacts, setArtifacts] = useState("");
-  const [tools, setTools] = useState<string[]>([]);
-  const [extraTools, setExtraTools] = useState("");
-  const [connectors, setConnectors] = useState<string[]>([]);
-  const [bigquery, setBigquery] = useState(false);
-  const [budget, setBudget] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -50,30 +42,11 @@ export function SessionForm({
     if (busy || !prompt.trim()) return;
     setBusy(true);
     setError("");
-    // Only send what was filled in: an empty string is "unset", not "".
-    const options: Record<string, unknown> = {};
-    if (model.trim()) options.model = model.trim();
-    if (team.trim()) options.team = team.trim();
-    if (artifacts.trim()) options.artifacts = artifacts.trim();
-    const allowed = [
-      ...tools,
-      ...extraTools
-        .split(",")
-        .map((tool) => tool.trim())
-        .filter((tool) => tool && !tools.includes(tool)),
-    ];
-    if (bigquery) {
-      options.mcp_servers = { bq: BIGQUERY_SERVER };
-      if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
-    }
-    if (allowed.length) options.allowed_tools = allowed;
-    if (connectors.length) options.connectors = connectors;
-    if (budget.trim()) options.max_budget_usd = Number(budget);
     try {
       const { session_id } = await post<{ session_id: string }>("/api/sessions", {
         prompt: prompt.trim(),
         agent: agent.trim() || null,
-        options,
+        options: buildOptionsPayload(draft),
       });
       onCreated(session_id);
     } catch (err) {
@@ -121,16 +94,16 @@ export function SessionForm({
             </Field>
             <Field label="Model">
               <ChoiceField
-                value={model}
-                onChange={setModel}
+                value={draft.model}
+                onChange={draft.setModel}
                 choices={MODELS}
                 noneLabel="default"
               />
             </Field>
             <Field label="Team">
               <ChoiceField
-                value={team}
-                onChange={setTeam}
+                value={draft.team}
+                onChange={draft.setTeam}
                 choices={(teams ?? []).map((t) => t.name)}
                 noneLabel="none"
                 customLabel="new team…"
@@ -138,8 +111,8 @@ export function SessionForm({
             </Field>
             <Field label="Artifact space">
               <ChoiceField
-                value={artifacts}
-                onChange={setArtifacts}
+                value={draft.artifacts}
+                onChange={draft.setArtifacts}
                 choices={(spaces ?? []).map((s) => s.name)}
                 noneLabel="none"
                 customLabel="new space…"
@@ -147,8 +120,8 @@ export function SessionForm({
             </Field>
             <Field label="Budget (USD)">
               <Input
-                value={budget}
-                onChange={(e) => setBudget(e.target.value)}
+                value={draft.budget}
+                onChange={(e) => draft.setBudget(e.target.value)}
                 inputMode="decimal"
                 placeholder="none"
                 className="font-mono"
@@ -156,41 +129,13 @@ export function SessionForm({
             </Field>
           </div>
           <Field label="Allowed tools" hint="click to toggle">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {TOOLS.map((tool) => {
-                const on = tools.includes(tool);
-                return (
-                  <button
-                    key={tool}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() =>
-                      setTools(on ? tools.filter((t) => t !== tool) : [...tools, tool])
-                    }
-                    className={cn(
-                      "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
-                      on
-                        ? "border-transparent bg-primary-soft text-foreground"
-                        : "border-border text-muted-foreground hover:bg-secondary",
-                    )}
-                  >
-                    {tool}
-                  </button>
-                );
-              })}
-              <Input
-                value={extraTools}
-                onChange={(e) => setExtraTools(e.target.value)}
-                placeholder="more, comma separated"
-                className="h-7 w-52 font-mono text-[11px]"
-              />
-            </div>
+            <ToolPicker draft={draft} />
           </Field>
           <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
-            <ConnectorPicker value={connectors} onChange={setConnectors} />
+            <ConnectorPicker value={draft.connectors} onChange={draft.setConnectors} />
           </Field>
           <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
-            <BigQueryToggle on={bigquery} onChange={setBigquery} />
+            <BigQueryToggle on={draft.bigquery} onChange={draft.setBigquery} />
           </Field>
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <div className="flex items-center gap-2">

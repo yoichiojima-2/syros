@@ -30,10 +30,9 @@ from .fakes import FakeStore, append_message
 class FakeObjects:
     """Implements syros.console.objects.ObjectStoreProtocol over a name->bytes dict."""
 
-    def __init__(self, workspaces=None, spaces=None, skills=None, team_skills=None):
-        self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
-        # teams share the workspaces/ GCS prefix — same dict, new name
-        self.teams = self.workspaces
+    def __init__(self, teams=None, spaces=None, skills=None, team_skills=None):
+        # teams' shared directories live under the workspaces/ GCS prefix
+        self.teams: dict[str, dict[str, bytes]] = teams or {}
         self.team_skills: dict[str, dict[str, dict[str, bytes]]] = team_skills or {}
         self.spaces: dict[str, dict[str, bytes]] = spaces or {}
         self.skills: dict[str, dict[str, bytes]] = skills or {}
@@ -50,10 +49,10 @@ class FakeObjects:
         }
 
     async def workspace_stats(self):
-        return {name: self._stats(files) for name, files in self.workspaces.items()}
+        return {name: self._stats(files) for name, files in self.teams.items()}
 
     async def workspace_files(self, name):
-        files = self.workspaces.get(name, {})
+        files = self.teams.get(name, {})
         return [
             {"name": n, "size": len(b), "updated": None, "tags": self.tags.get(("ws", name, n), [])}
             for n, b in files.items()
@@ -70,7 +69,7 @@ class FakeObjects:
         import mimetypes
 
         self._check(name, file)
-        files = self.workspaces.get(name, {})
+        files = self.teams.get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         if len(files[file]) > 100:
@@ -79,11 +78,11 @@ class FakeObjects:
 
     async def write_workspace_file(self, name, file, data):
         self._check(name, file)
-        self.workspaces.setdefault(name, {})[file] = data
+        self.teams.setdefault(name, {})[file] = data
 
     async def delete_workspace_file(self, name, file):
         self._check(name, file)
-        files = self.workspaces.get(name, {})
+        files = self.teams.get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         del files[file]
@@ -110,17 +109,17 @@ class FakeObjects:
     async def rename_workspace_file(self, name, src, dst):
         self._check(name, src)
         validate_file("workspace file", dst)
-        self._rename("ws", self.workspaces.get(name, {}), name, src, dst)
+        self._rename("ws", self.teams.get(name, {}), name, src, dst)
 
     async def set_workspace_tags(self, name, file, tags):
         self._check(name, file)
-        if file not in self.workspaces.get(name, {}):
+        if file not in self.teams.get(name, {}):
             raise FileNotFoundError(file)
         self.tags[("ws", name, file)] = tags
 
     async def delete_workspace_prefix(self, name, subpath, max_files):
         workspace_prefix(name)
-        return self._delete_prefix(self.workspaces.get(name, {}), "ws", name, subpath, max_files)
+        return self._delete_prefix(self.teams.get(name, {}), "ws", name, subpath, max_files)
 
     async def space_stats(self):
         return {name: self._stats(files) for name, files in self.spaces.items()}
@@ -601,12 +600,12 @@ async def test_delete_many_rejects_oversized_batch():
 # --- workspaces ---
 
 
-async def test_workspaces_merges_gcs_leases_and_sessions():
+async def test_teams_merges_gcs_leases_and_sessions():
     store = FakeStore()
     await store.create_session("sess_1", {"team": "team"})
     await store.claim_team("team", "sess_1", ttl_seconds=60)
     await store.claim_team("stale", "sess_2", ttl_seconds=-1)  # expired lease
-    objects = FakeObjects(workspaces={"team": {"a.md": b"aa"}, "orphan": {"b.md": b"b"}})
+    objects = FakeObjects(teams={"team": {"a.md": b"aa"}, "orphan": {"b.md": b"b"}})
 
     result = await api(store, objects=objects).teams()
 
@@ -623,9 +622,9 @@ async def test_workspaces_merges_gcs_leases_and_sessions():
     assert rows["orphan"]["sessions"] == []
 
 
-async def test_workspace_files_and_unknown():
+async def test_team_files_and_unknown():
     store = FakeStore()
-    objects = FakeObjects(workspaces={"team": {"b.md": b"bb", "a.md": b"a"}})
+    objects = FakeObjects(teams={"team": {"b.md": b"bb", "a.md": b"a"}})
     console = api(store, objects=objects)
 
     result = await console.team_files("team")
@@ -639,10 +638,10 @@ async def test_workspace_files_and_unknown():
     assert (await console.team_files("empty"))["files"] == []
 
 
-async def test_workspace_file_read_write_delete():
+async def test_team_file_read_write_delete():
     import mimetypes
 
-    objects = FakeObjects(workspaces={"team": {"notes.md": b"hello"}})
+    objects = FakeObjects(teams={"team": {"notes.md": b"hello"}})
     console = api(FakeStore(), objects=objects)
 
     data, content_type = await console.team_file("team", "notes.md")
@@ -666,9 +665,9 @@ async def test_workspace_file_read_write_delete():
         await console.team_file("team", "gone.md")
 
 
-async def test_workspace_writes_blocked_while_leased():
+async def test_team_writes_blocked_while_leased():
     store = FakeStore()
-    objects = FakeObjects(workspaces={"team": {"notes.md": b"hello"}})
+    objects = FakeObjects(teams={"team": {"notes.md": b"hello"}})
     console = api(store, objects=objects)
     await store.claim_team("team", "sess_1", ttl_seconds=60)
 
@@ -685,7 +684,7 @@ async def test_workspace_writes_blocked_while_leased():
     assert objects.teams["team"]["notes.md"] == b"edited"
 
 
-async def test_workspace_write_encodings_and_limits(monkeypatch):
+async def test_team_write_encodings_and_limits(monkeypatch):
     objects = FakeObjects()
     console = api(FakeStore(), objects=objects)
 
@@ -704,8 +703,8 @@ async def test_workspace_write_encodings_and_limits(monkeypatch):
         await console.write_team_file("team", "big.txt", "toolong")
 
 
-async def test_workspace_file_rejects_bad_names():
-    console = api(FakeStore(), objects=FakeObjects(workspaces={"team": {"a.md": b"a"}}))
+async def test_team_file_rejects_bad_names():
+    console = api(FakeStore(), objects=FakeObjects(teams={"team": {"a.md": b"a"}}))
 
     for workspace in ("../etc", "Upper", "a/b", ""):
         with pytest.raises(OptionsError):
@@ -716,9 +715,9 @@ async def test_workspace_file_rejects_bad_names():
             await console.write_team_file("team", file, "x")
 
 
-async def test_workspace_rename():
+async def test_team_file_rename():
     store = FakeStore()
-    objects = FakeObjects(workspaces={"team": {"a.md": b"aa", "b.md": b"bb"}})
+    objects = FakeObjects(teams={"team": {"a.md": b"aa", "b.md": b"bb"}})
     console = api(store, objects=objects)
     objects.tags[("ws", "team", "a.md")] = ["keep-me"]
 
@@ -738,9 +737,9 @@ async def test_workspace_rename():
         await console.rename_team_file("team", "b.md", "c.md")
 
 
-async def test_workspace_tags():
+async def test_team_file_tags():
     store = FakeStore()
-    objects = FakeObjects(workspaces={"team": {"a.md": b"aa"}})
+    objects = FakeObjects(teams={"team": {"a.md": b"aa"}})
     console = api(store, objects=objects)
 
     result = await console.set_team_file_tags("team", "a.md", ["draft", "q3"])
@@ -766,9 +765,9 @@ async def test_workspace_tags():
         await console.set_team_file_tags("team", "a.md", ["x"])
 
 
-async def test_workspace_bulk_delete():
+async def test_team_bulk_delete():
     store = FakeStore()
-    objects = FakeObjects(workspaces={"team": {"a.md": b"a", "b.md": b"b"}})
+    objects = FakeObjects(teams={"team": {"a.md": b"a", "b.md": b"b"}})
     console = api(store, objects=objects)
 
     result = await console.delete_team_files("team", ["a.md", "a.md", "gone.md"])
@@ -787,11 +786,9 @@ async def test_workspace_bulk_delete():
         await console.delete_team_files("team", ["b.md"])
 
 
-async def test_workspace_folder_delete(monkeypatch):
+async def test_team_folder_delete(monkeypatch):
     objects = FakeObjects(
-        workspaces={
-            "team": {"docs/.keep": b"", "docs/a.md": b"a", "docs/sub/b.md": b"b", "c.md": b"c"}
-        }
+        teams={"team": {"docs/.keep": b"", "docs/a.md": b"a", "docs/sub/b.md": b"b", "c.md": b"c"}}
     )
     console = api(FakeStore(), objects=objects)
 
@@ -810,9 +807,9 @@ async def test_workspace_folder_delete(monkeypatch):
         await console.delete_team_folder("team", "big")
 
 
-async def test_create_and_delete_workspace():
+async def test_create_and_delete_team():
     store = FakeStore()
-    objects = FakeObjects(workspaces={"team": {"a.md": b"a"}})
+    objects = FakeObjects(teams={"team": {"a.md": b"a"}})
     console = api(store, objects=objects)
 
     result = await console.create_team({"name": "fresh"})
@@ -1065,12 +1062,12 @@ async def test_http_smoke():
         server.shutdown()
 
 
-async def test_http_artifact_and_workspace_routes():
+async def test_http_artifact_and_team_routes():
     from syros.console.server import create_server
 
     store = FakeStore()
     objects = FakeObjects(
-        workspaces={"team": {"notes.md": b"nn"}},
+        teams={"team": {"notes.md": b"nn"}},
         spaces={"reports": {"sub/r.html": b"<h1>hi</h1>", "big.bin": b"x" * 200}},
         skills={"pdf": {"SKILL.md": b"# pdf"}},
     )

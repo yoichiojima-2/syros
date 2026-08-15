@@ -38,6 +38,10 @@ _SERIALIZED_FIELDS = (
 
 ArtifactMode = Literal["rw", "ro"]
 
+# The built-in floor of the option-resolution chain (agents.resolve): a session
+# never records no model, whatever the stored layers say.
+DEFAULT_MODEL = "sonnet"
+
 # Platform-owned in-process MCP servers, requested by reference because options
 # travel through Firestore. Resolved into live server objects in the sandbox
 # (runner.BUILTIN_SERVERS) — this module must stay importable on a client with

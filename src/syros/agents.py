@@ -23,7 +23,7 @@ from typing import Any
 
 from .errors import SyrosError
 from .names import validate_name
-from .options import _SERIALIZED_FIELDS, AgentOptions, options_from_doc
+from .options import _SERIALIZED_FIELDS, DEFAULT_MODEL, AgentOptions, options_from_doc
 from .store import Store, StoreProtocol
 
 
@@ -164,4 +164,4 @@ async def resolve(store: StoreProtocol, options: AgentOptions) -> AgentOptions:
     settings = await store.get_settings()
     if settings:
         merged = merge(options_from_doc(dict(settings.get("options") or {})), merged)
-    return replace(merged, model=merged.model or "sonnet")
+    return replace(merged, model=merged.model or DEFAULT_MODEL)

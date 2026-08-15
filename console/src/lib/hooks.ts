@@ -51,18 +51,28 @@ export function useOnline(): boolean {
   return online;
 }
 
-// `nonce` is the opt-in refresh handle: bumping it re-runs the effect, so an
-// action can pull fresh data without waiting out the interval.
-function usePolling(poll: () => void, intervalMs: number, nonce = 0) {
+// `deps` re-runs the effect when they change — a refresh nonce to pull fresh
+// data without waiting out the interval, or the name the poll closes over.
+// The poll gets an `alive` check so a response landing after the deps moved on
+// (or the component unmounted) can be dropped instead of applied.
+function usePolling(
+  poll: (alive: () => boolean) => void,
+  intervalMs: number,
+  deps: readonly unknown[] = [],
+) {
   useEffect(() => {
+    let alive = true;
     const tick = () => {
-      if (!document.hidden) poll();
+      if (!document.hidden) poll(() => alive);
     };
     tick();
     const timer = setInterval(tick, intervalMs);
-    return () => clearInterval(timer);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intervalMs, nonce]);
+  }, [intervalMs, ...deps]);
 }
 
 export function useSessions(intervalMs = 4000): SessionSummary[] | null {
@@ -88,7 +98,7 @@ export function useDeployments(intervalMs = 5000): {
         .catch(() => {});
     },
     intervalMs,
-    nonce,
+    [nonce],
   );
   return { deployments, refresh: () => setNonce((n) => n + 1) };
 }
@@ -152,7 +162,7 @@ export function useAgents(intervalMs = 5000): {
         .catch(() => {});
     },
     intervalMs,
-    nonce,
+    [nonce],
   );
   return { agents, refresh: () => setNonce((n) => n + 1) };
 }
@@ -217,27 +227,21 @@ export function useTeamFiles(
   const [nonce, setNonce] = useState(0);
   // reset only when the team changes — a refresh must not flash a skeleton
   useEffect(() => setFiles(null), [name]);
-  useEffect(() => {
-    if (!name) return;
-    let cancelled = false;
-    const poll = () => {
-      if (document.hidden) return;
+  usePolling(
+    (alive) => {
+      if (!name) return;
       api<TeamFilesResponse>(`/api/teams/${encodeURIComponent(name)}/files`)
         .then((data) => {
-          if (!cancelled) setFiles(data.files);
+          if (alive()) setFiles(data.files);
         })
         // an unknown team 404s; keep whatever we already had otherwise
         .catch(() => {
-          if (!cancelled) setFiles((prev) => prev ?? []);
+          if (alive()) setFiles((prev) => prev ?? []);
         });
-    };
-    poll();
-    const timer = setInterval(poll, intervalMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [name, intervalMs, nonce]);
+    },
+    intervalMs,
+    [name, nonce],
+  );
   return { files, refresh: () => setNonce((n) => n + 1) };
 }
 
@@ -257,23 +261,17 @@ export function useConnectors(intervalMs = 15000): ConnectorSummary[] | null {
 export function useSkills(team: string | null = null, intervalMs = 8000): SkillSummary[] | null {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   useEffect(() => setSkills(null), [team]);
-  useEffect(() => {
-    let cancelled = false;
-    const poll = () => {
-      if (document.hidden) return;
+  usePolling(
+    (alive) => {
       api<SkillsResponse>(`/api/skills${team ? `?team=${encodeURIComponent(team)}` : ""}`)
         .then((data) => {
-          if (!cancelled) setSkills(data.skills);
+          if (alive()) setSkills(data.skills);
         })
         .catch(() => {});
-    };
-    poll();
-    const timer = setInterval(poll, intervalMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [team, intervalMs]);
+    },
+    intervalMs,
+    [team],
+  );
   return skills;
 }
 
@@ -288,28 +286,22 @@ export function useSkillFiles(
   const [nonce, setNonce] = useState(0);
   // reset only when the skill changes — a refresh must not flash a skeleton
   useEffect(() => setFiles(null), [name, team]);
-  useEffect(() => {
-    if (!name) return;
-    let cancelled = false;
-    const poll = () => {
-      if (document.hidden) return;
+  usePolling(
+    (alive) => {
+      if (!name) return;
       const query = team ? `?team=${encodeURIComponent(team)}` : "";
       api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files${query}`)
         .then((data) => {
-          if (!cancelled) setFiles(data.files);
+          if (alive()) setFiles(data.files);
         })
         // an unknown skill 404s; keep whatever we already had otherwise
         .catch(() => {
-          if (!cancelled) setFiles((prev) => prev ?? []);
+          if (alive()) setFiles((prev) => prev ?? []);
         });
-    };
-    poll();
-    const timer = setInterval(poll, intervalMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [name, team, intervalMs, nonce]);
+    },
+    intervalMs,
+    [name, team, nonce],
+  );
   return { files, refresh: () => setNonce((n) => n + 1) };
 }
 

@@ -79,12 +79,12 @@ def test_machine_local_options_are_type_errors():
         AgentOptions(hooks={})
 
 
-def test_workspace_valid_names():
+def test_team_valid_names():
     for name in ("data-pipeline", "a", "a" * 64, "snake_case-1"):
         AgentOptions(project="p", team=name).validate()
 
 
-def test_workspace_path_like_is_rejected():
+def test_team_path_like_is_rejected():
     # Path-shaped values stay eager errors, before any GCP call — the spirit
     # of the old TypeError on workspace, now with a helpful message.
     for name in ("/tmp", "a/b", "../x", "", "Upper", ".", "a" * 65):
