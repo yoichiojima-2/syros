@@ -116,3 +116,71 @@ async def test_skills_push_walks_every_directory_given(monkeypatch, capsys):
     )
     assert pushed == ["one", "two"]
     assert capsys.readouterr().out.count("pushed 1 file(s)") == 2
+
+
+async def test_skills_push_reports_a_bucket_error_without_a_traceback(monkeypatch):
+    """A GCS refusal mid-upload used to escape the (OSError, ValueError) catch."""
+    from google.api_core.exceptions import GoogleAPIError
+
+    from syros import cli
+
+    monkeypatch.setattr(
+        cli.env, "default_bucket", lambda bucket, project: bucket or f"{project}-syros"
+    )
+
+    def boom(*a, **kw):
+        raise GoogleAPIError("bucket said no")
+
+    monkeypatch.setattr("syros.skills.push", boom)
+    with pytest.raises(SystemExit, match="bucket said no"):
+        await cli._skills(
+            SimpleNamespace(
+                action="push",
+                args=["one"],
+                bucket="b",
+                project="p",
+                workspace=None,
+                name=None,
+                replace=False,
+            )
+        )
+
+
+async def test_skills_list_scopes_to_the_workspace(monkeypatch):
+    """--workspace was declared and threaded everywhere except the listing, so
+    `syros skills --workspace X` silently printed the global skills."""
+    from syros import cli
+
+    seen: list[str | None] = []
+
+    class FakeObjects:
+        def __init__(self, project, bucket): ...
+
+        async def skill_stats(self, workspace=None):
+            seen.append(workspace)
+            return {}
+
+    monkeypatch.setattr(
+        cli.env, "default_bucket", lambda bucket, project: bucket or f"{project}-syros"
+    )
+    monkeypatch.setattr("syros.console.objects.GcsObjects", FakeObjects)
+    await cli._skills(
+        SimpleNamespace(action="list", args=[], bucket="b", project="p", workspace="growth")
+    )
+    assert seen == ["growth"]
+
+
+async def test_skills_sync_rejects_a_workspace(monkeypatch):
+    """sync seeds the global prefix; the flag used to be accepted and ignored."""
+    from syros import cli
+
+    called = []
+    monkeypatch.setattr(
+        cli.env, "default_bucket", lambda bucket, project: bucket or f"{project}-syros"
+    )
+    monkeypatch.setattr("syros.skills.sync_official", lambda *a, **kw: called.append(1))
+    with pytest.raises(SystemExit, match="not supported"):
+        await cli._skills(
+            SimpleNamespace(action="sync", args=[], bucket="b", project="p", workspace="growth")
+        )
+    assert called == []

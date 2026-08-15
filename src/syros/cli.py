@@ -511,12 +511,20 @@ async def _artifacts(args) -> None:
 
 
 async def _skills(args) -> None:
+    from google.api_core.exceptions import GoogleAPIError
+
     from . import skills
     from .console.objects import MAX_PREVIEW_BYTES, GcsObjects
 
     project = _project(args)
     bucket = env.default_bucket(args.bucket, project)
     if args.action == "sync":
+        if args.workspace:
+            # official skills are global by design, and a global skill already
+            # mounts into every session — a per-workspace copy would be dead weight
+            raise SystemExit(
+                "skills sync seeds the global skills/ prefix; --workspace is not supported"
+            )
         summary = await asyncio.to_thread(
             skills.sync_official, project, bucket, max_bytes=MAX_PREVIEW_BYTES
         )
@@ -543,6 +551,10 @@ async def _skills(args) -> None:
                 )
             except (OSError, ValueError) as exc:
                 raise SystemExit(str(exc)) from exc
+            except GoogleAPIError as exc:
+                # the bucket refused a write partway through: no prune has run,
+                # so the skill is merge-shaped (some files new, none removed)
+                raise SystemExit(f"upload failed: {exc}") from exc
             pruned = f", pruned {summary['deleted']}" if summary["deleted"] else ""
             print(f"pushed {summary['files']} file(s) to skill {summary['skill']}{scope}{pruned}")
             for skipped in summary["skipped"]:
@@ -581,7 +593,9 @@ async def _skills(args) -> None:
             raise SystemExit(str(exc)) from exc
         sys.stdout.buffer.write(data)
         return
-    stats = await GcsObjects(project, bucket).skill_stats()
+    stats = await GcsObjects(project, bucket).skill_stats(workspace=args.workspace)
+    if args.workspace and not stats:
+        print(f"no skills in workspace {args.workspace}")
     for name in sorted(stats):
         stat = stats[name]
         print(f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']} bytes")
@@ -953,7 +967,8 @@ def main() -> None:
     skills.add_argument(
         "--replace",
         action="store_true",
-        help="push: clear the skill first, so files deleted locally are dropped",
+        help="push: after uploading, delete bucket files the directory no longer "
+        "carries (files skipped for size are kept)",
     )
     skills.set_defaults(func=_skills)
 

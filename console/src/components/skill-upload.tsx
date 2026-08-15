@@ -11,6 +11,7 @@ import {
   ignored,
   MAX_UPLOAD_BYTES,
   readAsBase64,
+  uploadable,
   type PickedFile,
 } from "@/lib/upload";
 import { bytes } from "@/lib/format";
@@ -34,39 +35,67 @@ export async function uploadSkillFolders(
   picked: PickedFile[],
   workspace: string | null,
 ): Promise<string> {
+  // Group first, filter second. Filtering before grouping loses the evidence:
+  // an oversized SKILL.md would drop out and the group would be reported as
+  // having none, and a folder whose files are all filtered would never form a
+  // group at all — validated against nothing, and silently missing from the
+  // result while its siblings uploaded.
   const groups = new Map<string, PickedFile[]>();
-  const skipped: string[] = [];
   for (const item of picked) {
-    if (ignored(item.path)) continue;
     const slash = item.path.indexOf("/");
     if (slash < 0) continue; // a loose file carries no skill name
-    if (item.file.size > MAX_UPLOAD_BYTES) {
-      skipped.push(item.path);
-      continue;
-    }
     const name = item.path.slice(0, slash);
+    const rest = item.path.slice(slash + 1);
     const group = groups.get(name) ?? [];
-    group.push({ path: item.path.slice(slash + 1), file: item.file });
     groups.set(name, group);
+    if (ignored(rest)) continue; // interior tooling state, not the folder's own name
+    group.push({ path: rest, file: item.file });
   }
   if (!groups.size) throw new Error("drop a skill directory — a folder with a SKILL.md in it");
+
   for (const [name, files] of groups) {
     if (!SKILL_NAME.test(name))
       throw new Error(`${name} is not a valid skill name ([a-z0-9][a-z0-9_-]*, max 64 chars)`);
-    if (!files.some((f) => f.path === "SKILL.md"))
-      throw new Error(`${name}/ has no SKILL.md — a skill directory must carry one`);
-  }
-  let count = 0;
-  for (const [name, files] of groups) {
-    for (const { path, file } of files) {
-      await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
-        name: path,
-        content: await readAsBase64(file),
-        encoding: "base64",
-        ...(workspace ? { workspace } : {}),
-      });
-      count += 1;
+    const skillMd = files.find((f) => f.path === "SKILL.md");
+    if (!skillMd) {
+      const variant = files.find((f) => f.path.toLowerCase() === "skill.md");
+      throw new Error(
+        variant
+          ? `${name}/${variant.path} must be named SKILL.md exactly — the bucket is case-sensitive`
+          : `${name}/ has no SKILL.md — a skill directory must carry one`,
+      );
     }
+    if (skillMd.file.size > MAX_UPLOAD_BYTES)
+      throw new Error(
+        `${name}/SKILL.md is ${bytes(skillMd.file.size)}, over the ${bytes(MAX_UPLOAD_BYTES)} ` +
+          `limit — a skill's SKILL.md cannot be skipped`,
+      );
+  }
+
+  const skipped: string[] = [];
+  for (const [name, files] of groups) {
+    const { keep, dropped } = uploadable(files, () => false); // ignores already applied
+    groups.set(name, keep);
+    skipped.push(...dropped.map((f) => `${name}/${f.path}`));
+  }
+
+  let count = 0;
+  const total = [...groups.values()].reduce((sum, files) => sum + files.length, 0);
+  try {
+    for (const [name, files] of groups) {
+      for (const { path, file } of files) {
+        await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
+          name: path,
+          content: await readAsBase64(file),
+          encoding: "base64",
+          ...(workspace ? { workspace } : {}),
+        });
+        count += 1;
+      }
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`${reason} — ${count} of ${total} file(s) uploaded`);
   }
   const names = [...groups.keys()];
   const files = `${count} file${count === 1 ? "" : "s"}`;

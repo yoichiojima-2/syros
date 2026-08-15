@@ -222,6 +222,79 @@ def test_push_replace_on_a_skill_that_does_not_exist_yet(tmp_path, bucket):
     assert sorted(bucket.objects) == ["skills/pdf/SKILL.md"]
 
 
+def test_push_replace_does_not_wipe_a_skill_whose_skill_md_the_walk_drops(tmp_path, bucket):
+    """The wipe: a local SKILL.md the walk refuses is absent from `keep`, so the
+    prune deletes the bucket's copy — and when it is the only entry, `keep` is
+    empty and the prune takes the entire skill. push must refuse instead."""
+    path = make_skill_dir(tmp_path, files={"scripts/fill.py": b"print()"})
+    skills.push("p", "b", path, max_bytes=1024)
+    before = dict(bucket.objects)
+    assert sorted(before) == ["skills/pdf/SKILL.md", "skills/pdf/scripts/fill.py"]
+
+    target = tmp_path / "elsewhere.md"
+    target.write_bytes(b"# pdf")
+    (path / "SKILL.md").unlink()
+    (path / "SKILL.md").symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        skills.push("p", "b", path, max_bytes=1024, replace=True)
+    assert bucket.objects == before  # nothing written, nothing pruned
+
+
+def test_push_rejects_a_symlinked_skill_md(tmp_path, capture_writes):
+    """is_file() follows symlinks, so the pre-flight passes and the walk then
+    drops it — the skill would upload with no manifest and never fire."""
+    path = tmp_path / "pdf"
+    path.mkdir()
+    target = tmp_path / "real.md"
+    target.write_bytes(b"# pdf")
+    (path / "SKILL.md").symlink_to(target)
+    (path / "notes.md").write_bytes(b"hi")
+
+    with pytest.raises(ValueError, match="symlink"):
+        skills.push("p", "b", path, max_bytes=1024)
+    assert capture_writes == []
+
+
+def test_push_rejects_an_oversized_skill_md(tmp_path, capture_writes):
+    path = make_skill_dir(tmp_path)
+    (path / "SKILL.md").write_bytes(b"x" * 2000)
+    with pytest.raises(ValueError, match="cannot be skipped for size"):
+        skills.push("p", "b", path, max_bytes=1024)
+    assert capture_writes == []
+
+
+def test_push_rejects_a_case_variant_skill_md(tmp_path, capture_writes):
+    """A case-insensitive filesystem satisfies the pre-flight with skill.md, but
+    the bucket is case-sensitive and discovery would never find it."""
+    path = tmp_path / "pdf"
+    path.mkdir()
+    (path / "skill.md").write_bytes(b"# pdf")
+    # the message differs by filesystem — the pre-flight catches it where the
+    # FS is case-sensitive, the post-walk check where it is not
+    with pytest.raises(ValueError, match="SKILL.md"):
+        skills.push("p", "b", path, max_bytes=1024)
+    assert capture_writes == []
+
+
+def test_push_rejects_names_the_bucket_would_refuse(tmp_path, capture_writes):
+    """validate_file allows what GCS does not, and the upload loop has already
+    written earlier files by the time the API rejects one."""
+    path = make_skill_dir(tmp_path, files={"ok.md": b"hi"})
+    (path / "bad\nname.md").write_bytes(b"nope")
+    with pytest.raises(ValueError, match="newline"):
+        skills.push("p", "b", path, max_bytes=1024)
+    assert capture_writes == []
+
+    (path / "bad\nname.md").unlink()
+    deep = path.joinpath(*[chr(ord("d") + n) * 200 for n in range(6)])
+    deep.mkdir(parents=True)
+    (deep / "over.md").write_bytes(b"nope")
+    with pytest.raises(ValueError, match="object name exceeds"):
+        skills.push("p", "b", path, max_bytes=1024)
+    assert capture_writes == []
+
+
 def test_sync_official_detects_skills(capture_writes):
     tarball = make_tarball(
         {
@@ -297,6 +370,36 @@ def test_parse_description_survives_a_truncated_read():
     """The console reads only the head of SKILL.md, so the closing --- may be gone."""
     head = b"---\nname: canvas-design\ndescription: Create beautiful visual art\nlicense: on"
     assert skills.parse_description(head) == "Create beautiful visual art"
+
+
+def test_parse_description_skips_a_byte_order_mark():
+    """An editor-written SKILL.md carries a BOM, and \\ufeff is not whitespace —
+    the frontmatter test used to fail and blank a perfectly good description."""
+    body = "﻿---\ndescription: Merge PDFs\n---\n".encode()
+    assert skills.parse_description(body) == "Merge PDFs"
+
+
+def test_parse_description_drops_yaml_trailing_comments():
+    assert skills.parse_description(b"---\ndescription: Merge PDFs # TODO tighten\n---\n") == (
+        "Merge PDFs"
+    )
+    # a hash that does not open a comment stays: no whitespace before it
+    assert skills.parse_description(b"---\ndescription: Write C# and F# code\n---\n") == (
+        "Write C# and F# code"
+    )
+    # quoted scalars end at the quote, so the comment never was part of them
+    assert skills.parse_description(b'---\ndescription: "Merge # split" # note\n---\n') == (
+        "Merge # split"
+    )
+
+
+def test_parse_description_reads_past_a_long_frontmatter_preamble():
+    """allowed-tools/license blocks can push description past 4 KiB, which used
+    to truncate the read before it and show no description at all."""
+    preamble = "".join(f"  - tool-{i}\n" for i in range(600))
+    body = f"---\nname: pdf\nallowed-tools:\n{preamble}description: Merge PDFs\n---\n".encode()
+    assert len(body) > 4096
+    assert skills.parse_description(body[: skills.FRONTMATTER_BYTES]) == "Merge PDFs"
 
 
 def test_parse_description_absent_or_nested():

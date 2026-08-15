@@ -26,6 +26,9 @@ OFFICIAL_SKILLS_TARBALL = "https://github.com/anthropics/skills/archive/refs/hea
 
 SKILL_MD = "SKILL.md"
 
+# GCS caps an object name at 1024 bytes; a POSIX path can be longer.
+MAX_OBJECT_NAME_BYTES = 1024
+
 # Directory names a push never uploads. A skill directory usually sits inside a
 # checkout, so a plain recursive walk would sweep up tooling state that is not
 # part of the skill. Anything dot-prefixed goes too (.git, .venv, .DS_Store).
@@ -33,9 +36,21 @@ IGNORED = ("__pycache__", "node_modules")
 
 # Frontmatter sits at the top of SKILL.md, so the console reads a prefix rather
 # than the whole file — canvas-design's is 5 MB and the description is line 3.
-FRONTMATTER_BYTES = 4096
+# Sized to clear a frontmatter block that lists allowed-tools or a license text
+# ahead of description: 4 KiB used to truncate mid-key and blank the description.
+FRONTMATTER_BYTES = 16384
 
 _BLOCK_SCALARS = frozenset(("", ">", "|", ">-", "|-", ">+", "|+"))
+
+
+def _strip_comment(value: str) -> str:
+    """Drop a YAML trailing comment from a plain scalar. A `#` opens a comment
+    only at the start or after whitespace, so `C#` and `issue#42` keep their
+    hash while `fix #42` loses the tail — the same cut a real parser makes."""
+    for index, char in enumerate(value):
+        if char == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index]
+    return value
 
 
 def parse_description(data: bytes) -> str | None:
@@ -46,7 +61,10 @@ def parse_description(data: bytes) -> str | None:
     small hand parser and not a YAML dependency: `data` may be a truncated
     prefix of the file, which a real parser would reject outright.
     """
-    lines = data.decode("utf-8", "replace").splitlines()
+    # utf-8-sig: an editor-written SKILL.md may carry a BOM, and a leading
+    # ﻿ is not whitespace to strip() — it would fail the `---` test below
+    # and blank the description of a perfectly good skill.
+    lines = data.decode("utf-8-sig", "replace").splitlines()
     if not lines or lines[0].strip() != "---":
         return None
 
@@ -68,8 +86,13 @@ def parse_description(data: bytes) -> str | None:
                     break
                 continuation.append(follower.strip())
             value = " ".join(part for part in continuation if part)
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+        elif value[:1] in ("'", '"'):
+            # quoted scalar: it ends at the matching quote, so anything past
+            # that is a trailing comment rather than part of the description
+            end = value.find(value[0], 1)
+            value = value[1:end] if end > 0 else value[1:]
+        else:
+            value = _strip_comment(value)
         return " ".join(value.split()) or None
     return None
 
@@ -140,6 +163,37 @@ def delete_skill(project: str, bucket_name: str, name: str, workspace: str | Non
     return len(blobs)
 
 
+def _require_skill_md(
+    path: Path, uploads: list[tuple[str, Path]], skipped: list[dict[str, Any]], max_bytes: int
+) -> None:
+    """Raise unless the walk actually picked SKILL.md up.
+
+    `push` promises a pushed skill is a mountable skill, and only an *uploaded*
+    SKILL.md delivers that — a local one the walk then drops (symlink, oversize,
+    wrong case) would leave a skill that lists fine and never fires. Worse, under
+    --replace it is absent from `keep`, so the prune deletes the bucket's copy;
+    when it is the only entry `keep` is empty and the prune takes the whole
+    skill. Raising here, before the first write and the prune, makes every one of
+    those paths a no-op. The message names the reason the walk saw.
+    """
+    if SKILL_MD in {file_name for file_name, _ in uploads}:
+        return
+    oversized = next((s for s in skipped if s["file"] == SKILL_MD), None)
+    if oversized is not None:
+        raise ValueError(
+            f"{path}: {SKILL_MD} is {oversized['size']} bytes (limit {max_bytes}) — "
+            f"a skill's {SKILL_MD} cannot be skipped for size"
+        )
+    if (path / SKILL_MD).is_symlink():
+        raise ValueError(f"{path}: {SKILL_MD} is a symlink — a skill upload does not follow them")
+    variant = next(
+        (name for name, _ in uploads if name.lower() == SKILL_MD.lower() and name != SKILL_MD), None
+    )
+    if variant is not None:
+        raise ValueError(f"{path}: has {variant}, not {SKILL_MD} — the bucket is case-sensitive")
+    raise ValueError(f"{path} has no {SKILL_MD} — a skill directory must carry one")
+
+
 def push(
     project: str,
     bucket_name: str,
@@ -166,6 +220,11 @@ def push(
     if not path.is_dir():
         raise NotADirectoryError(f"{path} is not a directory — a skill is a directory")
     skill = validate_name("skill", name if name is not None else path.name)
+    prefix = skill_prefix(skill, workspace)
+    # Cheap pre-flight for the common mistake of pointing push at the wrong
+    # directory, so we don't rglob a whole checkout to say so. It is not the
+    # guarantee: is_file() follows symlinks and says nothing about size, so the
+    # real check is _require_skill_md() below, after the walk. Keep both.
     if not (path / SKILL_MD).is_file():
         raise ValueError(f"{path} has no {SKILL_MD} — a skill directory must carry one")
     uploads: list[tuple[str, Path]] = []
@@ -176,11 +235,19 @@ def push(
         relative = file.relative_to(path)
         if any(part.startswith(".") or part in IGNORED for part in relative.parts):
             continue
+        file_name = relative.as_posix()
+        # GCS rejects these outright, and validate_file does not: without the
+        # check the upload loop below dies partway, leaving a half-written skill.
+        if "\r" in file_name or "\n" in file_name:
+            raise ValueError(f"{file_name}: a skill file name cannot contain a newline")
+        if len((prefix + file_name).encode()) > MAX_OBJECT_NAME_BYTES:
+            raise ValueError(f"{file_name}: object name exceeds {MAX_OBJECT_NAME_BYTES} bytes")
         size = file.stat().st_size
         if size > max_bytes:
-            skipped.append({"file": relative.as_posix(), "size": size})
+            skipped.append({"file": file_name, "size": size})
             continue
-        uploads.append((relative.as_posix(), file))
+        uploads.append((file_name, file))
+    _require_skill_md(path, uploads, skipped, max_bytes)
     for file_name, file in uploads:
         write_file(project, bucket_name, skill, file_name, file.read_bytes(), workspace)
     deleted = 0
@@ -190,7 +257,6 @@ def push(
         # bucket's copy of a file this walk skipped for being oversized. Keep
         # everything the directory still carries, skipped files included.
         keep = {file_name for file_name, _ in uploads} | {s["file"] for s in skipped}
-        prefix = skill_prefix(skill, workspace)
         for blob in _bucket(project, bucket_name).list_blobs(prefix=prefix):
             if blob.name[len(prefix) :] not in keep:
                 blob.delete()

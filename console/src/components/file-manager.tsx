@@ -16,7 +16,15 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { bytes, relTime } from "@/lib/format";
 import type { BulkFilesResponse, StoredFile } from "@/lib/types";
-import { entriesFromDrop, filesFromInput, readAsBase64, type PickedFile } from "@/lib/upload";
+import {
+  entriesFromDrop,
+  filesFromInput,
+  ignoredInTree,
+  MAX_UPLOAD_BYTES,
+  readAsBase64,
+  uploadable,
+  type PickedFile,
+} from "@/lib/upload";
 import { cn } from "@/lib/utils";
 
 // Shared file management for the workspace editor and the artifacts page: a
@@ -99,16 +107,39 @@ export function FileManager({
   const dragDepth = useRef(0);
   const tree = useMemo(() => buildTree(files), [files]);
 
+  // Dropping a folder from a checkout would otherwise upload .git/ and
+  // node_modules/, and one oversized file would 413 partway through the loop —
+  // leaving files written but the pane never refreshed. Skip and report both,
+  // and refresh in a finally so a partial upload is still visible.
+  const doUpload = async (picked: PickedFile[]): Promise<string | void> => {
+    const { keep, dropped } = uploadable(picked, ignoredInTree);
+    if (!keep.length)
+      throw new Error(
+        `nothing to upload — ${dropped.length} file(s) skipped ` +
+          `(tooling state or over ${bytes(MAX_UPLOAD_BYTES)})`,
+      );
+    let count = 0;
+    try {
+      for (const { path, file } of keep) {
+        await ops.write(path, await readAsBase64(file), "base64");
+        count += 1;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`${reason} — ${count} of ${keep.length} file(s) uploaded`);
+    } finally {
+      onMutated();
+    }
+    if (keep.length === 1) onSelect(keep[0].path);
+    const tail = dropped.length ? `, ${dropped.length} skipped` : "";
+    return keep.length === 1
+      ? `uploaded ${keep[0].path}${tail}`
+      : `uploaded ${keep.length} files${tail}`;
+  };
+
   const upload = (picked: PickedFile[]) => {
     if (!picked.length) return;
-    run(async () => {
-      for (const { path, file } of picked) {
-        await ops.write(path, await readAsBase64(file), "base64");
-      }
-      onMutated();
-      if (picked.length === 1) onSelect(picked[0].path);
-      return picked.length === 1 ? `uploaded ${picked[0].path}` : `uploaded ${picked.length} files`;
-    });
+    run(() => doUpload(picked));
   };
 
   const create = () => {
@@ -208,9 +239,11 @@ export function FileManager({
     dragDepth.current = 0;
     setDragging(false);
     if (disabled) return;
-    entriesFromDrop(e)
-      .then(upload)
-      .catch(() => {});
+    // entriesFromDrop reads dataTransfer synchronously, so it must be called
+    // here rather than inside run — but await it there, so a failed walk
+    // surfaces as a flash instead of vanishing into an empty catch.
+    const picked = entriesFromDrop(e);
+    run(async () => doUpload(await picked));
   };
 
   const renderFolder = (node: TreeFolder, depth: number): React.ReactNode => (
