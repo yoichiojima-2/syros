@@ -393,6 +393,17 @@ def test_parse_description_drops_yaml_trailing_comments():
     )
 
 
+def test_parse_description_keeps_quotes_inside_a_quoted_scalar():
+    """Cutting at the first inner quote would return a fragment of the text."""
+    body = b'---\ndescription: "He said \\"hi\\" today" # note\n---\n'
+    assert skills.parse_description(body) == 'He said "hi" today'
+    assert skills.parse_description(b"---\ndescription: 'Bob''s toolkit'\n---\n") == (
+        "Bob's toolkit"
+    )
+    # truncated mid-scalar: take what is there rather than nothing
+    assert skills.parse_description(b'---\ndescription: "Merge PDFs and') == "Merge PDFs and"
+
+
 def test_parse_description_reads_past_a_long_frontmatter_preamble():
     """allowed-tools/license blocks can push description past 4 KiB, which used
     to truncate the read before it and show no description at all."""

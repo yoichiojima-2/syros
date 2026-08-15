@@ -28,11 +28,27 @@ export function ignored(path: string): boolean {
     .some((part) => part.startsWith(".") || part === "__pycache__" || part === "node_modules");
 }
 
-/** `ignored` for the generic file manager, which is not building a skill: only
- *  tooling state that rode along inside a dropped *directory* is dropped, so
- *  deliberately picking a lone .env or .gitignore into a workspace still works. */
+/** Junk by name, for the generic file manager. Deliberately NOT `ignored`'s
+ *  dot-prefix sweep: a workspace is a working directory, and the runner reads
+ *  its .claude/settings.json as project settings (setting_sources in runner.py),
+ *  so .claude/, .github/ and .gitignore have to survive an upload. Only the
+ *  tooling state nobody means to ship is dropped. */
+const JUNK = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".venv",
+  ".DS_Store",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".next",
+  "__pycache__",
+  "node_modules",
+]);
+
 export function ignoredInTree(path: string): boolean {
-  return path.includes("/") && ignored(path);
+  return path.split("/").some((part) => JUNK.has(part));
 }
 
 /** Split a pick into what to upload and what to drop — tooling state, and files

@@ -43,6 +43,30 @@ FRONTMATTER_BYTES = 16384
 _BLOCK_SCALARS = frozenset(("", ">", "|", ">-", "|-", ">+", "|+"))
 
 
+def _unquote(value: str) -> str:
+    """A quoted YAML scalar's text, stopping at its closing quote so a trailing
+    comment never joins it. Honours both escape forms — a backslash inside
+    double quotes, a doubled quote inside single ones — so a description that
+    quotes something keeps all of it. An unterminated scalar (the console reads
+    a truncated prefix) yields what is there."""
+    quote, index, out = value[0], 1, []
+    while index < len(value):
+        char = value[index]
+        if quote == '"' and char == "\\" and index + 1 < len(value):
+            out.append(value[index + 1])
+            index += 2
+        elif char == quote:
+            if quote == "'" and value[index + 1 : index + 2] == "'":
+                out.append(quote)
+                index += 2
+                continue
+            return "".join(out)
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
 def _strip_comment(value: str) -> str:
     """Drop a YAML trailing comment from a plain scalar. A `#` opens a comment
     only at the start or after whitespace, so `C#` and `issue#42` keep their
@@ -87,10 +111,7 @@ def parse_description(data: bytes) -> str | None:
                 continuation.append(follower.strip())
             value = " ".join(part for part in continuation if part)
         elif value[:1] in ("'", '"'):
-            # quoted scalar: it ends at the matching quote, so anything past
-            # that is a trailing comment rather than part of the description
-            end = value.find(value[0], 1)
-            value = value[1:end] if end > 0 else value[1:]
+            value = _unquote(value)
         else:
             value = _strip_comment(value)
         return " ".join(value.split()) or None

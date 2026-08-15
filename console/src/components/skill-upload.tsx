@@ -45,10 +45,13 @@ export async function uploadSkillFolders(
     const slash = item.path.indexOf("/");
     if (slash < 0) continue; // a loose file carries no skill name
     const name = item.path.slice(0, slash);
+    if (ignored(name)) continue; // a tooling directory alongside the skills is not one
     const rest = item.path.slice(slash + 1);
     const group = groups.get(name) ?? [];
     groups.set(name, group);
-    if (ignored(rest)) continue; // interior tooling state, not the folder's own name
+    // interior tooling state drops out, but the group still forms, so a folder
+    // that is *only* tooling state is reported by name instead of vanishing
+    if (ignored(rest)) continue;
     group.push({ path: rest, file: item.file });
   }
   if (!groups.size) throw new Error("drop a skill directory — a folder with a SKILL.md in it");

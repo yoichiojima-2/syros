@@ -67,7 +67,7 @@ function SkillInner() {
   // tooling state never belongs in a skill, and an oversized file would 413
   // midway through the batch.
   const doUpload = async (all: PickedFile[]): Promise<string | void> => {
-    if (!name) return;
+    if (!name || !all.length) return; // a dragged selection or link carries no files
     const { keep, dropped } = uploadable(all);
     if (!keep.length) throw new Error(`nothing to upload — ${dropped.length} file(s) skipped`);
     let count = 0;

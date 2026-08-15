@@ -112,6 +112,7 @@ export function FileManager({
   // leaving files written but the pane never refreshed. Skip and report both,
   // and refresh in a finally so a partial upload is still visible.
   const doUpload = async (picked: PickedFile[]): Promise<string | void> => {
+    if (!picked.length) return; // a dragged selection or link carries no files
     const { keep, dropped } = uploadable(picked, ignoredInTree);
     if (!keep.length)
       throw new Error(
