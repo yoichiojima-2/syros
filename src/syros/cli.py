@@ -558,7 +558,8 @@ async def _skills(args) -> None:
             pruned = f", pruned {summary['deleted']}" if summary["deleted"] else ""
             print(f"pushed {summary['files']} file(s) to skill {summary['skill']}{scope}{pruned}")
             for skipped in summary["skipped"]:
-                print(f"    skipped {skipped['file']} ({skipped['size']} bytes)")
+                why = skipped.get("reason") or f"{skipped['size']} bytes"
+                print(f"    skipped {skipped['file']} ({why})")
         return
     if args.action == "files":
         if not args.args:

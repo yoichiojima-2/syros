@@ -53,8 +53,17 @@ def _unquote(value: str) -> str:
     while index < len(value):
         char = value[index]
         if quote == '"' and char == "\\" and index + 1 < len(value):
-            out.append(value[index + 1])
-            index += 2
+            # only the two escapes that would otherwise end the scan early are
+            # resolved; anything else keeps its backslash, because this is a
+            # description to display, not a string to evaluate — swallowing the
+            # backslash would turn é into a literal "u00e9" in the console
+            following = value[index + 1]
+            if following in ('"', "\\"):
+                out.append(following)
+                index += 2
+                continue
+            out.append(char)
+            index += 1
         elif char == quote:
             if quote == "'" and value[index + 1 : index + 2] == "'":
                 out.append(quote)
@@ -257,13 +266,22 @@ def push(
         if any(part.startswith(".") or part in IGNORED for part in relative.parts):
             continue
         file_name = relative.as_posix()
-        # GCS rejects these outright, and validate_file does not: without the
-        # check the upload loop below dies partway, leaving a half-written skill.
-        if "\r" in file_name or "\n" in file_name:
-            raise ValueError(f"{file_name}: a skill file name cannot contain a newline")
-        if len((prefix + file_name).encode()) > MAX_OBJECT_NAME_BYTES:
-            raise ValueError(f"{file_name}: object name exceeds {MAX_OBJECT_NAME_BYTES} bytes")
         size = file.stat().st_size
+        # GCS rejects these names outright and validate_file does not, so the
+        # upload loop below would die partway and leave a half-written skill.
+        # Skipped rather than fatal, the same bargain oversized files get: the
+        # bucket could never hold this name, so refusing the whole push would
+        # make an otherwise fine directory permanently unpushable and preserve
+        # nothing. SKILL.md is a fixed short name, so it can never land here.
+        if (
+            "\r" in file_name
+            or "\n" in file_name
+            or len((prefix + file_name).encode()) > MAX_OBJECT_NAME_BYTES
+        ):
+            skipped.append(
+                {"file": file_name, "size": size, "reason": "the bucket rejects the name"}
+            )
+            continue
         if size > max_bytes:
             skipped.append({"file": file_name, "size": size})
             continue

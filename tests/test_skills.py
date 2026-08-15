@@ -277,22 +277,20 @@ def test_push_rejects_a_case_variant_skill_md(tmp_path, capture_writes):
     assert capture_writes == []
 
 
-def test_push_rejects_names_the_bucket_would_refuse(tmp_path, capture_writes):
-    """validate_file allows what GCS does not, and the upload loop has already
-    written earlier files by the time the API rejects one."""
+def test_push_skips_names_the_bucket_would_refuse(tmp_path, capture_writes):
+    """validate_file allows what GCS does not, and the upload loop would have
+    written earlier files by the time the API rejected one. Skipped, not fatal:
+    the bucket could never hold the name, so refusing the push preserves
+    nothing and would make the whole directory unpushable."""
     path = make_skill_dir(tmp_path, files={"ok.md": b"hi"})
     (path / "bad\nname.md").write_bytes(b"nope")
-    with pytest.raises(ValueError, match="newline"):
-        skills.push("p", "b", path, max_bytes=1024)
-    assert capture_writes == []
-
-    (path / "bad\nname.md").unlink()
     deep = path.joinpath(*[chr(ord("d") + n) * 200 for n in range(6)])
     deep.mkdir(parents=True)
     (deep / "over.md").write_bytes(b"nope")
-    with pytest.raises(ValueError, match="object name exceeds"):
-        skills.push("p", "b", path, max_bytes=1024)
-    assert capture_writes == []
+
+    summary = skills.push("p", "b", path, max_bytes=1024)
+    assert sorted(f for _, f, _ in capture_writes) == ["SKILL.md", "ok.md"]
+    assert [s["reason"] for s in summary["skipped"]] == ["the bucket rejects the name"] * 2
 
 
 def test_sync_official_detects_skills(capture_writes):
@@ -402,6 +400,9 @@ def test_parse_description_keeps_quotes_inside_a_quoted_scalar():
     )
     # truncated mid-scalar: take what is there rather than nothing
     assert skills.parse_description(b'---\ndescription: "Merge PDFs and') == "Merge PDFs and"
+    # an escape this displays rather than evaluates keeps its backslash:
+    # swallowing it would render é as a literal "u00e9" in the console
+    assert skills.parse_description(b'---\ndescription: "caf\\u00e9 x"\n---\n') == r"caf\u00e9 x"
 
 
 def test_parse_description_reads_past_a_long_frontmatter_preamble():
