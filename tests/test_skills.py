@@ -261,7 +261,7 @@ def test_push_rejects_a_symlinked_skill_md(tmp_path, capture_writes):
 def test_push_rejects_an_oversized_skill_md(tmp_path, capture_writes):
     path = make_skill_dir(tmp_path)
     (path / "SKILL.md").write_bytes(b"x" * 2000)
-    with pytest.raises(ValueError, match="cannot be skipped for size"):
+    with pytest.raises(ValueError, match="over the 1024 limit"):
         skills.push("p", "b", path, max_bytes=1024)
     assert capture_writes == []
 
@@ -277,6 +277,39 @@ def test_push_rejects_a_case_variant_skill_md(tmp_path, capture_writes):
     with pytest.raises(ValueError, match="SKILL.md"):
         skills.push("p", "b", path, max_bytes=1024)
     assert capture_writes == []
+
+
+def test_push_replace_keeps_a_file_that_became_a_symlink(tmp_path, bucket):
+    """A symlink is not uploaded, but the directory still carries it — pruning
+    the bucket's copy would destroy the only one, same class as the SKILL.md
+    wipe. Only the ignore rules are meant to prune."""
+    path = make_skill_dir(tmp_path, files={"reference/manual.txt": b"the manual"})
+    skills.push("p", "b", path, max_bytes=1024)
+    assert "skills/pdf/reference/manual.txt" in bucket.objects
+
+    target = tmp_path / "shared-manual.txt"
+    target.write_bytes(b"the manual")
+    (path / "reference" / "manual.txt").unlink()
+    (path / "reference" / "manual.txt").symlink_to(target)
+
+    summary = skills.push("p", "b", path, max_bytes=1024, replace=True)
+    assert summary["deleted"] == 0
+    assert [s["reason"] for s in summary["skipped"]] == ["a symlink is not followed"]
+    assert sorted(bucket.objects) == ["skills/pdf/SKILL.md", "skills/pdf/reference/manual.txt"]
+
+
+def test_push_skips_a_name_with_no_utf8_encoding(tmp_path, capture_writes):
+    """rglob surrogate-escapes a latin-1 filename; encoding it raises. The
+    bucket cannot hold that name either, so report it rather than abort."""
+    path = make_skill_dir(tmp_path)
+    try:
+        (path / b"caf\xe9.md".decode("utf-8", "surrogateescape")).write_bytes(b"hi")
+    except (OSError, UnicodeEncodeError):
+        pytest.skip("filesystem will not hold a non-UTF-8 name")
+
+    summary = skills.push("p", "b", path, max_bytes=1024)
+    assert sorted(f for _, f, _ in capture_writes) == ["SKILL.md"]
+    assert [s["reason"] for s in summary["skipped"]] == ["the bucket rejects the name"]
 
 
 def test_push_skips_names_the_bucket_would_refuse(tmp_path, capture_writes):

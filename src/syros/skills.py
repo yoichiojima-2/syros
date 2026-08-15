@@ -183,6 +183,17 @@ def delete_skill(project: str, bucket_name: str, name: str, workspace: str | Non
     return len(blobs)
 
 
+def _too_long(prefix: str, file_name: str) -> bool:
+    """Whether the object name would exceed what GCS stores. A name rglob had to
+    surrogate-escape (a latin-1 filename out of an unzipped archive) has no UTF-8
+    encoding at all, so the bucket cannot hold it either — report it the same way
+    rather than letting the codec error abort the whole push."""
+    try:
+        return len((prefix + file_name).encode()) > MAX_OBJECT_NAME_BYTES
+    except UnicodeEncodeError:
+        return True
+
+
 def _require_skill_md(
     path: Path, uploads: list[tuple[str, Path]], skipped: list[dict[str, Any]], max_bytes: int
 ) -> None:
@@ -198,14 +209,12 @@ def _require_skill_md(
     """
     if SKILL_MD in {file_name for file_name, _ in uploads}:
         return
-    oversized = next((s for s in skipped if s["file"] == SKILL_MD), None)
-    if oversized is not None:
+    entry = next((s for s in skipped if s["file"] == SKILL_MD), None)
+    if entry is not None:
+        why = entry.get("reason") or f"{entry['size']} bytes, over the {max_bytes} limit"
         raise ValueError(
-            f"{path}: {SKILL_MD} is {oversized['size']} bytes (limit {max_bytes}) — "
-            f"a skill's {SKILL_MD} cannot be skipped for size"
+            f"{path}: {SKILL_MD} was skipped ({why}) — a skill must upload its {SKILL_MD}"
         )
-    if (path / SKILL_MD).is_symlink():
-        raise ValueError(f"{path}: {SKILL_MD} is a symlink — a skill upload does not follow them")
     variant = next(
         (name for name, _ in uploads if name.lower() == SKILL_MD.lower() and name != SKILL_MD), None
     )
@@ -250,24 +259,27 @@ def push(
     uploads: list[tuple[str, Path]] = []
     skipped: list[dict[str, Any]] = []
     for file in sorted(path.rglob("*")):
-        if not file.is_file() or file.is_symlink():
-            continue  # symlinks/devices don't belong in a skill upload
+        if not file.is_file():
+            continue  # directories, devices, and links that dangle
         relative = file.relative_to(path)
         if any(part.startswith(".") or part in IGNORED for part in relative.parts):
-            continue
+            continue  # tooling state: --replace prunes the bucket's copy too
         file_name = relative.as_posix()
         size = file.stat().st_size
+        # Everything below is recorded in `skipped` rather than dropped, because
+        # `keep` is built from it: a file the walk declines but the directory
+        # still carries must survive the prune, or --replace deletes the bucket's
+        # only copy. Only the ignore rules above prune, and they do so by design.
+        if file.is_symlink():
+            skipped.append({"file": file_name, "size": size, "reason": "a symlink is not followed"})
+            continue
         # GCS rejects these names outright and validate_file does not, so the
         # upload loop below would die partway and leave a half-written skill.
         # Skipped rather than fatal, the same bargain oversized files get: the
         # bucket could never hold this name, so refusing the whole push would
         # make an otherwise fine directory permanently unpushable and preserve
         # nothing. SKILL.md is a fixed short name, so it can never land here.
-        if (
-            "\r" in file_name
-            or "\n" in file_name
-            or len((prefix + file_name).encode()) > MAX_OBJECT_NAME_BYTES
-        ):
+        if "\r" in file_name or "\n" in file_name or _too_long(prefix, file_name):
             skipped.append(
                 {"file": file_name, "size": size, "reason": "the bucket rejects the name"}
             )
@@ -283,8 +295,10 @@ def push(
     if replace:
         # Prune after uploading, never before: clearing the prefix first would
         # leave the skill missing if an upload failed, and would delete the
-        # bucket's copy of a file this walk skipped for being oversized. Keep
-        # everything the directory still carries, skipped files included.
+        # bucket's copy of a file this walk declined to upload. Keep everything
+        # the directory still carries — every skipped file included, whatever the
+        # reason — so only what the directory really dropped is pruned. Files the
+        # ignore rules excluded are not in `skipped` and are pruned, by design.
         keep = {file_name for file_name, _ in uploads} | {s["file"] for s in skipped}
         for blob in _bucket(project, bucket_name).list_blobs(prefix=prefix):
             if blob.name[len(prefix) :] not in keep:

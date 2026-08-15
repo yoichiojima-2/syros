@@ -367,11 +367,11 @@ directory, names the skill after its basename (`--name` overrides), and requires
 found no SKILL.md would report success and mount nothing. That `SKILL.md` has to be a
 real file, named exactly, and under the size limit: a symlinked, oversized, or
 differently-cased one is refused rather than uploaded without it. Tooling state
-(`.git/`, `__pycache__/`, `node_modules/`, dotfiles) and symlinks are skipped, and
-files over 10 MiB are skipped and reported so everything a push writes stays
-console-editable. Pushes merge; `--replace` prunes afterwards, deleting bucket files
-the directory no longer carries — files skipped for size are kept, files matching the
-ignore rules are not.
+(`.git/`, `__pycache__/`, `node_modules/`, dotfiles) is ignored outright. Symlinks,
+files over 10 MiB, and names the bucket cannot store are skipped and reported, so
+everything a push writes stays console-editable. Pushes merge; `--replace` prunes
+afterwards, deleting bucket files the directory no longer carries — every skipped file
+is kept, since the directory still carries it, while ignored tooling state is pruned.
 The console does the same thing from the browser: drop a folder onto the Skills page
 (or a workspace's skills card), or use the folder picker.
 
