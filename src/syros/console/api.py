@@ -199,6 +199,14 @@ class ConsoleAPI:
             )
         return self._objects
 
+    def _parse_run_options(self, doc: Any) -> "AgentOptions":
+        """Body options -> validated AgentOptions, defaulted to the console's
+        project — the shared parse for every endpoint that accepts options."""
+        run_options = options_from_doc(dict(doc or {}))
+        run_options.project = run_options.project or self._options.project
+        run_options.validate()
+        return run_options
+
     async def _session(self, session_id: str) -> dict[str, Any]:
         session = await self._store.get_session(session_id)
         if session is None:
@@ -562,10 +570,14 @@ class ConsoleAPI:
     async def teams(self) -> dict[str, Any]:
         """Every team: GCS workspace contents + Firestore doc (config + lease)
         + the sessions configured to run under it."""
-        stats = await self._bucket_objects().workspace_stats()
-        docs = {t["name"]: t for t in await self._store.list_teams()}
+        stats, teams_docs, sessions = await asyncio.gather(
+            self._bucket_objects().workspace_stats(),
+            self._store.list_teams(),
+            self._store.list_sessions(limit=50),
+        )
+        docs = {t["name"]: t for t in teams_docs}
         by_team: dict[str, list[dict[str, Any]]] = {}
-        for session in await self._store.list_sessions(limit=50):
+        for session in sessions:
             name = ((session.get("options") or {}).get("team")) or None
             if name:
                 by_team.setdefault(name, []).append(
@@ -606,7 +618,7 @@ class ConsoleAPI:
         edit saved mid-run would be silently overwritten by the job's own copy.
         Better to say no than to lose the edit.
         """
-        lease = next((t for t in await self._store.list_teams() if t["name"] == name), None)
+        lease = await self._store.get_team(name)
         if lease_active(lease):
             raise Conflict(
                 f"team {name} is busy — session {lease.get('lease_session_id')} holds"
@@ -697,9 +709,7 @@ class ConsoleAPI:
         }
         if name in existing:
             raise Conflict(f"team {name} already exists")
-        run_options = options_from_doc(dict(body.get("options") or {}))
-        run_options.project = run_options.project or self._options.project
-        run_options.validate()
+        run_options = self._parse_run_options(body.get("options"))
         await self._store.create_team(
             name,
             teams.build(
@@ -717,10 +727,7 @@ class ConsoleAPI:
         the options they were created with."""
         fields: dict[str, Any] = {}
         if "options" in body:
-            run_options = options_from_doc(dict(body.get("options") or {}))
-            run_options.project = run_options.project or self._options.project
-            run_options.validate()
-            fields["options"] = run_options.serialize()
+            fields["options"] = self._parse_run_options(body.get("options")).serialize()
         if "description" in body:
             fields["description"] = str(body["description"]) if body["description"] else None
         if not fields:
@@ -746,10 +753,9 @@ class ConsoleAPI:
         return {"now": time.time(), "options": to_jsonable(settings.get("options") or {})}
 
     async def update_settings(self, body: dict[str, Any]) -> dict[str, Any]:
-        run_options = options_from_doc(dict(body.get("options") or {}))
-        run_options.project = run_options.project or self._options.project
-        run_options.validate()
-        await self._store.update_settings({"options": run_options.serialize()})
+        await self._store.update_settings(
+            {"options": self._parse_run_options(body.get("options")).serialize()}
+        )
         return {"now": time.time(), "ok": True}
 
     # --- skills ---

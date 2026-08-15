@@ -75,20 +75,20 @@ async def test_mark_starting_skips_live_and_dead_sessions():
     await store.mark_starting("sess_missing")  # no such session: a no-op, not an error
 
 
-async def test_workspace_lease_claim_and_contend():
+async def test_team_lease_claim_and_contend():
     store = FakeStore()
     assert await store.claim_team("ws", "sess_a", 60) is True
     assert await store.claim_team("ws", "sess_a", 60) is True  # re-entrant for the holder
     assert await store.claim_team("ws", "sess_b", 60) is False
 
 
-async def test_workspace_lease_expiry_reclaimable():
+async def test_team_lease_expiry_reclaimable():
     store = FakeStore()
     await store.claim_team("ws", "sess_a", -1)  # already expired
     assert await store.claim_team("ws", "sess_b", 60) is True
 
 
-async def test_workspace_release_only_by_holder():
+async def test_team_release_only_by_holder():
     store = FakeStore()
     await store.claim_team("ws", "sess_a", 60)
     await store.release_team("ws", "sess_b")  # no-op

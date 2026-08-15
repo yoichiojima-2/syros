@@ -173,6 +173,114 @@ export function BigQueryToggle({
   );
 }
 
+/** Shared draft state over a stored serialized-AgentOptions dict. Every form
+ *  renders only the fields it cares about; unrendered fields stay empty and
+ *  buildOptionsPayload leaves them out of the payload. */
+export function useOptionsDraft(stored: Record<string, unknown> = {}) {
+  const storedBigquery = Boolean(
+    (stored.mcp_servers as Record<string, unknown> | undefined)?.bq,
+  );
+  const [systemPrompt, setSystemPrompt] = useState((stored.system_prompt as string) ?? "");
+  const [model, setModel] = useState((stored.model as string) ?? "");
+  const [permissionMode, setPermissionMode] = useState((stored.permission_mode as string) ?? "");
+  const [team, setTeam] = useState((stored.team as string) ?? "");
+  const [artifacts, setArtifacts] = useState(
+    typeof stored.artifacts === "string" ? stored.artifacts : "",
+  );
+  const [tools, setTools] = useState<string[]>(
+    ((stored.allowed_tools as string[]) ?? []).filter((tool) => TOOLS.includes(tool)),
+  );
+  const [extraTools, setExtraTools] = useState(
+    ((stored.allowed_tools as string[]) ?? [])
+      // The auto-allowed BigQuery tool rides the toggle, not the free-text row.
+      .filter((tool) => !TOOLS.includes(tool) && !(storedBigquery && tool === BIGQUERY_TOOL))
+      .join(", "),
+  );
+  const [bigquery, setBigquery] = useState(storedBigquery);
+  const [connectors, setConnectors] = useState<string[]>((stored.connectors as string[]) ?? []);
+  const [budget, setBudget] = useState(
+    stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
+  );
+  const [maxTurns, setMaxTurns] = useState(stored.max_turns == null ? "" : String(stored.max_turns));
+  return {
+    systemPrompt, setSystemPrompt,
+    model, setModel,
+    permissionMode, setPermissionMode,
+    team, setTeam,
+    artifacts, setArtifacts,
+    tools, setTools,
+    extraTools, setExtraTools,
+    bigquery, setBigquery,
+    connectors, setConnectors,
+    budget, setBudget,
+    maxTurns, setMaxTurns,
+  };
+}
+
+export type OptionsDraft = ReturnType<typeof useOptionsDraft>;
+
+/** The serialized dict a draft submits. Only what was filled in rides the
+ *  payload: an empty string is "unset", not "". */
+export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown> {
+  const options: Record<string, unknown> = {};
+  if (draft.systemPrompt.trim()) options.system_prompt = draft.systemPrompt;
+  if (draft.model.trim()) options.model = draft.model.trim();
+  if (draft.permissionMode.trim()) options.permission_mode = draft.permissionMode.trim();
+  if (draft.team.trim()) options.team = draft.team.trim();
+  if (draft.artifacts.trim()) options.artifacts = draft.artifacts.trim();
+  const allowed = [
+    ...draft.tools,
+    ...draft.extraTools
+      .split(",")
+      .map((tool) => tool.trim())
+      .filter((tool) => tool && !draft.tools.includes(tool)),
+  ];
+  if (draft.bigquery) {
+    options.mcp_servers = { bq: BIGQUERY_SERVER };
+    if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
+  }
+  if (allowed.length) options.allowed_tools = allowed;
+  if (draft.connectors.length) options.connectors = draft.connectors;
+  if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
+  if (draft.maxTurns.trim()) options.max_turns = Number(draft.maxTurns);
+  return options;
+}
+
+/** Toggle-chip row over the common tools plus a free-text row for the rest —
+ *  the body of every form's "Allowed tools" field. */
+export function ToolPicker({ draft }: { draft: OptionsDraft }) {
+  const { tools, setTools, extraTools, setExtraTools } = draft;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {TOOLS.map((tool) => {
+        const on = tools.includes(tool);
+        return (
+          <button
+            key={tool}
+            type="button"
+            aria-pressed={on}
+            onClick={() => setTools(on ? tools.filter((t) => t !== tool) : [...tools, tool])}
+            className={cn(
+              "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+              on
+                ? "border-transparent bg-primary-soft text-foreground"
+                : "border-border text-muted-foreground hover:bg-secondary",
+            )}
+          >
+            {tool}
+          </button>
+        );
+      })}
+      <Input
+        value={extraTools}
+        onChange={(e) => setExtraTools(e.target.value)}
+        placeholder="more, comma separated"
+        className="h-7 w-52 font-mono text-[11px]"
+      />
+    </div>
+  );
+}
+
 export function Field({
   label,
   hint,

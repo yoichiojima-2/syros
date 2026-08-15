@@ -206,7 +206,7 @@ async def test_runner_syncs_session_prefixes_without_workspace(env, store, fake_
     assert gcs_sync["exclude"] == [(f"sessions/{SID}/state/home/", (".claude/skills/",))]
 
 
-async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gcs_sync):
+async def test_runner_routes_ws_to_team_workspace(env, store, fake_harness, gcs_sync):
     await store.create_session(SID, {"team": "shared"})
     await store.push_inbox(SID, "message", "go")
 
@@ -293,7 +293,7 @@ async def test_runner_without_mounts_leaves_prompt_and_session_untouched(env, st
     assert "published" not in session
 
 
-async def test_runner_fails_fast_when_workspace_busy(env, store, fake_harness, gcs_sync):
+async def test_runner_fails_fast_when_team_busy(env, store, fake_harness, gcs_sync):
     await store.create_session(SID, {"team": "shared"})
     await store.push_inbox(SID, "message", "go")
     await store.claim_team("shared", "sess_other", 3600)

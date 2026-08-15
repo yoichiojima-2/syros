@@ -97,12 +97,19 @@ async def update(
     store: StoreProtocol | None = None,
 ) -> dict[str, Any]:
     """Replace a team's stored options. Running sessions keep the options
-    they were created with; the next run picks up the new configuration."""
+    they were created with; the next run picks up the new configuration.
+
+    Upserts: a team can exist as a bare GCS workspace with no doc yet (the
+    old ad-hoc workspaces), so the first update materialises the doc — the
+    same semantics the console applies."""
     options = options or AgentOptions()
     run_options.project = run_options.project or options.project
     run_options.validate()
     store = _store(options, store)
-    team = await require_team(store, name)
+    team = await store.get_team(name)
+    if team is None:
+        team = {"name": name, **build(name, created_by=None)}
+        await store.create_team(name, {k: v for k, v in team.items() if k != "name"})
     fields: dict[str, Any] = {"options": run_options.serialize()}
     if description is not None:
         fields["description"] = description
@@ -120,25 +127,32 @@ async def delete(
     await store.delete_team(name)
 
 
+CLAUDE_MD_MAX_BYTES = 1024 * 1024
+
+
 def read_claude_md(project: str, bucket_name: str, name: str) -> str | None:
     """The team's CLAUDE.md — how the agent works for this team. Lives at the
     team workspace root in GCS, so every session under the team gets it as
     project memory (setting_sources includes "project" in the runner). None
     when the team has none yet. Synchronous on purpose — callers wrap in
     asyncio.to_thread (same contract as workspace.py)."""
-    from .workspace import _bucket, workspace_prefix
+    from . import workspace
 
-    blob = _bucket(project, bucket_name).blob(workspace_prefix(name) + "CLAUDE.md")
-    return blob.download_as_text() if blob.exists() else None
+    try:
+        data, _content_type = workspace.read_file(
+            project, bucket_name, name, "CLAUDE.md", max_bytes=CLAUDE_MD_MAX_BYTES
+        )
+    except FileNotFoundError:
+        return None
+    return data.decode()
 
 
 def write_claude_md(project: str, bucket_name: str, name: str, text: str) -> None:
     """Replace the team's CLAUDE.md. Takes effect on the next run — sessions
     restore the workspace at claim time."""
-    from .workspace import _bucket, workspace_prefix
+    from . import workspace
 
-    blob = _bucket(project, bucket_name).blob(workspace_prefix(name) + "CLAUDE.md")
-    blob.upload_from_string(text, content_type="text/markdown")
+    workspace.write_file(project, bucket_name, name, "CLAUDE.md", text.encode())
 
 
 async def require_team(store: StoreProtocol, name: str) -> dict[str, Any]:

@@ -1,37 +1,28 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useRef } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Download, FilePlus2, FileText, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, FilePlus2, FileText, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
-import { CopyButton, download } from "@/components/artifact-viewer";
+import { FileEditor } from "@/components/file-editor";
 import { useAction, useNow, useSkillFiles } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { bytes, relTime } from "@/lib/format";
-import type { OkResponse, StoredFile } from "@/lib/types";
+import type { OkResponse } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// One skill (skills/{name}/ in the bucket), editable. Same master–detail
-// editor as the team page, without the lease gating: skills are copied
-// into each sandbox HOME at run start, so a console edit never races a live
-// run's checkpoint — it simply applies from the next run onward.
+// One skill (skills/{name}/ in the bucket, or a team's own set with ?team=),
+// editable. Same master–detail editor as the team page, without the lease
+// gating: skills are copied into each sandbox HOME at run start, so a console
+// edit never races a live run's checkpoint — it simply applies from the next
+// run onward.
 
 function fileUrl(skill: string, file: string, team: string | null): string {
   const query = new URLSearchParams({ name: file });
   if (team) query.set("team", team);
   return `/api/skills/${encodeURIComponent(skill)}/file?${query}`;
-}
-
-/** Decoded-as-text bytes that clearly weren't text. Cheap and good enough to
- *  keep the editor from mangling a binary resource bundled with a skill. */
-function looksBinary(text: string): boolean {
-  if (text.includes("\u0000")) return true;
-  // response.text() decodes as UTF-8, so non-text bytes arrive as U+FFFD
-  const replaced = (text.match(/\uFFFD/g) || []).length;
-  return replaced > 4 && replaced > text.length / 100;
 }
 
 export default function SkillPage() {
@@ -196,10 +187,22 @@ function SkillInner() {
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {file ? (
           <FileEditor
-            skill={name}
-            team={team}
             file={file}
             files={files}
+            url={fileUrl(name, file, team)}
+            save={(content) =>
+              post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
+                name: file,
+                content,
+                ...(team ? { team } : {}),
+              })
+            }
+            remove={() =>
+              post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file/delete`, {
+                name: file,
+                ...(team ? { team } : {}),
+              })
+            }
             onChanged={refresh}
             onDeleted={() => select(null)}
           />
@@ -211,150 +214,5 @@ function SkillInner() {
         )}
       </main>
     </div>
-  );
-}
-
-function FileEditor({
-  skill,
-  team,
-  file,
-  files,
-  onChanged,
-  onDeleted,
-}: {
-  skill: string;
-  team: string | null;
-  file: string;
-  files: StoredFile[] | null;
-  onChanged: () => void;
-  onDeleted: () => void;
-}) {
-  // `saved` is the last content known to be in the bucket; `draft` is the
-  // textarea. Their difference is the dirty flag, so a save is just the two
-  // converging — no separate "unsaved" bookkeeping to fall out of sync.
-  const [saved, setSaved] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [binary, setBinary] = useState(false);
-  const [flash, run] = useAction();
-  const updated = files?.find((f) => f.name === file)?.updated ?? null;
-
-  useEffect(() => {
-    setSaved(null);
-    setDraft("");
-    setError(null);
-    setBinary(false);
-    let cancelled = false;
-    fetch(fileUrl(skill, file, team))
-      .then(async (response) => {
-        if (response.status === 413) throw new Error("too large to edit — download instead");
-        if (!response.ok) {
-          const body = await response.json().catch(() => null);
-          throw new Error(body?.error || `HTTP ${response.status}`);
-        }
-        return response.text();
-      })
-      .then((text) => {
-        if (cancelled) return;
-        if (looksBinary(text)) {
-          setBinary(true);
-          return;
-        }
-        setSaved(text);
-        setDraft(text);
-      })
-      .catch((err: Error) => {
-        if (!cancelled) setError(err.message);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // refetch when the blob changes upstream, not on every poll
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [skill, team, file, updated]);
-
-  const dirty = saved !== null && draft !== saved;
-
-  const save = () =>
-    run(async () => {
-      await post<OkResponse>(`/api/skills/${encodeURIComponent(skill)}/file`, {
-        name: file,
-        content: draft,
-        ...(team ? { team } : {}),
-      });
-      setSaved(draft);
-      onChanged();
-      return "saved";
-    });
-
-  const remove = () => {
-    if (!confirm(`Delete ${file}? It is removed from the bucket permanently.`)) return;
-    run(async () => {
-      await post<OkResponse>(`/api/skills/${encodeURIComponent(skill)}/file/delete`, {
-        name: file,
-        ...(team ? { team } : {}),
-      });
-      onChanged();
-      onDeleted();
-      return "deleted";
-    });
-  };
-
-  return (
-    <>
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border px-3 py-2">
-        <span
-          className="min-w-0 flex-1 truncate px-1.5 font-mono text-[13px] font-medium"
-          title={file}
-        >
-          {file}
-          {dirty && <span className="pl-1.5 text-[11px] text-muted-foreground">• unsaved</span>}
-        </span>
-        {flash && <span className="px-1 text-[11px] text-muted-foreground">{flash}</span>}
-        {saved !== null && <CopyButton text={draft} />}
-        <Button
-          variant="ghost"
-          size="sm"
-          title="Download"
-          onClick={() => {
-            if (saved !== null) download(file.split("/").pop() || file, draft);
-            else window.open(fileUrl(skill, file, team), "_blank");
-          }}
-        >
-          <Download />
-        </Button>
-        <Button variant="ghost" size="sm" title="Delete" onClick={remove}>
-          <Trash2 />
-        </Button>
-        {saved !== null && (
-          <>
-            <Button variant="outline" size="sm" disabled={!dirty} onClick={() => setDraft(saved)}>
-              Revert
-            </Button>
-            <Button size="sm" disabled={!dirty} onClick={save}>
-              Save
-            </Button>
-          </>
-        )}
-      </div>
-      {error ? (
-        <p className="p-6 text-center text-[13px] text-muted-foreground">{error}</p>
-      ) : binary ? (
-        <p className="p-6 text-center text-[13px] text-muted-foreground">
-          Not a text file — download it to inspect, or replace it with an upload.
-        </p>
-      ) : saved === null ? (
-        <div className="flex-1 p-4">
-          <Skeleton className="h-24" />
-        </div>
-      ) : (
-        <Textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          spellCheck={false}
-          className="min-h-0 flex-1 resize-none overflow-auto px-4 py-3 font-mono text-xs leading-relaxed"
-        />
-      )}
-    </>
   );
 }
