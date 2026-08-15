@@ -16,7 +16,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AgentForm } from "@/components/agent-form";
-import { SessionForm } from "@/components/session-form";
 import { useAction, useAgents, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { relTime } from "@/lib/format";
@@ -28,10 +27,6 @@ export default function AgentsPage() {
   const router = useRouter();
   const [flash, run] = useAction();
   const [creating, setCreating] = useState(false);
-  // The agent a session is being started as, from its row's run button — the
-  // list doubles as the launcher, since picking the persona is most of the
-  // decision and it's already made here.
-  const [running, setRunning] = useState<string | null>(null);
 
   const act = (fn: () => Promise<string>) =>
     run(async () => {
@@ -57,17 +52,6 @@ export default function AgentsPage() {
           onSaved={(name) => {
             setCreating(false);
             router.push(`/agent?name=${encodeURIComponent(name)}`);
-          }}
-        />
-      )}
-      {running !== null && (
-        <SessionForm
-          key={running}
-          agent={running}
-          onCancel={() => setRunning(null)}
-          onCreated={(sid) => {
-            setRunning(null);
-            router.push(`/session?sid=${sid}`);
           }}
         />
       )}
@@ -102,13 +86,7 @@ export default function AgentsPage() {
               </TableHeader>
               <TableBody>
                 {agents.map((agent) => (
-                  <AgentRow
-                    key={agent.name}
-                    agent={agent}
-                    now={now}
-                    act={act}
-                    onRun={() => setRunning(agent.name)}
-                  />
+                  <AgentRow key={agent.name} agent={agent} now={now} act={act} />
                 ))}
               </TableBody>
             </Table>
@@ -124,12 +102,10 @@ function AgentRow({
   agent,
   now,
   act,
-  onRun,
 }: {
   agent: AgentSummary;
   now: number;
   act: (fn: () => Promise<string>) => void;
-  onRun: () => void;
 }) {
   const router = useRouter();
   const href = `/agent?name=${encodeURIComponent(agent.name)}`;
@@ -155,14 +131,12 @@ function AgentRow({
         {relTime(agent.updated_at, now)}
       </TableCell>
       <TableCell className="w-20 text-right" onClick={(e) => e.stopPropagation()}>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 hover:text-primary"
-          title={`New session as ${agent.name}`}
-          onClick={onRun}
-        >
-          <MessageSquarePlus />
+        {/* A real link, so the launcher opens in a tab on cmd-click; the agent
+            page leads with the prompt box. */}
+        <Button variant="ghost" size="icon" className="size-7 hover:text-primary" asChild>
+          <Link href={href} title={`New session as ${agent.name}`}>
+            <MessageSquarePlus />
+          </Link>
         </Button>
         <Button
           variant="ghost"

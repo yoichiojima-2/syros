@@ -3,12 +3,13 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, MessageSquarePlus, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, Pencil, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentForm } from "@/components/agent-form";
+import { Composer } from "@/components/composer";
 import { SessionForm } from "@/components/session-form";
 import { useAction, useAgent, useNow } from "@/lib/hooks";
 import { post } from "@/lib/api";
@@ -46,13 +47,23 @@ export default function AgentPage() {
 }
 
 function AgentInner() {
-  const name = useSearchParams().get("name");
+  const params = useSearchParams();
+  const name = params.get("name");
+  // The options form is a URL state, not a component state: refreshing or
+  // sharing /agent?name=x&new=1 lands on the same open form.
+  const withOptions = params.get("new") !== null;
   const router = useRouter();
   const { agent, missing, refresh } = useAgent(name);
   const now = useNow();
   const [flash, act] = useAction();
   const [editing, setEditing] = useState(false);
-  const [running, setRunning] = useState(false);
+
+  const showOptions = (on: boolean) => {
+    if (!name) return;
+    const query = new URLSearchParams({ name });
+    if (on) query.set("new", "1");
+    router.replace(`/agent?${query}`);
+  };
 
   if (!name || missing) {
     return (
@@ -80,10 +91,6 @@ function AgentInner() {
           <AgentLine agent={agent} now={now} />
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" disabled={!agent || running} onClick={() => setRunning(true)}>
-            <MessageSquarePlus />
-            New session
-          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -112,16 +119,20 @@ function AgentInner() {
         </div>
       </div>
 
-      {running && (
-        <SessionForm
-          agent={name}
-          onCancel={() => setRunning(false)}
-          onCreated={(sid) => {
-            setRunning(false);
-            router.push(`/session?sid=${sid}`);
-          }}
-        />
-      )}
+      {/* The page leads with the prompt: the agent is already chosen, so
+          starting a session is one keystroke away and the options form is
+          the detour, not the default. */}
+      {/* Editing the persona replaces the launcher — one form at a time. */}
+      {!editing &&
+        (withOptions ? (
+          <SessionForm
+            agent={name}
+            onCancel={() => showOptions(false)}
+            onCreated={(sid) => router.push(`/session?sid=${sid}`)}
+          />
+        ) : (
+          <NewSessionCard name={name} onOptions={() => showOptions(true)} />
+        ))}
 
       {editing && agent ? (
         <AgentForm
@@ -174,6 +185,58 @@ function AgentInner() {
       )}
       {flash && <p className="text-center text-[11px] text-muted-foreground">{flash}</p>}
     </div>
+  );
+}
+
+/** The launcher: a prompt box wired straight to a session as this agent, the
+ *  same widget the transcript uses so typing here and continuing there is one
+ *  motion. Run options stay behind "More options" — the agent already carries
+ *  them, and a budget is the rare per-run exception. */
+function NewSessionCard({ name, onOptions }: { name: string; onOptions: () => void }) {
+  const router = useRouter();
+  const [error, setError] = useState("");
+
+  const start = async (prompt: string) => {
+    setError("");
+    try {
+      const { session_id } = await post<{ session_id: string }>("/api/sessions", {
+        prompt,
+        agent: name,
+        options: {},
+      });
+      router.push(`/session?sid=${session_id}`);
+    } catch (err) {
+      setError((err as Error).message);
+      throw err; // the composer hands the prompt back rather than losing it
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>New session</CardTitle>
+        <CardDescription>
+          Starts a sandbox run as {name}, with its stored options below.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-2">
+        <Composer
+          disabled={false}
+          autoFocus
+          onSend={start}
+          placeholder={`Message ${name}…`}
+          className="w-full"
+        />
+        {error && <p className="pt-2 text-[12px] text-destructive">{error}</p>}
+        <button
+          type="button"
+          onClick={onOptions}
+          className="pt-2 text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          More options…
+        </button>
+      </CardContent>
+    </Card>
   );
 }
 
