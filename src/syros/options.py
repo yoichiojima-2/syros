@@ -194,7 +194,7 @@ def options_from_doc(doc: dict[str, Any]) -> AgentOptions:
     """Rebuild AgentOptions from a serialized dict (the inverse of serialize()).
 
     Unknown keys are an error rather than a silent drop: this is the path
-    untrusted input takes when the console defines a deployment, and an option
+    untrusted input takes when the console defines a workflow, and an option
     that quietly did nothing would be worse than a rejected form.
     """
     # Sessions serialized while the workspace concept was called "team" stored

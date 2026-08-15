@@ -497,6 +497,27 @@ class ConsoleAPI:
         )
         return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
 
+    async def update_workflow(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Replace a workflow's definition from the console's edit form.
+
+        Full definition every time — tasks, option defaults, schedule. The
+        form always sends `tasks` (the one-task shorthand is create-only);
+        pause state, counters, and run history stay put.
+        """
+        await self._require_workflow(name)
+        defaults = options_from_doc(dict(body.get("options") or {}))
+        defaults.project = defaults.project or self._options.project
+        workflow = await workflows.update(
+            name,
+            list(body.get("tasks") or []),
+            defaults=defaults,
+            options=self._options,
+            cron_expression=(str(body["cron"]).strip() or None) if body.get("cron") else None,
+            timezone=str(body.get("timezone") or workflows.DEFAULT_TIMEZONE),
+            store=self._store,
+        )
+        return {"now": time.time(), "workflow": await self._workflow_row(workflow)}
+
     async def set_workflow_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
         await self._require_workflow(name)
         await workflows.set_enabled(name, enabled, store=self._store)
@@ -810,8 +831,25 @@ class ConsoleAPI:
     # checkpoint the way a workspace edit would.
 
     async def skills(self, workspace: str | None = None) -> dict[str, Any]:
-        stats = await self._bucket_objects().skill_stats(workspace)
-        rows = [{"name": name, **stat} for name, stat in sorted(stats.items())]
+        """Skills in one scope, or — with no workspace named — every scope.
+
+        The global view lists workspace-scoped skills alongside the globals
+        (each tagged with its `workspace`) because a skill that only mounts
+        somewhere is exactly the one you cannot otherwise find; asking for a
+        workspace by name still narrows to just that scope.
+        """
+        objects = self._bucket_objects()
+        stats = await objects.skill_stats(workspace)
+        rows = [
+            {"name": name, "workspace": workspace, **stat} for name, stat in sorted(stats.items())
+        ]
+        if workspace is None:
+            scoped = await objects.workspace_skill_stats()
+            rows += [
+                {"name": name, "workspace": owner, **stat}
+                for owner, owned in sorted(scoped.items())
+                for name, stat in sorted(owned.items())
+            ]
         return {"now": time.time(), "workspace": workspace, "skills": to_jsonable(rows)}
 
     async def skill_files(self, name: str, workspace: str | None = None) -> dict[str, Any]:
