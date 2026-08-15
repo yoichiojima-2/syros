@@ -205,6 +205,24 @@ def test_connectors_serialize_and_validate():
     assert options_from_doc({"model": "m"}).connectors is None
 
 
+def test_skills_serialize_and_validate():
+    options = AgentOptions(project="p", skills=["pdf", "xlsx", "pdf"])
+    options.validate()
+    assert options.serialize()["skills"] == ["pdf", "xlsx", "pdf"]
+    # what the runner mounts is de-duplicated, in install order
+    assert options.resolved_skills() == ["pdf", "xlsx"]
+    # old docs predating the field still rebuild (missing key, not unknown key)
+    assert options_from_doc({"model": "m"}).skills is None
+    assert options_from_doc({"skills": ["pdf"]}).skills == ["pdf"]
+
+
+def test_skills_bad_name_rejected():
+    # a skill name is a catalog name, never a path into the bucket
+    for bad in ("../etc", "a/b", "Upper", ""):
+        with pytest.raises(OptionsError):
+            AgentOptions(project="p", skills=[bad]).validate()
+
+
 def test_connectors_unknown_name_rejected():
     with pytest.raises(OptionsError):
         AgentOptions(project="p", connectors=["jira"]).validate()

@@ -30,14 +30,6 @@ CALL_TIMEOUT_SECONDS = 30.0
 MAX_BODY_BYTES = 16 * 1024 * 1024
 
 
-def _qworkspace(query: dict[str, list[str]]) -> str | None:
-    return (query.get("workspace") or [None])[0]
-
-
-def _bworkspace(body: dict) -> str | None:
-    return str(body["workspace"]) if body.get("workspace") else None
-
-
 # The API surface as data: (method, path pattern, handler). None segments are
 # wildcards, captured in order and passed to the handler after (api, body, query).
 ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
@@ -180,25 +172,19 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         ),
     ),
     ("GET", ("api", "connectors"), lambda api, body, query: api.connectors()),
-    (
-        "GET",
-        ("api", "skills"),
-        lambda api, body, query: api.skills(_qworkspace(query)),
-    ),
+    ("GET", ("api", "skills"), lambda api, body, query: api.skills()),
     ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
     (
         "GET",
         ("api", "skills", None, "files"),
-        lambda api, body, query, name: api.skill_files(name, _qworkspace(query)),
+        lambda api, body, query, name: api.skill_files(name),
     ),
     # Skill file names may contain "/", so — as with workspaces — the file
     # rides the query string on GET and the JSON body on POST, never a segment.
     (
         "GET",
         ("api", "skills", None, "file"),
-        lambda api, body, query, name: api.skill_file(
-            name, (query.get("name") or [""])[0], _qworkspace(query)
-        ),
+        lambda api, body, query, name: api.skill_file(name, (query.get("name") or [""])[0]),
     ),
     (
         "POST",
@@ -208,20 +194,24 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
             str(body.get("name") or ""),
             str(body.get("content") or ""),
             str(body.get("encoding") or "utf-8"),
-            _bworkspace(body),
         ),
     ),
     (
         "POST",
         ("api", "skills", None, "file", "delete"),
-        lambda api, body, query, name: api.delete_skill_file(
-            name, str(body.get("name") or ""), _bworkspace(body)
-        ),
+        lambda api, body, query, name: api.delete_skill_file(name, str(body.get("name") or "")),
     ),
     (
         "POST",
         ("api", "skills", None, "delete"),
-        lambda api, body, query, name: api.delete_skill(name, _bworkspace(body)),
+        lambda api, body, query, name: api.delete_skill(name),
+    ),
+    # Install/uninstall one skill on a target: {workspace?, installed?}. The
+    # options forms carry the same edit as part of a full options save.
+    (
+        "POST",
+        ("api", "skills", None, "install"),
+        lambda api, body, query, name: api.install_skill(name, body),
     ),
     ("GET", ("api", "artifacts"), lambda api, body, query: api.artifact_spaces()),
     (

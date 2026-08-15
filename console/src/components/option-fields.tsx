@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { useConnectors } from "@/lib/hooks";
+import { useConnectors, useSkills } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
 // The models people actually pick from; anything else goes through "custom".
@@ -141,6 +141,54 @@ export function ConnectorPicker({
   );
 }
 
+/** Toggle-chip row over the skill catalog: the install list this target
+ *  mounts. Installs are an ordinary option, so they layer like the rest —
+ *  a workspace (or agent) that installs anything replaces the global default
+ *  rather than adding to it, which is what the hint on the field says. */
+export function SkillPicker({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (value: string[]) => void;
+}) {
+  const skills = useSkills();
+  if (skills === null) return null;
+  if (skills.length === 0) {
+    return (
+      <p className="text-[12px] text-muted-foreground">
+        The catalog is empty — sync the official skills on the Skills page first.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {skills.map((skill) => {
+        const on = value.includes(skill.name);
+        return (
+          <button
+            key={skill.name}
+            type="button"
+            aria-pressed={on}
+            title={`${skill.name} — ${skill.file_count} file(s)`}
+            onClick={() =>
+              onChange(on ? value.filter((n) => n !== skill.name) : [...value, skill.name])
+            }
+            className={cn(
+              "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+              on
+                ? "border-transparent bg-primary-soft text-foreground"
+                : "border-border text-muted-foreground hover:bg-secondary",
+            )}
+          >
+            {skill.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** One pill for the built-in BigQuery tool, styled like the connector chips.
  *  On means the form submits mcp_servers={bq: BIGQUERY_SERVER} and pre-allows
  *  BIGQUERY_TOOL. Read access itself is the deployment's call: without
@@ -198,6 +246,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   );
   const [bigquery, setBigquery] = useState(storedBigquery);
   const [connectors, setConnectors] = useState<string[]>((stored.connectors as string[]) ?? []);
+  const [skills, setSkills] = useState<string[]>((stored.skills as string[]) ?? []);
   const [budget, setBudget] = useState(
     stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
   );
@@ -212,6 +261,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
     extraTools, setExtraTools,
     bigquery, setBigquery,
     connectors, setConnectors,
+    skills, setSkills,
     budget, setBudget,
     maxTurns, setMaxTurns,
   };
@@ -241,6 +291,7 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   }
   if (allowed.length) options.allowed_tools = allowed;
   if (draft.connectors.length) options.connectors = draft.connectors;
+  if (draft.skills.length) options.skills = draft.skills;
   if (draft.budget.trim()) options.max_budget_usd = Number(draft.budget);
   if (draft.maxTurns.trim()) options.max_turns = Number(draft.maxTurns);
   return options;

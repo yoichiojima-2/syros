@@ -20,6 +20,7 @@ def args(**overrides):
         max_budget_usd=None,
         bigquery=False,
         connector=None,
+        skill=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -40,6 +41,12 @@ def test_without_flag_no_mcp_servers():
     options = _run_options(args(allow=["Read"]))
     assert options.mcp_servers == {}
     assert options.allowed_tools == ["Read"]
+
+
+def test_skill_flag_installs_catalog_names():
+    assert _run_options(args(skill=["pdf,xlsx", "docx"])).skills == ["pdf", "xlsx", "docx"]
+    # unset stays None, so the stored layer below still decides what is installed
+    assert _run_options(args()).skills is None
 
 
 def test_run_options_validate_with_bigquery():

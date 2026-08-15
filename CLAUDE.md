@@ -34,9 +34,14 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
   migrates them forward on write. The shared directory keeps the
   `workspaces/{name}/` GCS prefix. A workspace's `CLAUDE.md` sits at that root and
   loads as project memory (runner passes `setting_sources=["user", "project"]`).
-- Skills are GCS prefixes, two scopes: `skills/` (global, mounted everywhere) and
-  `team-skills/{workspace}/` (prefix keeps its pre-rename name; mounted for that
-  workspace, shadows same-named globals).
+- Skills (`skills.py`) are one catalog of GCS prefixes, `skills/{name}/`. Nothing
+  mounts implicitly: an install is a name in `AgentOptions.skills`, so it layers
+  through `agents.resolve` like any other option and the runner mounts exactly
+  `options.resolved_skills()`. Install targets are the workspace doc and
+  `settings/global` (`skills.install`/`uninstall` edit their stored `options`);
+  agents and single sessions set the field directly. Pre-catalog workspace skills
+  under `team-skills/{workspace}/` are promoted by `skills.promote_legacy`
+  (`syros skills migrate`) and nothing reads that prefix at run time.
 - Session `title`/`summary` are durable session fields written by the runner at
   idle via one haiku call (`titles.py`); failures fall back to first-prompt-line.
   Do not add them to `RUNTIME_FIELDS` in `store.py` — that nests under `runtime.`.

@@ -12,6 +12,7 @@ import {
   ConnectorPicker,
   Field,
   MODELS,
+  SkillPicker,
   ToolPicker,
   useOptionsDraft,
 } from "@/components/option-fields";
@@ -244,6 +245,9 @@ export function WorkflowForm({
           </Field>
           <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
             <ConnectorPicker value={draft.connectors} onChange={draft.setConnectors} />
+          </Field>
+          <Field label="Skills" hint="installed from the catalog; replaces the layer below">
+            <SkillPicker value={draft.skills} onChange={draft.setSkills} />
           </Field>
           <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
             <BigQueryToggle on={draft.bigquery} onChange={draft.setBigquery} />

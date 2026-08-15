@@ -1,4 +1,5 @@
-"""skills.py: prefix rules and the official-skills tarball sync."""
+"""skills.py: the catalog prefix, installs, the tarball sync, and the
+one-time promotion of pre-catalog workspace skills."""
 
 import io
 import tarfile
@@ -7,6 +8,8 @@ import pytest
 
 from syros import skills
 from syros.errors import OptionsError
+
+from .fakes import FakeStore
 
 
 def test_skill_prefix():
@@ -94,3 +97,113 @@ def test_sync_official_skips_non_regular_members(capture_writes):
     summary = skills.sync_official("p", "b", max_bytes=1024, fetch=lambda: buffer.getvalue())
     assert summary["files"] == 1
     assert [f for _, f, _ in capture_writes] == ["SKILL.md"]
+
+
+# --- installs ---
+
+
+async def test_install_and_uninstall_on_a_workspace():
+    store = FakeStore()
+
+    assert await skills.install(store, ["pdf", "xlsx"], workspace="research") == ["pdf", "xlsx"]
+    # upserted: a workspace can exist as a bare GCS directory with no doc yet
+    assert (await store.get_workspace("research"))["options"]["skills"] == ["pdf", "xlsx"]
+    assert await skills.installed(store, workspace="research") == ["pdf", "xlsx"]
+    # nothing leaked onto the global default
+    assert await skills.installed(store) == []
+
+    # idempotent, and the rest of the stored options survive an install
+    await store.update_workspace("research", options={"model": "opus", "skills": ["pdf", "xlsx"]})
+    assert await skills.install(store, ["pdf"], workspace="research") == ["pdf", "xlsx"]
+    assert (await store.get_workspace("research"))["options"]["model"] == "opus"
+
+    assert await skills.uninstall(store, ["pdf"], workspace="research") == ["xlsx"]
+    with pytest.raises(skills.SkillError, match="not installed"):
+        await skills.uninstall(store, ["pdf"], workspace="research")
+
+
+async def test_install_globally_writes_settings():
+    store = FakeStore()
+    await store.update_settings({"options": {"model": "sonnet"}})
+
+    assert await skills.install(store, ["pdf"], workspace=None) == ["pdf"]
+    settings = await store.get_settings()
+    assert settings["options"] == {"model": "sonnet", "skills": ["pdf"]}
+    assert await skills.installed(store) == ["pdf"]
+
+
+async def test_install_rejects_bad_names():
+    with pytest.raises(OptionsError):
+        await skills.install(FakeStore(), ["../etc"])
+
+
+# --- migration off the pre-catalog workspace prefix ---
+
+
+class FakeBlob:
+    def __init__(self, bucket, name):
+        self.bucket = bucket
+        self.name = name
+
+    def delete(self):
+        self.bucket.objects.pop(self.name, None)
+
+
+class FakeBucket:
+    def __init__(self, objects):
+        self.objects = dict(objects)
+
+    def list_blobs(self, prefix=""):
+        return [FakeBlob(self, n) for n in sorted(self.objects) if n.startswith(prefix)]
+
+    def copy_blob(self, blob, destination_bucket, new_name):
+        destination_bucket.objects[new_name] = self.objects[blob.name]
+
+
+@pytest.fixture
+def bucket(monkeypatch):
+    def make(objects):
+        fake = FakeBucket(objects)
+        monkeypatch.setattr(skills, "_bucket", lambda project, bucket_name: fake)
+        return fake
+
+    return make
+
+
+def test_promote_legacy_moves_workspace_skills_into_the_catalog(bucket):
+    fake = bucket(
+        {
+            "skills/pdf/SKILL.md": b"global pdf",
+            "team-skills/research/notes/SKILL.md": b"notes",
+            "team-skills/research/notes/ref/x.md": b"x",
+            # collides with a catalog skill: keeps its content under a suffix
+            "team-skills/research/pdf/SKILL.md": b"workspace pdf",
+            "team-skills/legal/notes/SKILL.md": b"other notes",
+            "team-skills/stray.txt": b"not a skill",
+        }
+    )
+
+    summary = skills.promote_legacy("p", "b")
+
+    assert summary["files"] == 4
+    assert summary["promoted"] == {
+        # blobs are walked in name order, so legal's "notes" lands first and
+        # research's — a different skill that merely shares the name — is suffixed
+        "legal": {"notes": "notes"},
+        "research": {"notes": "notes-research", "pdf": "pdf-research"},
+    }
+    assert fake.objects["skills/notes/SKILL.md"] == b"other notes"
+    assert fake.objects["skills/notes-research/SKILL.md"] == b"notes"
+    assert fake.objects["skills/notes-research/ref/x.md"] == b"x"
+    assert fake.objects["skills/pdf-research/SKILL.md"] == b"workspace pdf"
+    # the global skill is untouched, and every promoted blob is gone from the old prefix
+    assert fake.objects["skills/pdf/SKILL.md"] == b"global pdf"
+    assert [n for n in fake.objects if n.startswith("team-skills/")] == ["team-skills/stray.txt"]
+
+    # idempotent: nothing left to move
+    assert skills.promote_legacy("p", "b") == {"promoted": {}, "files": 0}
+
+
+def test_catalog_lists_skill_directories(bucket):
+    bucket({"skills/pdf/SKILL.md": b"p", "skills/xlsx/SKILL.md": b"x", "skills/loose.md": b"?"})
+    assert skills.catalog("p", "b") == ["pdf", "xlsx"]

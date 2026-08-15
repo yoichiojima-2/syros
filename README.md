@@ -274,28 +274,52 @@ Google OAuth client), verification, and troubleshooting — is in
 
 Sessions can carry [Agent Skills](https://code.claude.com/docs/en/skills) — a skill is a
 directory (`SKILL.md` plus resources) under `skills/{name}/` in the same bucket the
-sessions use. The runner restores the whole prefix into the sandbox HOME's
-`.claude/skills/` at run start, so `claude_agent_sdk` discovers every skill in every
-session — no per-session opt-in, and nothing new to deploy. The prefix is the single
-source of truth: checkpoints never write skills back, so a skill deleted from the console
-stays deleted.
+sessions use. That prefix is the **catalog**: one namespace, the only place skill content
+lives, and the single source of truth (checkpoints never write skills back, so a skill
+deleted from the console stays deleted).
+
+Nothing in the catalog runs until it is **installed**. An install is one entry in a
+target's stored options (`skills`), so it layers like every other option — a session
+mounts exactly what its resolved options install, and the runner restores those prefixes
+into the sandbox HOME's `.claude/skills/` at run start:
 
 ```
-syros skills                         # list skills in the bucket
+explicit options  ←  agent  ←  workspace  ←  global settings
+```
+
+The nearest layer that installs anything wins outright — a workspace's install list
+replaces the global default rather than adding to it, the same rule every other option
+follows. So `settings/global` is "installed everywhere", a workspace installs what its
+sessions need, and an agent (or one session) can carry its own set.
+
+```
+syros skills                         # the catalog, and where each skill is installed
+syros skills sync                    # seed the catalog from the official anthropics/skills repo
+syros skills install pdf             # install everywhere (global settings)
+syros skills install pdf --workspace research
+syros skills uninstall pdf --workspace research
+syros skills installed --workspace research
 syros skills files pdf               # list one skill's files
 syros skills cat pdf SKILL.md        # print one skill file
-syros skills sync                    # seed skills/ from the official anthropics/skills repo
 ```
 
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
 tarball and copies each skill into the bucket — nothing is vendored, and the copies are
 editable snapshots: re-syncing overwrites official files but never touches skills (or
-files) the tarball doesn't carry. Skills come in two scopes: global (`skills/`, mounted
-into every run) and per-workspace (`team-skills/{workspace}/`, mounted only for that workspace's
-sessions, shadowing a same-named global). The console has a Skills view with the same
-surface as workspaces — browse a skill, edit a file in place, upload, or delete the
-skill; a workspace's skills live on its workspace page. `syros skills --workspace
-<name>` scopes the CLI.
+files) the tarball doesn't carry. Syncing installs nothing; a synced skill is available
+to install. The console's Skills view is the catalog — browse a skill, edit a file in
+place, upload, or delete it, and see where each one is installed; installing happens in
+the Skills field on global settings, a workspace, an agent or a new session.
+
+Installing a skill does not copy it: every install points at the one catalog copy, so
+editing `SKILL.md` once updates every session that installs it, from the next run on.
+
+Skills scoped to a single workspace (the old `team-skills/{workspace}/` prefix) are gone.
+`syros skills migrate` is the one-time upgrade: it promotes them into the catalog and
+installs each on the workspace it came from — a name already taken by a catalog skill
+keeps its content under a workspace-suffixed name instead of overwriting it — then
+installs the skills that were global globally, so every session mounts what it mounted
+before. Uninstall from there to narrow it.
 
 ## Analysis
 
@@ -529,7 +553,8 @@ doing nothing.
 | `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
-| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`), the workspace's skills, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
+| `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/`), the skills the workspace installs, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |
+| `skills` | syros-only: the catalog skills this run mounts, by name (`skills/{name}/` in the bucket). Nothing is mounted implicitly — an empty list means no skills — and the list is replaced by the nearest layer that sets one, never unioned. An installed name with no catalog prefix simply mounts nothing |
 | `artifacts` | syros-only: shared artifact spaces mounted at `./artifacts/{space}/` in the working directory. A str is one read-write space; a dict maps names to `"rw"` (restored, checkpointed back on idle) or `"ro"` (restored only). No lease — checkpoints are per-file last-writer-wins, so spaces are for publishing outputs and reading shared inputs, not concurrent editing of one file |
 | `system_prompt` presets, `hooks`, `env`, `add_dirs`, `setting_sources`, `session_id`, `fork_session`, ... | not defined — `TypeError`. Governance hooks are owned by the platform; the sandbox owns its environment |
 
@@ -537,10 +562,8 @@ doing nothing.
 
 A workspace is a shared directory with members: one GCS-backed working directory
 (`workspaces/{name}/`, exclusive lease — one live run at a time), a `CLAUDE.md` at its
-root loaded as project memory for every run under the workspace, the workspace's own
-skills (`team-skills/{name}/` — the GCS prefix keeps its pre-rename name; mounted
-alongside the global `skills/`, shadowing same-named globals), and stored option
-defaults. Its members are derived, not stored: the agents whose saved options name
+root loaded as project memory for every run under the workspace, and stored option
+defaults — including the skills it installs from the catalog. Its members are derived, not stored: the agents whose saved options name
 the workspace, shown in the console and `syros workspaces` listings.
 
 Options resolve at session creation, layered — explicitly-set fields always win:
@@ -559,8 +582,8 @@ syros settings update --model claude-sonnet-5   # syros settings to show
 ```
 
 From the SDK: `AgentOptions(workspace="dev")`. Each console workspace page bundles
-the file browser, its CLAUDE.md editor, workspace skills, members, and the
-workspace's stored options; Settings edits the global defaults. Sessions display an
+the file browser, its CLAUDE.md editor, members, and the workspace's stored options
+(installed skills among them); Settings edits the global defaults. Sessions display an
 LLM-written title and summary (a haiku call when a run goes idle) instead of a bare id.
 
 ## Out of scope

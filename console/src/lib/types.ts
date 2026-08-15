@@ -316,11 +316,13 @@ export interface SkillSummary {
   file_count: number;
   total_size: number;
   updated: number | null;
+  /** Where this catalog skill is installed: "global" (the settings default)
+   *  and/or workspace names. Empty means nothing mounts it. */
+  installed_in: string[];
 }
 
 export interface SkillsResponse {
   now: number;
-  workspace: string | null; // null = global scope
   skills: SkillSummary[];
 }
 

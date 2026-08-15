@@ -28,10 +28,16 @@ syros artifacts <space> push <path...>  upload local files/dirs into a space
 syros artifacts <space> pull [dest]     download a space
 syros artifacts <space> publish <session_id> <file...>
                                         copy files out of a session's workspace
-syros skills                            list skills in the bucket
-syros skills files <name>               list one skill's files (--workspace for workspace skills)
+syros skills                            list the skill catalog and where each is installed
+syros skills files <name>               list one skill's files
 syros skills cat <name> <file>          print one skill file's content
-syros skills sync                       seed skills/ from the official anthropics/skills repo
+syros skills sync                       seed the catalog from the official anthropics/skills repo
+syros skills install <name>... [--workspace <name>]
+                                        mount a catalog skill on a workspace (default: everywhere)
+syros skills uninstall <name>... [--workspace <name>]
+syros skills installed [--workspace <name>]
+                                        what that target mounts
+syros skills migrate                    promote pre-catalog workspace skills into the catalog
 syros connectors                        list platform connectors and credential status
 syros connectors auth <name>            OAuth into a connector; stores the credential
 syros connectors set <name> [--token X | --file p]
@@ -262,8 +268,11 @@ def _run_options(args) -> AgentOptions:
             allow.append("mcp__bq__query")
     flags = getattr(args, "connector", None) or []
     connectors = [name for flag in flags for name in flag.split(",") if name]
+    flags = getattr(args, "skill", None) or []
+    skills = [name for flag in flags for name in flag.split(",") if name]
     return AgentOptions(
         connectors=connectors or None,
+        skills=skills or None,
         model=args.model,
         system_prompt=args.system_prompt,
         allowed_tools=allow,
@@ -524,9 +533,7 @@ async def _skills(args) -> None:
     if args.action == "files":
         if not args.args:
             raise SystemExit("usage: syros skills files <name>")
-        files = await GcsObjects(project, bucket).skill_files(
-            args.args[0], workspace=args.workspace
-        )
+        files = await GcsObjects(project, bucket).skill_files(args.args[0])
         if not files:
             raise SystemExit(f"no such skill: {args.args[0]}")
         for item in files:
@@ -546,7 +553,6 @@ async def _skills(args) -> None:
                 args.args[0],
                 args.args[1],
                 max_bytes=MAX_PREVIEW_BYTES,
-                workspace=args.workspace,
             )
         except FileNotFoundError as exc:
             raise SystemExit(f"not found: {exc}") from exc
@@ -554,10 +560,68 @@ async def _skills(args) -> None:
             raise SystemExit(str(exc)) from exc
         sys.stdout.buffer.write(data)
         return
+
+    # --- installs: which catalog skills a workspace (or every session) mounts ---
+    if args.action in ("install", "uninstall"):
+        if not args.args:
+            raise SystemExit(f"usage: syros skills {args.action} <name>... [--workspace <name>]")
+        target = args.workspace or "the global default"
+        if args.action == "install":
+            available = await asyncio.to_thread(skills.catalog, project, bucket)
+            if unknown := sorted(set(args.args) - set(available)):
+                raise SystemExit(
+                    f"not in the catalog: {', '.join(unknown)} —"
+                    " run `syros skills` to list it, or `syros skills sync` to seed it"
+                )
+        action = skills.install if args.action == "install" else skills.uninstall
+        try:
+            names = await action(_store(args), list(args.args), workspace=args.workspace)
+        except skills.SkillError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"{target} now mounts: {', '.join(names) or '(nothing)'}")
+        return
+    if args.action == "installed":
+        names = await skills.installed(_store(args), workspace=args.workspace)
+        print("\n".join(names) or "(nothing installed)")
+        return
+    if args.action == "migrate":
+        # A one-time upgrade to the catalog, and it has to leave every session
+        # mounting what it mounted before: the skills that were global then are
+        # installed globally now (read first — after promotion the catalog also
+        # holds workspace skills, which were never global), and each promoted
+        # workspace skill is installed on the workspace it came from.
+        store = _store(args)
+        was_global = await asyncio.to_thread(skills.catalog, project, bucket)
+        summary = await asyncio.to_thread(skills.promote_legacy, project, bucket)
+        for workspace_name, promoted in sorted(summary["promoted"].items()):
+            await skills.install(store, sorted(promoted.values()), workspace=workspace_name)
+            for old, new in sorted(promoted.items()):
+                moved = f" (was {old})" if old != new else ""
+                print(f"{workspace_name}: installed {new}{moved}")
+        print(f"promoted {summary['files']} file(s) into the catalog")
+        if await skills.installed(store):
+            print("global install list already set — left alone")
+        elif was_global:
+            await skills.install(store, was_global)
+            print(f"installed globally, as before the catalog: {', '.join(was_global)}")
+        return
+
+    # The catalog, with where each skill is installed — a skill nobody installs
+    # is dead weight, and that is the one thing a bare listing used to hide.
     stats = await GcsObjects(project, bucket).skill_stats()
+    store = _store(args)
+    installs: dict[str, list[str]] = {}
+    for name in await skills.installed(store):
+        installs.setdefault(name, []).append("global")
+    for doc in sorted(await store.list_workspaces(), key=lambda d: d["name"]):
+        for name in ((doc.get("options") or {}).get("skills")) or []:
+            installs.setdefault(name, []).append(doc["name"])
     for name in sorted(stats):
         stat = stats[name]
-        print(f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']} bytes")
+        print(
+            f"{name:<24}  {stat['file_count']:>3} file(s)  {stat['total_size']:>9} bytes"
+            f"  {', '.join(installs.get(name, [])) or '(not installed)'}"
+        )
 
 
 async def _oauth_login(server_url: str, port: int) -> dict:
@@ -797,6 +861,12 @@ def _run_option_flags(parser: argparse.ArgumentParser) -> None:
         metavar="NAME",
         help="attach a platform connector (repeatable, or comma-separated)",
     )
+    parser.add_argument(
+        "--skill",
+        action="append",
+        metavar="NAME",
+        help="install a catalog skill, replacing the layer below (repeatable, or comma-separated)",
+    )
     parser.add_argument("--model", default=None)
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--allow", action="append", metavar="TOOL", help="repeatable")
@@ -909,7 +979,10 @@ def main() -> None:
 
     skills = sub.add_parser("skills")
     skills.add_argument(
-        "action", nargs="?", default="list", choices=["list", "files", "cat", "sync"]
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "files", "cat", "sync", "install", "uninstall", "installed", "migrate"],
     )
     skills.add_argument("args", nargs="*")
     skills.add_argument("--bucket", default=None)
@@ -918,7 +991,7 @@ def main() -> None:
         "--team",
         dest="workspace",
         default=None,
-        help="operate on a workspace's skills",
+        help="install target: this workspace instead of the global default",
     )
     skills.set_defaults(func=_skills)
 

@@ -30,10 +30,9 @@ from .fakes import FakeStore, append_message
 class FakeObjects:
     """Implements syros.console.objects.ObjectStoreProtocol over a name->bytes dict."""
 
-    def __init__(self, workspaces=None, spaces=None, skills=None, workspace_skills=None):
+    def __init__(self, workspaces=None, spaces=None, skills=None):
         # workspaces' shared directories live under the workspaces/ GCS prefix
         self.workspaces: dict[str, dict[str, bytes]] = workspaces or {}
-        self.workspace_skills: dict[str, dict[str, dict[str, bytes]]] = workspace_skills or {}
         self.spaces: dict[str, dict[str, bytes]] = spaces or {}
         self.skills: dict[str, dict[str, bytes]] = skills or {}
         # tags live beside the bytes, keyed (kind, owner, file) — mirrors GCS
@@ -180,44 +179,38 @@ class FakeObjects:
         skill_prefix(name)
         validate_file("skill file", file)
 
-    def _skill_pool(self, workspace):
-        if workspace is None:
-            return self.skills
-        return self.workspace_skills.setdefault(workspace, {})
+    async def skill_stats(self):
+        return {name: self._stats(files) for name, files in self.skills.items()}
 
-    async def skill_stats(self, workspace=None):
-        pool = self._skill_pool(workspace)
-        return {name: self._stats(files) for name, files in pool.items()}
-
-    async def skill_files(self, name, workspace=None):
-        files = self._skill_pool(workspace).get(name, {})
+    async def skill_files(self, name):
+        files = self.skills.get(name, {})
         return [{"name": n, "size": len(b), "updated": None} for n, b in files.items()]
 
-    async def read_skill_file(self, name, file, workspace=None):
+    async def read_skill_file(self, name, file):
         import mimetypes
 
         self._check_skill(name, file)
-        files = self._skill_pool(workspace).get(name, {})
+        files = self.skills.get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         if len(files[file]) > 100:
             raise ValueError("too large")
         return files[file], mimetypes.guess_type(file)[0] or "application/octet-stream"
 
-    async def write_skill_file(self, name, file, data, workspace=None):
+    async def write_skill_file(self, name, file, data):
         self._check_skill(name, file)
-        self._skill_pool(workspace).setdefault(name, {})[file] = data
+        self.skills.setdefault(name, {})[file] = data
 
-    async def delete_skill_file(self, name, file, workspace=None):
+    async def delete_skill_file(self, name, file):
         self._check_skill(name, file)
-        files = self._skill_pool(workspace).get(name, {})
+        files = self.skills.get(name, {})
         if file not in files:
             raise FileNotFoundError(file)
         del files[file]
 
-    async def delete_skill(self, name, workspace=None):
+    async def delete_skill(self, name):
         skill_prefix(name)
-        files = self._skill_pool(workspace).pop(name, None)
+        files = self.skills.pop(name, None)
         if not files:
             raise FileNotFoundError(name)
         return len(files)
@@ -939,13 +932,47 @@ async def test_skills_stats_and_files():
     console = api(FakeStore(), objects=objects)
 
     result = await console.skills()
-    assert result["skills"] == [{"name": "pdf", "file_count": 2, "total_size": 7, "updated": None}]
+    assert result["skills"] == [
+        {"name": "pdf", "file_count": 2, "total_size": 7, "updated": None, "installed_in": []}
+    ]
 
     listing = await console.skill_files("pdf")
     assert [f["name"] for f in listing["files"]] == ["SKILL.md", "ref/x.md"]
 
     with pytest.raises(NotFound):
         await console.skill_files("nope")
+
+
+async def test_skills_report_where_they_are_installed():
+    store = FakeStore()
+    await store.update_settings({"options": {"skills": ["pdf"]}})
+    await store.create_workspace("research", {"options": {"skills": ["pdf", "xlsx"]}})
+    objects = FakeObjects(skills={"pdf": {"SKILL.md": b"p"}, "xlsx": {"SKILL.md": b"x"}})
+
+    rows = (await api(store, objects=objects).skills())["skills"]
+
+    assert {row["name"]: row["installed_in"] for row in rows} == {
+        "pdf": ["global", "research"],
+        "xlsx": ["research"],
+    }
+
+
+async def test_install_skill_edits_the_targets_options():
+    store = FakeStore()
+    console = api(store, objects=FakeObjects(skills={"pdf": {"SKILL.md": b"p"}}))
+
+    result = await console.install_skill("pdf", {"workspace": "research"})
+    assert result["installed"] == ["pdf"]
+    assert store.workspaces["research"]["options"]["skills"] == ["pdf"]
+
+    await console.install_skill("pdf", {})
+    assert (await store.get_settings())["options"]["skills"] == ["pdf"]
+
+    assert (await console.install_skill("pdf", {"workspace": "research", "installed": False}))[
+        "installed"
+    ] == []
+    with pytest.raises(NotFound):
+        await console.install_skill("pdf", {"workspace": "research", "installed": False})
 
 
 async def test_skill_file_read_write_delete():

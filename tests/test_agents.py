@@ -129,6 +129,33 @@ async def test_resolve_merges_stored_options():
     assert merged.agent == "reviewer"
 
 
+async def test_resolve_layers_skill_installs_by_proximity():
+    """Installed skills are an ordinary option, so the nearest layer that names
+    any wins outright — an agent's install list replaces the workspace's, which
+    replaces the global default. Nothing is unioned."""
+    store = FakeStore()
+    await store.update_settings({"options": {"skills": ["pdf"]}})
+    await store.create_workspace("research", {"options": {"skills": ["xlsx", "docx"]}})
+    await make(store, name="analyst", run_options=AgentOptions(skills=["pptx"]))
+
+    workspace_run = await agents.resolve(store, AgentOptions(workspace="research", project="p"))
+    assert workspace_run.resolved_skills() == ["xlsx", "docx"]
+
+    agent_run = await agents.resolve(
+        store, AgentOptions(agent="analyst", workspace="research", project="p")
+    )
+    assert agent_run.resolved_skills() == ["pptx"]
+
+    # no workspace and no agent: the global default is what a session mounts
+    assert (await agents.resolve(store, AgentOptions(project="p"))).resolved_skills() == ["pdf"]
+
+    # explicit beats every stored layer, and an unnamed field still inherits
+    explicit = await agents.resolve(
+        store, AgentOptions(workspace="research", skills=["pdf"], project="p")
+    )
+    assert explicit.resolved_skills() == ["pdf"]
+
+
 # --- session creation resolves the reference ---
 
 

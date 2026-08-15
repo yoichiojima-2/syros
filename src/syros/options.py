@@ -34,6 +34,7 @@ _SERIALIZED_FIELDS = (
     "workspace",
     "artifacts",
     "connectors",
+    "skills",
 )
 
 ArtifactMode = Literal["rw", "ro"]
@@ -96,6 +97,14 @@ class AgentOptions:
     # hosted MCP server with the stored credential injected as a header. Only
     # the names are serialized — tokens never travel through Firestore.
     connectors: list[str] | None = None
+    # Skills installed on this run, by catalog name: each names a skill in the
+    # one global catalog (skills/{name}/ in the bucket) and the runner mounts
+    # exactly these into the sandbox HOME's .claude/skills/. Nothing is mounted
+    # implicitly — a skill is available where it is installed, and nowhere else.
+    # Like every other field this resolves by proximity, so the install list is
+    # replaced by the nearest layer that sets one, never unioned across layers:
+    # explicit/task <- agent <- workspace <- settings/global.
+    skills: list[str] | None = None
     project: str | None = None  # default: $SYROS_PROJECT or $GOOGLE_CLOUD_PROJECT
     region: str | None = None  # Cloud Run region; default: $SYROS_REGION or asia-northeast1
     vertex_region: str | None = None  # default: $CLOUD_ML_REGION or global
@@ -138,6 +147,10 @@ class AgentOptions:
             return {self.artifacts: "rw"}
         return dict(self.artifacts)
 
+    def resolved_skills(self) -> list[str]:
+        """The installed catalog names, de-duplicated, order preserved."""
+        return list(dict.fromkeys(self.skills or []))
+
     def validate(self) -> None:
         if self.system_prompt is not None and not isinstance(self.system_prompt, str):
             raise OptionsError("system_prompt must be a plain string in syros")
@@ -145,6 +158,8 @@ class AgentOptions:
             validate_name("workspace", self.workspace)
         if self.agent is not None:
             validate_name("agent", self.agent)
+        for skill in self.resolved_skills():
+            validate_name("skill", skill)
         for space, mode in self.resolved_artifacts().items():
             validate_name("artifact space", space)
             if mode not in get_args(ArtifactMode):

@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from .. import agents, remote, workflows, workspaces
+from .. import skills as skills_mod
 from .. import connectors as connectors_mod
 from ..journal import MAIN_BRANCH, active_branch
 from ..names import validate_name, validate_tags
@@ -805,65 +806,89 @@ class ConsoleAPI:
 
     # --- skills ---
     #
-    # Skills have no lease: the runner mounts read-only-ish copies into each
-    # sandbox HOME at start, so a console edit never races a live run's
-    # checkpoint the way a workspace edit would.
+    # One catalog (skills/{name}/), installed per target. Skills have no lease:
+    # the runner mounts read-only-ish copies into each sandbox HOME at start, so
+    # a console edit never races a live run's checkpoint the way a workspace
+    # edit would. Installing is an ordinary options edit (options.skills), so it
+    # goes through the workspace/settings forms — this section only serves the
+    # catalog itself, plus the installed-in listing those forms read back.
 
-    async def skills(self, workspace: str | None = None) -> dict[str, Any]:
-        stats = await self._bucket_objects().skill_stats(workspace)
-        rows = [{"name": name, **stat} for name, stat in sorted(stats.items())]
-        return {"now": time.time(), "workspace": workspace, "skills": to_jsonable(rows)}
+    async def skills(self) -> dict[str, Any]:
+        """The catalog, each skill tagged with where it is installed: "global"
+        for the settings default, plus every workspace that installs it."""
+        stats = await self._bucket_objects().skill_stats()
+        installs = await self._skill_installs()
+        rows = [
+            {"name": name, **stat, "installed_in": installs.get(name, [])}
+            for name, stat in sorted(stats.items())
+        ]
+        return {"now": time.time(), "skills": to_jsonable(rows)}
 
-    async def skill_files(self, name: str, workspace: str | None = None) -> dict[str, Any]:
-        files = await self._bucket_objects().skill_files(name, workspace)
+    async def _skill_installs(self) -> dict[str, list[str]]:
+        installs: dict[str, list[str]] = {}
+        for name in await skills_mod.installed(self._store):
+            installs.setdefault(name, []).append("global")
+        for doc in sorted(await self._store.list_workspaces(), key=lambda d: d["name"] or ""):
+            for name in ((doc.get("options") or {}).get("skills")) or []:
+                installs.setdefault(name, []).append(doc["name"])
+        return installs
+
+    async def skill_files(self, name: str) -> dict[str, Any]:
+        files = await self._bucket_objects().skill_files(name)
         if not files:
             raise NotFound(f"skill {name} not found")
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
 
-    async def skill_file(
-        self, name: str, file: str, workspace: str | None = None
-    ) -> tuple[bytes, str]:
+    async def skill_file(self, name: str, file: str) -> tuple[bytes, str]:
         """Raw bytes + content type, same contract as artifact_file."""
         try:
-            return await self._bucket_objects().read_skill_file(name, file, workspace)
+            return await self._bucket_objects().read_skill_file(name, file)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         except ValueError as exc:
             raise TooLarge(str(exc)) from exc
 
     async def write_skill_file(
-        self,
-        name: str,
-        file: str,
-        content: str,
-        encoding: str = "utf-8",
-        workspace: str | None = None,
+        self, name: str, file: str, content: str, encoding: str = "utf-8"
     ) -> dict[str, Any]:
         data = _decode_content(content, encoding)
         if len(data) > MAX_PREVIEW_BYTES:
             raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
-        await self._bucket_objects().write_skill_file(name, file, data, workspace)
+        await self._bucket_objects().write_skill_file(name, file, data)
         return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
 
-    async def delete_skill_file(
-        self, name: str, file: str, workspace: str | None = None
-    ) -> dict[str, Any]:
+    async def delete_skill_file(self, name: str, file: str) -> dict[str, Any]:
         try:
-            await self._bucket_objects().delete_skill_file(name, file, workspace)
+            await self._bucket_objects().delete_skill_file(name, file)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "file": file}
 
-    async def delete_skill(self, name: str, workspace: str | None = None) -> dict[str, Any]:
+    async def delete_skill(self, name: str) -> dict[str, Any]:
         try:
-            deleted = await self._bucket_objects().delete_skill(name, workspace)
+            deleted = await self._bucket_objects().delete_skill(name)
         except FileNotFoundError as exc:
             raise NotFound(str(exc)) from exc
         return {"now": time.time(), "ok": True, "name": name, "deleted": deleted}
 
+    async def install_skill(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Install/uninstall one catalog skill on a target — a workspace, or the
+        global default when no workspace is given. A shortcut for editing that
+        target's stored options.skills by hand, and the only skill write the
+        console makes outside the options forms."""
+        workspace = str(body["workspace"]) if body.get("workspace") else None
+        install = skills_mod.install if body.get("installed", True) else skills_mod.uninstall
+        try:
+            installed = await install(self._store, [name], workspace=workspace)
+        except skills_mod.SkillError as exc:
+            raise NotFound(str(exc)) from exc
+        return {"now": time.time(), "ok": True, "name": name, "installed": installed}
+
     async def sync_official_skills(self) -> dict[str, Any]:
-        """Seed skills/ from the official anthropics/skills repo (editable copies)."""
+        """Seed the catalog from the official anthropics/skills repo (editable
+        copies). Seeding installs nothing — a synced skill is available to
+        install, not mounted."""
         summary = await self._bucket_objects().sync_official_skills()
         return {"now": time.time(), "ok": True, **to_jsonable(summary)}
 

@@ -24,7 +24,7 @@ from .journal import MAIN_BRANCH, JournalWriter, active_branch, build_context, g
 from .options import AgentOptions, build_sdk_options, model_env, options_from_doc
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import artifacts, bigquery, connectors, titles, workflows, workspace
+from . import artifacts, bigquery, connectors, skills, titles, workflows, workspace
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -302,21 +302,20 @@ async def run(session_id: str) -> None:
         home_prefix = workspace.session_prefix(session_id, "home")
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
         await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
-        # Mount skills into HOME after the home restore, so the live prefixes
-        # win over anything a stale checkpoint might carry: global skills for
-        # every run, then the workspace's own — restored second, so a workspace skill
-        # shadows a same-named global one. The SDK finds them via
-        # setting_sources=["user"] below.
-        await asyncio.to_thread(
-            workspace.restore, config.project, config.bucket, "skills/", home / ".claude" / "skills"
-        )
-        if options.workspace:
+        # Mount the installed skills into HOME after the home restore, so the
+        # live catalog wins over anything a stale checkpoint might carry. The
+        # resolved options carry the install list (agent/workspace/global layer
+        # by proximity, resolved at session creation), and nothing else is
+        # mounted — an installed name with no catalog prefix restores zero
+        # files, which is exactly "not available". The SDK finds what lands
+        # here via setting_sources=["user"] below.
+        for skill in options.resolved_skills():
             await asyncio.to_thread(
                 workspace.restore,
                 config.project,
                 config.bucket,
-                f"team-skills/{options.workspace}/",
-                home / ".claude" / "skills",
+                skills.skill_prefix(skill),
+                home / ".claude" / "skills" / skill,
             )
         # Mount artifact spaces after the ws restore so the space's content wins.
         spaces = options.resolved_artifacts()
@@ -438,7 +437,7 @@ async def run(session_id: str) -> None:
             ws,
             ("artifacts/",) if spaces else (),
         )
-        # Skills are mounted from the shared skills/ prefix, not session state:
+        # Skills are mounted from the shared catalog, not session state:
         # checkpointing them here would resurrect skills deleted from the console.
         await asyncio.to_thread(
             workspace.checkpoint,

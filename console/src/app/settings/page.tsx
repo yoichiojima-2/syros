@@ -36,8 +36,9 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle>Option defaults</CardTitle>
           <CardDescription>
-            Inherited by every workspace and session. A workspace&apos;s stored options and a run&apos;s
-            explicit options each override these, field by field.
+            Inherited by every workspace and session — the skills installed here are the ones a
+            session mounts unless a nearer layer installs its own. A workspace&apos;s stored options
+            and a run&apos;s explicit options each override these, field by field.
           </CardDescription>
         </CardHeader>
         <CardContent>

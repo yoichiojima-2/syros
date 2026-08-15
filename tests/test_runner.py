@@ -200,9 +200,10 @@ async def test_runner_syncs_session_prefixes_without_workspace(env, store, fake_
     await run(SID)
 
     checkpointed = [(f"sessions/{SID}/state/ws/", "ws"), (f"sessions/{SID}/state/home/", "home")]
-    assert gcs_sync["restore"] == checkpointed + [("skills/", "skills")]
+    # nothing installed, so nothing is mounted: the catalog is not implicit
+    assert gcs_sync["restore"] == checkpointed
     assert gcs_sync["checkpoint"] == checkpointed
-    # skills are mounted from the shared prefix, never checkpointed into home
+    # skills are mounted from the catalog, never checkpointed into home
     assert gcs_sync["exclude"] == [(f"sessions/{SID}/state/home/", (".claude/skills/",))]
 
 
@@ -213,14 +214,22 @@ async def test_runner_routes_ws_to_shared_workspace(env, store, fake_harness, gc
     await run(SID)
 
     checkpointed = [("workspaces/shared/", "ws"), (f"sessions/{SID}/state/home/", "home")]
-    assert gcs_sync["restore"] == checkpointed + [
-        ("skills/", "skills"),
-        ("team-skills/shared/", "skills"),
-    ]
+    assert gcs_sync["restore"] == checkpointed
     assert gcs_sync["checkpoint"] == checkpointed
     # claimed during the run, released after
     assert store.workspaces["shared"]["lease_session_id"] is None
     assert store.workspaces["shared"]["lease_expires"] == 0.0
+
+
+async def test_runner_mounts_installed_skills_only(env, store, fake_harness, gcs_sync):
+    """Each installed skill restores from the catalog into its own directory
+    under HOME — and a name nobody installed is never touched."""
+    await store.create_session(SID, {"skills": ["pdf", "xlsx"]})
+    await store.push_inbox(SID, "message", "go")
+
+    await run(SID)
+
+    assert gcs_sync["restore"][2:] == [("skills/pdf/", "pdf"), ("skills/xlsx/", "xlsx")]
 
 
 async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync):
@@ -232,7 +241,6 @@ async def test_runner_mounts_artifact_spaces(env, store, fake_harness, gcs_sync)
     assert gcs_sync["restore"] == [
         (f"sessions/{SID}/state/ws/", "ws"),
         (f"sessions/{SID}/state/home/", "home"),
-        ("skills/", "skills"),
         ("artifacts/workspace/", "workspace"),
         ("artifacts/inputs/", "inputs"),
     ]

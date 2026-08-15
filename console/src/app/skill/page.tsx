@@ -13,15 +13,14 @@ import { bytes, relTime } from "@/lib/format";
 import type { OkResponse } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// One skill (skills/{name}/ in the bucket, or a workspace's own set with ?workspace=),
-// editable. Same master–detail editor as the workspace page, without the lease
-// gating: skills are copied into each sandbox HOME at run start, so a console
+// One catalog skill (skills/{name}/ in the bucket), editable. Same
+// master–detail editor as the workspace page, without the lease gating: an
+// installed skill is copied into each sandbox HOME at run start, so a console
 // edit never races a live run's checkpoint — it simply applies from the next
-// run onward.
+// run onward, everywhere the skill is installed.
 
-function fileUrl(skill: string, file: string, workspace: string | null): string {
+function fileUrl(skill: string, file: string): string {
   const query = new URLSearchParams({ name: file });
-  if (workspace) query.set("workspace", workspace);
   return `/api/skills/${encodeURIComponent(skill)}/file?${query}`;
 }
 
@@ -39,8 +38,7 @@ function SkillInner() {
   const params = useSearchParams();
   const name = params.get("name");
   const file = params.get("file");
-  const workspace = params.get("workspace");
-  const { files, refresh } = useSkillFiles(name, workspace);
+  const { files, refresh } = useSkillFiles(name);
   const now = useNow();
   const [flash, run] = useAction();
   const uploadRef = useRef<HTMLInputElement>(null);
@@ -48,7 +46,6 @@ function SkillInner() {
   const select = (nextFile: string | null) => {
     if (!name) return;
     const query = new URLSearchParams({ name });
-    if (workspace) query.set("workspace", workspace);
     if (nextFile) query.set("file", nextFile);
     router.replace(`/skill?${query}`);
   };
@@ -67,7 +64,6 @@ function SkillInner() {
         name: picked.name,
         content,
         encoding: "base64",
-        ...(workspace ? { workspace } : {}),
       });
       refresh();
       select(picked.name);
@@ -83,7 +79,6 @@ function SkillInner() {
       await post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
         name: created,
         content: "",
-        ...(workspace ? { workspace } : {}),
       });
       refresh();
       select(created);
@@ -109,18 +104,16 @@ function SkillInner() {
       <aside className="flex max-h-[45svh] shrink-0 flex-col gap-3 overflow-y-auto border-b border-border p-4 lg:max-h-none lg:w-72 lg:border-r lg:border-b-0">
         <div>
           <Link
-            href={workspace ? `/workspace?name=${encodeURIComponent(workspace)}` : "/skills"}
+            href="/skills"
             className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground hover:text-foreground"
           >
-            <ArrowLeft className="size-3" /> {workspace ? `Workspace ${workspace}` : "Skills"}
+            <ArrowLeft className="size-3" /> Skills
           </Link>
           <h1 className="px-1 pt-1 font-mono text-lg font-semibold tracking-tight break-all">
             {name}
           </h1>
           <p className="px-1 pt-2 text-[11px] text-muted-foreground">
-            {workspace
-              ? `Mounted into ${workspace}'s sessions at run start — edits apply from the next run.`
-              : "Mounted into every session at run start — edits apply from the next run."}
+            Mounted at run start wherever it is installed — edits apply from the next run.
           </p>
         </div>
 
@@ -189,18 +182,16 @@ function SkillInner() {
           <FileEditor
             file={file}
             files={files}
-            url={fileUrl(name, file, workspace)}
+            url={fileUrl(name, file)}
             save={(content) =>
               post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file`, {
                 name: file,
                 content,
-                ...(workspace ? { workspace } : {}),
               })
             }
             remove={() =>
               post<OkResponse>(`/api/skills/${encodeURIComponent(name)}/file/delete`, {
                 name: file,
-                ...(workspace ? { workspace } : {}),
               })
             }
             onChanged={refresh}

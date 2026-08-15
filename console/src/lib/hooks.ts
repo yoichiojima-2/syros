@@ -257,40 +257,33 @@ export function useConnectors(intervalMs = 15000): ConnectorSummary[] | null {
   return connectors;
 }
 
-/** Skills in one scope: global (workspace null) or a workspace's own skill set. */
-export function useSkills(workspace: string | null = null, intervalMs = 8000): SkillSummary[] | null {
+/** The skill catalog, each entry carrying where it is installed. */
+export function useSkills(intervalMs = 8000): SkillSummary[] | null {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
-  useEffect(() => setSkills(null), [workspace]);
-  usePolling(
-    (alive) => {
-      api<SkillsResponse>(`/api/skills${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`)
-        .then((data) => {
-          if (alive()) setSkills(data.skills);
-        })
-        .catch(() => {});
-    },
-    intervalMs,
-    [workspace],
-  );
+  usePolling((alive) => {
+    api<SkillsResponse>("/api/skills")
+      .then((data) => {
+        if (alive()) setSkills(data.skills);
+      })
+      .catch(() => {});
+  }, intervalMs);
   return skills;
 }
 
-/** Files in one skill (global or workspace-scoped). Like useWorkspaceFiles this exposes
- *  a refresh, so a save or delete shows up without waiting out the poll. */
+/** Files in one catalog skill. Like useWorkspaceFiles this exposes a refresh,
+ *  so a save or delete shows up without waiting out the poll. */
 export function useSkillFiles(
   name: string | null,
-  workspace: string | null = null,
   intervalMs = 8000,
 ): { files: StoredFile[] | null; refresh: () => void } {
   const [files, setFiles] = useState<StoredFile[] | null>(null);
   const [nonce, setNonce] = useState(0);
   // reset only when the skill changes — a refresh must not flash a skeleton
-  useEffect(() => setFiles(null), [name, workspace]);
+  useEffect(() => setFiles(null), [name]);
   usePolling(
     (alive) => {
       if (!name) return;
-      const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-      api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files${query}`)
+      api<SkillFilesResponse>(`/api/skills/${encodeURIComponent(name)}/files`)
         .then((data) => {
           if (alive()) setFiles(data.files);
         })
@@ -300,7 +293,7 @@ export function useSkillFiles(
         });
     },
     intervalMs,
-    [name, workspace, nonce],
+    [name, nonce],
   );
   return { files, refresh: () => setNonce((n) => n + 1) };
 }

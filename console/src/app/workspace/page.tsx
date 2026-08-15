@@ -3,7 +3,7 @@
 import { Suspense, useMemo } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, FilePlus2, FileText, Trash2 } from "lucide-react";
+import { ArrowLeft, FilePlus2, FileText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,13 +11,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { FileEditor } from "@/components/file-editor";
 import { FileManager, type FileOps } from "@/components/file-manager";
 import { OptionsForm } from "@/components/options-form";
-import { useAction, useNow, useSkills, useWorkspaceFiles, useWorkspaces } from "@/lib/hooks";
+import { useAction, useNow, useWorkspaceFiles, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
-import { bytes, relTime, shortId } from "@/lib/format";
+import { shortId } from "@/lib/format";
 import type { BulkFilesResponse, OkResponse } from "@/lib/types";
 
 // One workspace: a shared workspace (workspaces/{name}/ in the bucket) plus stored
-// option defaults, a description and the workspace's own skills. The file editor is
+// option defaults, a description, and the skills it installs from the catalog. The file editor is
 // the only surface where a human can change what a session will see on its
 // next restore, and the only one that can delete a file at all — checkpoint()
 // never removes blobs, so a file dropped inside a run comes back until someone
@@ -235,14 +235,13 @@ function WorkspaceInner() {
         </CardContent>
       </Card>
 
-      <WorkspaceSkills workspace={name} now={now} />
-
       <Card>
         <CardHeader>
           <CardTitle>Workspace settings</CardTitle>
           <CardDescription>
-            Stored option defaults every session on this workspace inherits — a run&apos;s explicit
-            options override them field by field. Edits apply to future runs only.
+            Stored option defaults every session on this workspace inherits — including the skills
+            it installs from the catalog. A run&apos;s explicit options override them field by
+            field, and edits apply to future runs only.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -271,84 +270,5 @@ function WorkspaceInner() {
         </CardContent>
       </Card>
     </div>
-  );
-}
-
-/** The workspace's own skills (skills scoped under the workspace in the bucket), with
- *  the same browse/edit/delete flows as the global skills pages. */
-function WorkspaceSkills({ workspace, now }: { workspace: string; now: number }) {
-  const router = useRouter();
-  const skills = useSkills(workspace);
-  const [flash, run] = useAction();
-
-  const create = () => {
-    const name = prompt("New skill name (lowercase, [a-z0-9_-])");
-    if (!name) return;
-    router.push(`/skill?name=${encodeURIComponent(name)}&workspace=${encodeURIComponent(workspace)}`);
-  };
-
-  const remove = (name: string) => {
-    if (!confirm(`Delete the whole skill ${name}? Every file under it is removed.`)) return;
-    run(async () => {
-      await post(`/api/skills/${encodeURIComponent(name)}/delete`, { workspace });
-      return `deleted ${name}`;
-    });
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          <div className="flex-1 space-y-1.5">
-            <CardTitle>Workspace skills</CardTitle>
-            <CardDescription>
-              Mounted into this workspace&apos;s sessions at run start, alongside the global skills.
-            </CardDescription>
-          </div>
-          {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
-          <Button variant="outline" size="sm" onClick={create}>
-            <FilePlus2 /> New skill
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="px-2 pb-2">
-        {skills === null ? (
-          <div className="space-y-2 p-2">
-            <Skeleton className="h-8" />
-            <Skeleton className="h-8" />
-          </div>
-        ) : skills.length === 0 ? (
-          <p className="p-4 text-center text-[13px] text-muted-foreground">
-            No workspace skills yet — create one and add its SKILL.md.
-          </p>
-        ) : (
-          <ul className="space-y-0.5">
-            {skills.map((skill) => (
-              <li key={skill.name} className="flex items-center gap-3 px-2">
-                <Link
-                  href={`/skill?name=${encodeURIComponent(skill.name)}&workspace=${encodeURIComponent(workspace)}`}
-                  className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium hover:underline"
-                >
-                  {skill.name}
-                </Link>
-                <span className="font-mono text-xs text-muted-foreground">
-                  {skill.file_count} file{skill.file_count === 1 ? "" : "s"} ·{" "}
-                  {bytes(skill.total_size)}
-                </span>
-                <span className="text-xs text-faint">{relTime(skill.updated, now)}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  title={`Delete ${skill.name}`}
-                  onClick={() => remove(skill.name)}
-                >
-                  <Trash2 />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
   );
 }
