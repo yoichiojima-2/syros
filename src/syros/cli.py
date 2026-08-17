@@ -59,7 +59,7 @@ import os
 
 from . import env
 from .errors import SyrosError
-from .options import AgentOptions
+from .options import AgentOptions, builtin_tools
 from .store import Store
 from .types import doc_to_message
 
@@ -262,12 +262,16 @@ def _run_options(args) -> AgentOptions:
     """The AgentOptions subset worth having on the command line."""
     allow = list(args.allow or [])
     mcp_servers: dict[str, dict] = {}
-    if getattr(args, "bigquery", False):
-        # The built-in BigQuery server, plus its tool pre-allowed: --bigquery
+    write = getattr(args, "bigquery_write", False)
+    if write or getattr(args, "bigquery", False):
+        # The built-in BigQuery server, plus its tools pre-allowed: --bigquery
         # is a one-flag opt-in, not a capability that then waits for approval.
-        mcp_servers["bq"] = {"type": "builtin", "name": "bigquery"}
-        if "mcp__bq__query" not in allow:
-            allow.append("mcp__bq__query")
+        # --bigquery-write implies it: the write tools are the same server.
+        config: dict = {"type": "builtin", "name": "bigquery"}
+        if write:
+            config["write"] = True
+        mcp_servers["bq"] = config
+        allow += [tool for tool in builtin_tools("bq", config) if tool not in allow]
     flags = getattr(args, "connector", None) or []
     connectors = [name for flag in flags for name in flag.split(",") if name]
     return AgentOptions(
@@ -943,6 +947,12 @@ def _run_option_flags(parser: argparse.ArgumentParser) -> None:
         "--bigquery",
         action="store_true",
         help="enable the built-in BigQuery tool (pre-allows mcp__bq__query)",
+    )
+    parser.add_argument(
+        "--bigquery-write",
+        action="store_true",
+        help="also let the session keep its own tables in the agent dataset"
+        " (implies --bigquery; needs sandbox_bigquery_write in the deployment)",
     )
 
 

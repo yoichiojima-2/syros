@@ -59,6 +59,34 @@ def test_rejects_extra_keys_in_builtin_config():
         options.validate()
 
 
+def test_accepts_the_bigquery_write_key():
+    AgentOptions(
+        project="p", mcp_servers={"bq": {"type": "builtin", "name": "bigquery", "write": True}}
+    ).validate()
+
+
+def test_rejects_a_non_boolean_write_key():
+    options = AgentOptions(
+        project="p", mcp_servers={"bq": {"type": "builtin", "name": "bigquery", "write": "yes"}}
+    )
+    with pytest.raises(OptionsError, match="write must be true or false"):
+        options.validate()
+
+
+def test_builtin_tools_follow_the_write_key():
+    from syros.options import builtin_tools
+
+    assert builtin_tools("bq", {"type": "builtin", "name": "bigquery"}) == ["mcp__bq__query"]
+    assert builtin_tools("bq", {"type": "builtin", "name": "bigquery", "write": True}) == [
+        "mcp__bq__query",
+        "mcp__bq__tables",
+        "mcp__bq__create_table",
+        "mcp__bq__insert",
+        "mcp__bq__query_into",
+        "mcp__bq__drop_table",
+    ]
+
+
 def test_rejects_path_like_mcp_key_for_builtin():
     # The key becomes part of the tool name (mcp__{key}__query), so it has to
     # be a plain addressable name.
@@ -277,3 +305,11 @@ def test_connectors_mcp_server_collision_rejected():
     )
     with pytest.raises(OptionsError):
         options.validate()
+
+
+def test_builtin_tools_are_per_builtin_not_a_default():
+    """A second builtin must not inherit BigQuery's tool names by falling
+    through — it would pre-allow tools that do not exist and none that do."""
+    from syros.options import builtin_tools
+
+    assert builtin_tools("x", {"type": "builtin", "name": "spanner", "write": True}) == []

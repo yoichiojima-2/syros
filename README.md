@@ -505,6 +505,54 @@ run parses as a script or a write is refused before it runs), refused above
 rows back. One side effect worth knowing: the audit session's own queries land in the
 *next* export's `tool_calls` — the audit audits itself.
 
+### The agents' own dataset
+
+A session that only reads has nowhere to put what it worked out. `"write": true` on the
+same reference adds five tools over a **second** dataset, `syros_data`
+(`data_dataset_id` / `$SYROS_BQ_DATA_DATASET`), which is the only place in BigQuery a
+session can write:
+
+```python
+AgentOptions(
+    mcp_servers={"bq": {"type": "builtin", "name": "bigquery", "write": True}},
+    allowed_tools=["mcp__bq__query", "mcp__bq__create_table", "mcp__bq__insert"],
+)
+```
+
+| tool | |
+| --- | --- |
+| `mcp__bq__tables` | list the dataset's tables with their schemas and row counts |
+| `mcp__bq__create_table` | a flat column spec, optionally day-partitioned |
+| `mcp__bq__insert` | append JSON rows — at most `bq_max_insert_rows` / `bq_max_insert_bytes` per call |
+| `mcp__bq__query_into` | run a `SELECT` and write its rows straight into a table, `append` or `truncate` |
+| `mcp__bq__drop_table` | delete one of them |
+
+Reading them back is the ordinary `query` tool. The CLI flag is `--bigquery-write` (it
+implies `--bigquery`), and the console has a **write** pill beside the BigQuery one; both
+pre-allow the tools above.
+
+`query_into` is the one to reach for on anything large — it keeps the rows in BigQuery
+instead of paging them through the model:
+
+```
+syros workflows create daily-rollup --cron "0 9 * * *" --tz Asia/Tokyo \
+  --prompt "Append yesterday's spend per agent to the agent_spend table (create it if
+            it does not exist: day DATE, agent STRING, runs INT64, usd FLOAT64),
+            reading from syros.run_log. Then tell me anything that moved more than
+            50% against the previous seven days." \
+  --model claude-sonnet-5 --bigquery-write
+```
+
+Three things to know. It needs its own deployment opt-in, `terraform apply
+-var sandbox_bigquery_write=true` — off by default, and off means every write comes back
+as a permission error. The dataset is **shared**: every session with the grant sees every
+table, and can drop one another's, the same trust model as the shared session bucket. And
+syros's own tables are not reachable from these tools at all — see below.
+
+`terraform destroy` will not drop this dataset while it has tables in it (unlike the
+`syros` snapshots, which `syros export` can always rebuild). That is deliberate: nothing
+else has a copy of what agents put here.
+
 ## Security model
 
 - **Data boundary** — model calls exit only via Vertex AI by default (the sandbox has no
@@ -533,6 +581,21 @@ rows back. One side effect worth knowing: the audit session's own queries land i
   query is written to the audit trail with its SQL before it executes. Per-query caps
   bound a query, not a day — use a BigQuery custom quota for a hard ceiling — and query
   results land in the transcript and in whatever the agent writes to an artifact space.
+- **Agent writes stop at one dataset** — `sandbox_bigquery_write = true` grants
+  `roles/bigquery.dataEditor` on `data_dataset_id` **and nothing else**: dataset-scoped,
+  never project-level. That scoping is the whole guarantee, because the agent shares the
+  runner's service account and has a shell — anything the tools refuse, `bq` would still
+  do, so tool-level checks are ergonomics and IAM is the boundary. What stays out of
+  reach whatever this flag is set to: the `syros` dataset is readable at most (never
+  `dataEditor`), and `run_log` is append-only by a table-scoped custom role with exactly
+  `tables.get` + `tables.updateData` — no delete, no schema rewrite. So a session cannot
+  edit or erase its own audit trail. Two caveats: `data_dataset_id` must not be
+  `dataset_id` — pointing it there would aim the write tools at the audit dataset, so
+  Terraform refuses the combination at plan time and every write tool fails closed if one
+  ever reaches a sandbox — and inside the writable dataset there is no session-to-session
+  isolation. Storage is billed and unbounded — agents append, nothing
+  expires — so set a default table expiration on the dataset if unattended workflows will
+  write to it for a long time.
 - **Network egress** — by default the sandbox has unrestricted internet access, which
   leaves one exfiltration path open: a prompt injection (say, in a fetched web page) can
   ask the agent to `curl` workspace data out. `terraform apply -var egress_control=true`
@@ -597,7 +660,9 @@ behind a default-deny egress firewall with a domain allowlist
 [Security model](#security-model)). The old `vpc_connector` variable is gone: passing it
 with `-var` is now an error (a leftover tfvars entry merely warns), so deployments that
 used it must opt in to `egress_control` or their sandbox reverts to unrestricted egress. `-var sandbox_bigquery=true` lets sessions use the
-built-in BigQuery tool (see [Security model](#security-model) before flipping it).
+built-in BigQuery tool, and `-var sandbox_bigquery_write=true` lets them keep their own
+tables in the `syros_data` dataset (see [Security model](#security-model) before flipping
+either).
 
 ### The console on Cloud Run
 
@@ -684,7 +749,7 @@ doing nothing.
 | `system_prompt` (str), `model`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd` | supported, identical semantics (passed through to the harness), except that an unset `system_prompt` resolves to the default-agent preset rather than to no system prompt — pass `""` for that |
 | `system_prompt` presets | the default-agent preset only (`claude_code` on the wire) — the resolution floor, and `default_prompt()` when you want it with instructions appended. A `file` preset would name a path the sandbox doesn't have (`OptionsError`) |
 | `can_use_tool` | supported; it rides the Firestore approval queue (audited, timeout-denied) |
-| `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox. The dict key names the tool (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
+| `mcp_servers` | http/sse configs, plus syros's own in-process servers by reference: `{"type": "builtin", "name": "bigquery"}`, resolved in the sandbox — add `"write": true` for the tools that keep tables in the agents' own dataset. The dict key names the tools (`{"bq": ...}` → `mcp__bq__query`) and must be a short lowercase name. Caller-defined in-process servers and stdio still can't cross the wire (`OptionsError`) |
 | `resume` | syros session id (`sess_...`) |
 | `cwd` | managed (GCS-backed); no local paths |
 | `workspace` | syros-only: a short name (`[a-z0-9][a-z0-9_-]*`), not a path. Sessions naming the same workspace share one GCS-backed working directory (`workspaces/{name}/ws/`), the workspace's skills, and its CLAUDE.md, and inherit the workspace's stored option defaults; transcripts stay per-session, so `resume` is unaffected. One live run per workspace — a contending run ends immediately with `stop_reason="workspace_busy"` and the prompt stays queued for a retry. Checkpoints never delete GCS objects, so a file deleted in one run reappears on the next restore — delete it in the console to remove it for good |

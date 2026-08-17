@@ -1,10 +1,12 @@
-"""Naming rules for the GCS prefixes syros owns.
+"""Naming rules for the identifiers syros builds out of user input.
 
 Workspace names and artifact space names follow the same rule — one short,
 lowercase, path-free segment — and the files inside them follow another. Both
 live here so options.py (client-side validation), artifacts.py, and
-workspace.py cannot drift apart: every prefix built from user input goes
-through these two functions.
+workspace.py cannot drift apart: every GCS prefix built from user input goes
+through these two functions. `validate_table` is the same idea one storage
+layer over: the only sanctioned way to turn an agent-supplied string into part
+of a BigQuery table id.
 """
 
 from __future__ import annotations
@@ -15,6 +17,11 @@ from .errors import OptionsError
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 TAG = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+# Stricter than NAME on both ends: BigQuery table ids take letters, digits and
+# underscores only (no hyphen), and no dot may survive — the name is
+# interpolated into `project.dataset.table`, so a dot is how an agent would
+# reach out of the dataset the write tools pin it to.
+TABLE = re.compile(r"[a-z][a-z0-9_]{0,127}")
 MAX_TAGS = 16
 
 
@@ -23,6 +30,23 @@ def validate_name(kind: str, value: str) -> str:
     if not isinstance(value, str) or not NAME.fullmatch(value):
         raise OptionsError(
             f"{kind} must be a short name matching [a-z0-9][a-z0-9_-]* (max 64 chars), not a path"
+        )
+    return value
+
+
+def validate_table(value: str) -> str:
+    """Check a BigQuery table name supplied by an agent.
+
+    This is the guard that keeps the write tools inside their own dataset: the
+    caller pins project and dataset from deployment config and only the table
+    segment comes from the model, so nothing here may contain a dot, a
+    backtick, or whitespace.
+    """
+    if not isinstance(value, str) or not TABLE.fullmatch(value):
+        raise OptionsError(
+            f"invalid table name {value!r}: must match [a-z][a-z0-9_]* (max 128 chars) —"
+            " lowercase letters, digits and underscores only, and not a qualified"
+            " `dataset.table` (the dataset is fixed by the deployment)"
         )
     return value
 

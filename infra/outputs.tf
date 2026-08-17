@@ -18,6 +18,10 @@ output "dataset" {
   value = google_bigquery_dataset.analytics.dataset_id
 }
 
+output "data_dataset" {
+  value = google_bigquery_dataset.agent_data.dataset_id
+}
+
 output "image_repository" {
   value = "${var.region}-docker.pkg.dev/${var.project}/${google_artifact_registry_repository.syros.repository_id}"
 }

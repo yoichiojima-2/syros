@@ -61,8 +61,23 @@ variable "dataset_id" {
   default     = "syros"
 }
 
+variable "data_dataset_id" {
+  description = "BigQuery dataset sandboxed sessions keep their own tables in. Must not be dataset_id: that one holds the audit tables, and the sandbox identity gets write access on this one."
+  type        = string
+  default     = "syros_data"
+  # Enforced as a precondition on the dataset in main.tf rather than a
+  # validation block here: cross-variable references in variable validation
+  # need Terraform 1.9, and this config pins no minimum version.
+}
+
 variable "sandbox_bigquery" {
   description = "Let sandboxed sessions query BigQuery (the built-in `bigquery` MCP server). Grants the runner service account project-level roles/bigquery.jobUser + roles/bigquery.dataViewer — read access to EVERY dataset in the project, not just the syros audit tables. Off by default."
+  type        = bool
+  default     = false
+}
+
+variable "sandbox_bigquery_write" {
+  description = "Let sandboxed sessions keep their own tables in BigQuery (the built-in `bigquery` server's write tools). Grants the runner service account roles/bigquery.dataEditor on data_dataset_id ONLY, plus project-level roles/bigquery.jobUser. Sessions can create, append to and drop tables in that one dataset; the audit dataset stays read-only (and run_log append-only) whatever this is set to. Off by default."
   type        = bool
   default     = false
 }
@@ -77,6 +92,18 @@ variable "bq_max_rows" {
   description = "Rows one agent query may return"
   type        = number
   default     = 200
+}
+
+variable "bq_max_insert_rows" {
+  description = "Rows one agent insert call may write"
+  type        = number
+  default     = 500
+}
+
+variable "bq_max_insert_bytes" {
+  description = "Serialized payload one agent insert call may write (BigQuery's own streaming limit is 10 MB)"
+  type        = number
+  default     = 4000000
 }
 
 variable "scheduler_job_name" {

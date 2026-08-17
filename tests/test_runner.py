@@ -459,7 +459,9 @@ async def test_runner_stops_writing_when_lease_lost(env, store, monkeypatch, run
 
 async def test_runner_resolves_builtin_mcp_server(env, store, fake_harness, monkeypatch):
     monkeypatch.setattr(
-        syros.runner, "BUILTIN_SERVERS", {"bigquery": lambda key, project: ("server", key, project)}
+        syros.runner,
+        "BUILTIN_SERVERS",
+        {"bigquery": lambda key, config, project: ("server", key, config, project)},
     )
     await store.create_session(
         SID, {"mcp_servers": {"bq": {"type": "builtin", "name": "bigquery"}}}
@@ -469,7 +471,27 @@ async def test_runner_resolves_builtin_mcp_server(env, store, fake_harness, monk
     await run(SID)
 
     (client,) = fake_harness
-    assert client.options.mcp_servers == {"bq": ("server", "bq", "proj-1")}
+    reference = {"type": "builtin", "name": "bigquery"}
+    assert client.options.mcp_servers == {"bq": ("server", "bq", reference, "proj-1")}
+
+
+async def test_runner_passes_builtin_config_to_the_server(env, store, fake_harness, monkeypatch):
+    """The reference's own keys reach the builtin — `write` is what decides
+    whether the session gets the BigQuery write tools at all."""
+    monkeypatch.setattr(
+        syros.runner,
+        "BUILTIN_SERVERS",
+        {"bigquery": lambda key, config, project: ("server", config.get("write"))},
+    )
+    await store.create_session(
+        SID, {"mcp_servers": {"bq": {"type": "builtin", "name": "bigquery", "write": True}}}
+    )
+    await store.push_inbox(SID, "message", "audit")
+
+    await run(SID)
+
+    (client,) = fake_harness
+    assert client.options.mcp_servers == {"bq": ("server", True)}
 
 
 async def test_runner_passes_http_mcp_servers_through(env, store, fake_harness):
