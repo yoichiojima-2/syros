@@ -195,7 +195,7 @@ CATALOG: tuple[Preset, ...] = (
                     " your final message when a downstream task will read it."
                 ),
                 "model": "claude-sonnet-5",
-                "allowed_tools": ["WebSearch", "WebFetch", "Read", "Write"],
+                "allowed_tools": ["WebSearch", "WebFetch", "Read", "Write", "Skill(brief)"],
                 "artifacts": {"research": "rw"},
                 "max_budget_usd": 2.0,
             },
@@ -209,7 +209,7 @@ CATALOG: tuple[Preset, ...] = (
             " approval, and the workspace's CLAUDE.md loads as project memory. The fan-in task"
             " of research-pipeline runs as this."
         ),
-        requires=("research",),
+        requires=("research", "brief"),
         spec={
             "name": "writer",
             "options": {
@@ -223,7 +223,7 @@ CATALOG: tuple[Preset, ...] = (
                     " 'brief' skill for structure. Rewrite files in place; do not accumulate"
                     " dated copies."
                 ),
-                "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep"],
+                "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "Skill(brief)"],
                 "permission_mode": "acceptEdits",
                 "workspace": "research",
             },
@@ -536,7 +536,7 @@ CATALOG: tuple[Preset, ...] = (
             " outright. Its value is the precedent it finds — what was decided before, what it"
             " assumed, and whether that assumption still holds."
         ),
-        requires=("ops",),
+        requires=("ops", "pre-mortem"),
         spec={
             "name": "archivist",
             "options": {
@@ -554,7 +554,11 @@ CATALOG: tuple[Preset, ...] = (
                     " this' is a useful answer; a strained link to an unrelated decision is"
                     " worse than silence, because someone will act on it."
                 ),
-                "allowed_tools": ["Read", "Grep", "Glob"],
+                # Skill(x) and not a bare "Skill": the harness matches a Skill
+                # rule on its content, so a contentless one is skipped and the
+                # call falls through to the approval gate — which, on a run
+                # nobody is watching, times out to a denial.
+                "allowed_tools": ["Read", "Grep", "Glob", "Skill(pre-mortem)"],
                 "disallowed_tools": ["Write", "Edit", "Bash"],
                 "workspace": "ops",
                 "max_turns": 20,
@@ -570,7 +574,7 @@ CATALOG: tuple[Preset, ...] = (
             " CLAUDE.md loads as project memory. Sets no budget of its own, so the workspace"
             " layer's cap is what applies."
         ),
-        requires=("ops",),
+        requires=("ops", "decision-record", "pre-mortem"),
         spec={
             "name": "recorder",
             "options": {
@@ -590,7 +594,15 @@ CATALOG: tuple[Preset, ...] = (
                     " back and a forward pointer on the old one — never by editing the old one,"
                     " which loses the reasoning that makes the history worth keeping."
                 ),
-                "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep"],
+                "allowed_tools": [
+                    "Read",
+                    "Write",
+                    "Edit",
+                    "Glob",
+                    "Grep",
+                    "Skill(decision-record)",
+                    "Skill(pre-mortem)",
+                ],
                 "permission_mode": "acceptEdits",
                 "workspace": "ops",
             },

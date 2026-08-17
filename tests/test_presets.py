@@ -131,6 +131,39 @@ def test_preset_files_sit_at_the_prefix_they_install_to():
     assert set(dict(presets.files("workspaces/ops/ws"))) == {"CLAUDE.md"}
 
 
+def test_a_prompt_that_names_a_skill_pre_allows_it():
+    """Running a skill is a `Skill` tool call, and a tool call an allowlist does
+    not cover goes to the approval gate — which times out to a denial when the
+    run is a 3am cron with nobody watching. The rule has to carry the skill name:
+    the harness matches Skill rules on their content and skips contentless ones,
+    so a bare "Skill" (or "Skill(*)") allows nothing.
+    """
+    skills = {preset.object_name for preset in presets.CATALOG if preset.kind == "skill"}
+    agents = {p.object_name: p for p in presets.CATALOG if p.kind == "agent"}
+
+    def allowed(agent_name):
+        return set((agents[agent_name].spec.get("options") or {}).get("allowed_tools") or ())
+
+    def named(text):
+        return {skill for skill in skills if f"'{skill}'" in text}
+
+    for name, preset in agents.items():
+        prompt = (preset.spec.get("options") or {}).get("system_prompt") or ""
+        for skill in named(prompt if isinstance(prompt, str) else ""):
+            assert f"Skill({skill})" in allowed(name), (name, skill)
+            assert skill in {presets.get(r).object_name for r in preset.requires}, (name, skill)
+
+    # ...and the same for a task prompt, where the agent is named by the task.
+    for preset in presets.CATALOG:
+        if preset.kind != "workflow":
+            continue
+        for task in preset.spec["tasks"]:
+            if not task.get("agent"):
+                continue
+            for skill in named(task["prompt"]):
+                assert f"Skill({skill})" in allowed(task["agent"]), (preset.name, task["id"])
+
+
 def test_scheduled_workflows_install_paused():
     """A fresh install must not start spending because someone clicked Install."""
     for preset in presets.CATALOG:
@@ -391,7 +424,8 @@ async def test_installing_one_ops_workflow_leaves_the_research_track_alone():
 
     assert set(store.agents) == {"archivist", "advocate", "contrarian", "recorder"}
     assert set(store.workspaces) == {"ops"}
-    assert set(objects.skills) == {"decision-record"}
+    # pre-mortem rides along on recorder and archivist, which are told to follow it
+    assert set(objects.skills) == {"decision-record", "pre-mortem"}
     assert "listener" not in store.agents  # the connector-backed one stays out
     assert named(summary["installed"])[-1] == "decision-review"
 
