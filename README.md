@@ -152,6 +152,9 @@ syros presets install research-pipeline   # or one, with whatever it references
 The console has the same action behind an **Install examples** button in the Agents,
 Workflows, and Workspaces empty states.
 
+The catalog has two tracks. The **research** track is a tour of the mechanics — each
+preset differs from its neighbour along one axis:
+
 | preset | kind | what it demonstrates |
 |---|---|---|
 | `research` | workspace | stored option defaults, and a `CLAUDE.md` that loads as project memory |
@@ -164,16 +167,52 @@ Workflows, and Workspaces empty states.
 | `daily-brief` | workflow | one task on a cron — the classic scheduled prompt |
 | `research-pipeline` | workflow | a five-task DAG: fan-out, fan-in, and result piping |
 
+The **ops** track is meant to be resumed and used. It models a decision-making
+organization as five stances over one workspace, and automates the three rituals every
+company believes in and never runs: a decision record with a real opposing case, a
+pre-mortem, and a retro that audits past decisions against what actually happened.
+
+| preset | kind | what it is |
+|---|---|---|
+| `ops` | workspace | the organization's memory: `decisions/`, `risks/`, `retros/`, and house rules the workflows depend on |
+| `decision-record` | skill | the question, the option rejected, the assumption underneath, the tripwire that reopens it |
+| `pre-mortem` | skill | assume it already failed, work backwards; a risk with no early-warning signal is a worry |
+| `advocate` | agent | argues *for* a proposal at full strength — steelman, not cheerleading |
+| `contrarian` | agent | argues against, and is told outright that manufacturing objections is the failure mode |
+| `archivist` | agent | read-only over the record: what was decided before, and whether its assumption held |
+| `recorder` | agent | the only writer — turns the branches into a record under `acceptEdits` |
+| `listener` | agent | connector-backed (Slack): the same question asked three times is a missing doc |
+| `decision-review` | workflow | `frame` → the case for ∥ the case against → one record written from both |
+| `risk-register` | workflow | a pre-mortem across three failure lenses in parallel, fanning into a register |
+| `retro` | workflow | quarterly: which tripwires fired while nobody was looking |
+| `faq` | workflow | weekly, connector-backed: Slack repeats → a document |
+
+What holds that track together is a convention rather than code: every decision and every
+risk carries a **tripwire** — the observable event that means "reopen this". The `ops`
+`CLAUDE.md` requires one, `decision-review` and `risk-register` write them, and `retro`
+is the scheduled job that comes back and checks them.
+
+It is also the catalog's best showcase of the machinery. `decision-review` argues both
+sides *at once*, which is possible only because `advocate` and `contrarian` take no
+workspace — two concurrent tasks cannot both hold an exclusive lease, so they trade
+through the `ops` artifact space and fan into `recorder`, which does hold it. `retro` is
+the deliberate contrast: a serial chain, so it may keep the workspace end to end.
+
+Two of the twelve reach outside the bucket. `listener` names the Slack connector, and an
+agent naming a connector with no stored credential **fails the run before its first
+turn** — so run `syros connectors auth slack` before resuming `faq`. Everything else
+works on a fresh install.
+
 Installed presets are **yours** — ordinary documents and blobs in the usual collections,
 with no version pointer back to the catalog and nothing that re-syncs them. Edit or delete
 them freely. Re-running the installer skips whatever already exists (so a partial install
 completes cleanly), and `--force` is the explicit opt-out that replaces definitions and
 files, including edits you made.
 
-Two deliberate choices worth knowing. **Scheduled presets install paused**: `daily-brief`
-carries a cron but arrives disabled, so clicking Install never starts spending — resume it
-once its prompt says what you actually want briefed, and the next slot re-bases on the
-current time. And **`research-pipeline` shares an artifact space rather than a workspace**:
+Two deliberate choices worth knowing. **Scheduled presets install paused**: `daily-brief`,
+`retro` and `faq` carry a cron but arrive disabled, so clicking Install never starts
+spending — resume one once its prompt says what you actually want, and the next slot
+re-bases on the current time. And **`research-pipeline` shares an artifact space rather than a workspace**:
 its two middle tasks run in parallel, and a workspace's exclusive lease cannot be held by
 both — `workflows.create` rejects that definition outright. Artifact spaces take no lease.
 The serial tail of the chain does take the workspace, from the agents it names, where
@@ -209,7 +248,7 @@ syros agents show|update|delete reviewer
 
 The console has an Agents view with the same create/edit/delete surface, and sessions
 show which agent they ran as. Workflow tasks can reference an agent too (below).
-`syros presets install` creates four worked examples if you'd rather start from something
+`syros presets install` creates nine worked agents if you'd rather start from something
 than from a blank form — see [Presets](#presets).
 
 ### The default agent
@@ -378,7 +417,7 @@ The console does the same thing from the browser: drop a folder onto the Skills 
 `sync` pulls the official [anthropics/skills](https://github.com/anthropics/skills)
 tarball and copies each skill into the bucket — Anthropic's skills are fetched, never
 vendored, and the copies are editable snapshots: re-syncing overwrites official files but
-never touches skills (or files) the tarball doesn't carry. (The two skills under
+never touches skills (or files) the tarball doesn't carry. (The skills under
 [Presets](#presets) are the exception: those are syros' own, so they ship as package data
 rather than being fetched — same editable-copy semantics once installed.) `sync` always
 seeds the global prefix, so it takes no `--workspace`. Skills come in

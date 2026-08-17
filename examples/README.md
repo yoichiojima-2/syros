@@ -55,8 +55,8 @@ setup — stored agents, workspaces, artifact spaces and connectors are covered 
 [top-level README](../README.md), and each has a CLI surface (`syros agents`,
 `syros workspaces`, `syros artifacts`, `syros connectors`) and a console page.
 
-`syros presets install` creates a worked set of them — four agents, a workspace with a
-`CLAUDE.md`, two workflows and two skills — so `AgentOptions(agent="researcher")` or
+`syros presets install` creates a worked set of them — nine agents, two workspaces with a
+`CLAUDE.md` each, six workflows and four skills — so `AgentOptions(agent="researcher")` or
 `AgentOptions(workspace="research")` has something real to resolve against while you are
 trying the examples out. See [Presets](../README.md#presets).
 

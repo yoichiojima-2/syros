@@ -49,7 +49,11 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
   every installation has run it.
 - Presets (`presets/__init__.py`, data under `presets/data/`) are example objects
   installed through the ordinary `create()` calls — nothing about an installed
-  preset is special afterwards, and no doc points back at the catalog. Install
+  preset is special afterwards, and no doc points back at the catalog. Two tracks:
+  `research*` demonstrates the resolution chain, `ops` (decision-review, risk-register,
+  retro, faq) is meant to be resumed and used — keep it connector-free except `listener`,
+  since an agent naming a connector fails the run at start without a stored credential.
+  Install
   order is by kind (`KINDS`): workflows last, because `workflows._validate_tasks`
   resolves each task's agent against the store at definition time. Package data
   ships because hatchling includes everything git-tracked under `src/syros/`; read
