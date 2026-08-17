@@ -1,21 +1,29 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ArrowRight, Pause, Pencil, Play, Trash2, Zap } from "lucide-react";
+import { ArrowLeft, ArrowRight, Network, Pause, Pencil, Play, Trash2, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RunBadge, TaskBadge } from "@/components/run-badge";
 import { RunTimeline } from "@/components/run-timeline";
+import { WorkflowGraph, type GraphTask } from "@/components/workflow-graph";
 import { StatCard } from "@/components/stat-card";
 import { WorkflowForm } from "@/components/workflow-form";
 import { useAction, useNow, useWorkflow } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { clockTime, compact, duration, relTime, shortId, untilTime } from "@/lib/format";
-import type { WorkflowRun, WorkflowSummary, WorkflowTaskSpec } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import type {
+  WorkflowRun,
+  WorkflowSummary,
+  WorkflowTaskSpec,
+  WorkflowTaskState,
+} from "@/lib/types";
 
 // Run history for one workflow: what its tasks are, when it fires next, and
 // how every run so far went. Task runs are ordinary sessions — each task chip
@@ -52,12 +60,18 @@ export default function WorkflowPage() {
 }
 
 function WorkflowInner() {
-  const name = useSearchParams().get("name");
+  const params = useSearchParams();
+  const name = params.get("name");
+  // Which run the graph is showing, kept in the URL so one is linkable.
+  // Absent = the newest run (or the bare definition before anything has run);
+  // "definition" is how you ask for the shape without a run painted on it.
+  const runParam = params.get("run");
   const router = useRouter();
   const { workflow, runs, missing, refresh } = useWorkflow(name);
   const now = useNow();
   const [flash, act] = useAction();
   const [editing, setEditing] = useState(false);
+  const [focus, setFocus] = useState<string | null>(null);
 
   if (!name || missing) {
     return (
@@ -69,6 +83,16 @@ function WorkflowInner() {
       </p>
     );
   }
+
+  const graphed =
+    runParam === "definition"
+      ? null
+      : ((runs ?? []).find((run) => run.id === runParam) ?? (runParam ? null : (runs?.[0] ?? null)));
+  // An old run is drawn from the task list it captured at launch, not from the
+  // definition, which may have been edited since.
+  const spec = graphed?.spec ?? workflow?.tasks ?? null;
+  const showRun = (id: string | null) =>
+    router.replace(`/workflow?name=${encodeURIComponent(name)}&run=${id ?? "definition"}`);
 
   const paused = workflow ? !workflow.enabled : false;
   const command = (fn: () => Promise<string>) =>
@@ -185,19 +209,53 @@ function WorkflowInner() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Definition</CardTitle>
-          <CardDescription>
-            The task chain every firing runs — each task is one session
-          </CardDescription>
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1.5">
+            <CardTitle>Graph</CardTitle>
+            <CardDescription>
+              {graphed
+                ? "One firing, task by task — click a task to open its session"
+                : "The task graph every firing runs — an edge is what waits for what"}
+            </CardDescription>
+          </div>
+          <Select
+            aria-label="Graph subject"
+            className="sm:max-w-[18rem]"
+            value={graphed?.id ?? "definition"}
+            onChange={(event) =>
+              showRun(event.target.value === "definition" ? null : event.target.value)
+            }
+          >
+            <option value="definition">Definition</option>
+            {(runs ?? []).map((run) => (
+              <option key={run.id} value={run.id}>
+                {shortId(run.id)} · {run.status} · {clockTime(run.started_at)}
+              </option>
+            ))}
+          </Select>
         </CardHeader>
         <CardContent className="space-y-3">
-          {workflow === null ? (
+          {workflow === null || spec === null ? (
             <Skeleton className="h-20 w-full" />
           ) : (
             <>
-              {workflow.tasks.map((task) => (
-                <TaskSpecRow key={task.id} task={task} />
+              <WorkflowGraph
+                tasks={graphTasks(spec, graphed?.tasks, now)}
+                selected={focus}
+                onSelect={(id) => {
+                  setFocus(id);
+                  const session = graphed?.tasks[id]?.session_id;
+                  if (session) router.push(`/session?sid=${session}`);
+                }}
+                empty="This workflow has no tasks."
+              />
+              {spec.map((task) => (
+                <TaskSpecRow
+                  key={task.id}
+                  task={task}
+                  state={graphed?.tasks[task.id]}
+                  selected={focus === task.id}
+                />
               ))}
               <div className="flex flex-wrap gap-1.5">
                 {setOptions(workflow.options).map(([key, value]) => (
@@ -227,7 +285,7 @@ function WorkflowInner() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 pb-4">
-          <RunList runs={runs} now={now} />
+          <RunList runs={runs} now={now} graphed={graphed?.id ?? null} onGraph={showRun} />
         </CardContent>
       </Card>
       {flash && <p className="text-center text-[11px] text-muted-foreground">{flash}</p>}
@@ -267,11 +325,69 @@ function WorkflowLine({ workflow, now }: { workflow: WorkflowSummary | null; now
   );
 }
 
-function TaskSpecRow({ task }: { task: WorkflowTaskSpec }) {
+/** The graph's nodes. Without a run the shape is all there is to show, so the
+ *  second line carries the agent or the prompt's opening; with one it carries
+ *  the status *word* and how long the task took — color never says it alone. */
+function graphTasks(
+  spec: WorkflowTaskSpec[],
+  state: Record<string, WorkflowTaskState> | undefined,
+  now: number,
+): GraphTask[] {
+  return spec.map((task) => {
+    const run = state?.[task.id];
+    if (!run) {
+      return {
+        id: task.id,
+        label: task.id,
+        depends_on: task.depends_on,
+        detail: task.agent ? `as ${task.agent}` : compact(task.prompt.trim().split("\n")[0], 26),
+        title: task.prompt,
+      };
+    }
+    const seconds = run.finished_at
+      ? (run.finished_at ?? 0) - (run.started_at ?? 0)
+      : run.started_at
+        ? now - run.started_at
+        : null;
+    return {
+      id: task.id,
+      label: task.id,
+      depends_on: task.depends_on,
+      status: run.status,
+      detail: seconds === null ? run.status : `${run.status} · ${duration(seconds)}`,
+      title: run.error || run.result_preview || task.prompt,
+      disabled: !run.session_id,
+    };
+  });
+}
+
+function TaskSpecRow({
+  task,
+  state,
+  selected,
+}: {
+  task: WorkflowTaskSpec;
+  state?: WorkflowTaskState;
+  selected: boolean;
+}) {
+  // Picking a node above scrolls its prompt into view; "nearest" keeps the
+  // page still when the row is already where the eye is.
+  const row = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (selected) row.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selected]);
+
   return (
-    <div className="rounded-lg border border-border bg-surface px-3 py-2">
+    <div
+      ref={row}
+      className={cn(
+        "rounded-lg border border-border bg-surface px-3 py-2",
+        selected && "border-transparent ring-2 ring-ring",
+      )}
+    >
       <div className="flex flex-wrap items-center gap-1.5 pb-1.5">
         <span className="font-mono text-[12px] font-semibold">{task.id}</span>
+        {state && <TaskBadge status={state.status} />}
         {task.depends_on.length > 0 && (
           <span className="flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
             <ArrowRight className="size-3" />
@@ -358,7 +474,17 @@ function Stats({
   );
 }
 
-function RunList({ runs, now }: { runs: WorkflowRun[] | null; now: number }) {
+function RunList({
+  runs,
+  now,
+  graphed,
+  onGraph,
+}: {
+  runs: WorkflowRun[] | null;
+  now: number;
+  graphed: string | null;
+  onGraph: (id: string) => void;
+}) {
   const router = useRouter();
   if (runs === null) {
     return (
@@ -385,10 +511,18 @@ function RunList({ runs, now }: { runs: WorkflowRun[] | null; now: number }) {
             : run.started_at
               ? now - run.started_at
               : null;
-        // spec order, so the chips read in pipe order rather than dict order
+        // Definition order, so the chips read the way the tasks were written
+        // rather than in dict order. They are a status index, not a sequence —
+        // what waits for what is the graph's job, so there are no arrows here.
         const order = run.spec.map((t) => t.id);
         return (
-          <div key={run.id} className="rounded-lg border border-border bg-surface px-3 py-2">
+          <div
+            key={run.id}
+            className={cn(
+              "rounded-lg border border-border bg-surface px-3 py-2",
+              graphed === run.id && "border-transparent ring-2 ring-ring",
+            )}
+          >
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-1.5">
               <span className="font-mono text-xs" title={run.id}>
                 {shortId(run.id)}
@@ -405,14 +539,24 @@ function RunList({ runs, now }: { runs: WorkflowRun[] | null; now: number }) {
                 {duration(seconds)}
                 {run.finished_at ? "" : "…"}
               </span>
+              <span className="flex-1" />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                disabled={graphed === run.id}
+                onClick={() => onGraph(run.id)}
+              >
+                <Network />
+                Graph
+              </Button>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
-              {order.map((taskId, index) => {
+              {order.map((taskId) => {
                 const state = run.tasks[taskId];
                 if (!state) return null;
                 return (
-                  <span key={taskId} className="flex items-center gap-1.5">
-                    {index > 0 && <ArrowRight className="size-3 text-faint" />}
+                  <span key={taskId} className="flex items-center gap-1.5 pr-1.5">
                     <button
                       type="button"
                       disabled={!state.session_id}
