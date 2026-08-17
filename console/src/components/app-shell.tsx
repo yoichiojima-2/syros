@@ -21,17 +21,19 @@ import { cn } from "@/lib/utils";
 import { PalettePicker } from "@/components/palette-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
 
+// ordered by what you're doing, not alphabetically: what's running now, then
+// the definitions that produced it, then settings
 const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard", label: "Dashboard", icon: ChartColumn },
   { href: "/sessions", label: "Sessions", icon: ListTree },
+  { href: "/approvals", label: "Approvals", icon: ShieldCheck },
+  { href: "/artifacts", label: "Artifacts", icon: Package },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/workflows", label: "Workflows", icon: CalendarClock },
-  { href: "/approvals", label: "Approvals", icon: ShieldCheck },
   { href: "/workspaces", label: "Workspaces", icon: Users },
   { href: "/skills", label: "Skills", icon: Sparkles },
   { href: "/connectors", label: "Connectors", icon: Plug },
-  { href: "/artifacts", label: "Artifacts", icon: Package },
   { href: "/settings", label: "Settings", icon: SlidersHorizontal },
 ];
 
@@ -49,8 +51,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="font-serif text-[17px] tracking-tight">syros</span>
           <span className="hidden truncate font-mono text-[11px] text-faint md:inline">{host}</span>
         </div>
-        {/* below md the sidebar is a top bar: labels hide so ten entries fit as
-            icons, and the row scrolls sideways on the narrowest screens */}
+        {/* below md the sidebar is a top bar: labels hide so every entry fits
+            as an icon, and the row scrolls sideways on the narrowest screens */}
         <nav className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto md:flex-none md:flex-col md:gap-0.5 md:overflow-visible">
           {NAV.map(({ href, label, icon: Icon }) => {
             // detail pages are singular (/session, /workflow, /workspace) and
