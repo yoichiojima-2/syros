@@ -84,12 +84,16 @@ export function layoutDag<T extends DagTask>(tasks: T[], opts: DagOptions = {}):
   if (tasks.length === 0) return { nodes: [], edges: [], width: 0, height: 0 };
 
   const layers = layerOf(tasks);
-  const columns: T[][] = [];
+  const sparse: T[][] = [];
   for (const task of tasks) {
     const layer = layers.get(task.id) ?? 0;
-    (columns[layer] ??= []).push(task);
+    (sparse[layer] ??= []).push(task);
   }
-  for (let i = 0; i < columns.length; i++) columns[i] ??= [];
+  // Empty layers only happen when a broken draft cut a cycle — every layer of a
+  // real DAG is populated, since a node at layer k has a dependency at k-1.
+  // Dropping the holes keeps a malformed graph drawn snug rather than shunted
+  // right by a blank column.
+  const columns = [...sparse].filter((column) => column?.length);
 
   // Row assignment, column by column: by the time a column is ordered its
   // dependencies already have rows, so the barycenter is well defined. A node

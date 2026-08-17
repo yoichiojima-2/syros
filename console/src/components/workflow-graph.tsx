@@ -204,7 +204,9 @@ export function WorkflowGraph({
                     setDrag({ from: id, x: at.x, y: at.y, over: null });
                   }}
                   style={{ left: x + w - 5, top: y + h / 2 - 5 }}
-                  className="absolute size-2.5 cursor-crosshair rounded-full border border-input bg-card transition-colors hover:border-primary hover:bg-primary"
+                  // touch-none, or a touch drag is claimed as a pan of the
+                  // scroll container and the gesture dies on pointercancel.
+                  className="absolute size-2.5 cursor-crosshair touch-none rounded-full border border-input bg-card transition-colors hover:border-primary hover:bg-primary"
                   title={`Drag to a task that should run after ${task.label}`}
                 />
               )}

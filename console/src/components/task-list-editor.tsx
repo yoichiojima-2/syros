@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ChoiceField, Field } from "@/components/option-fields";
+import { wouldCycle } from "@/lib/dag";
 import { cn } from "@/lib/utils";
 
 /** One row of the editor. `dependsOn === null` means the user never touched the
@@ -51,8 +52,12 @@ export function effectiveDeps(task: TaskDraft, index: number, tasks: TaskDraft[]
 }
 
 /** Databricks-Jobs-style task list: a card per task, "+ Add task" to grow the
- *  chain, and dependencies picked from the tasks above (which makes a cycle
- *  unrepresentable). A one-task list is the ordinary scheduled prompt.
+ *  chain, and dependencies picked from the tasks above. A one-task list is the
+ *  ordinary scheduled prompt.
+ *
+ *  Offering only the tasks above used to be enough to make a cycle
+ *  unrepresentable; since the graph can draw an edge backwards, it isn't, so
+ *  the chips carry the same `wouldCycle` guard the drag does.
  *
  *  The graph above it (see `workflow-graph-editor.tsx`) is the map; these cards
  *  stay the body being edited, so every task's prompt is readable at once and
@@ -93,6 +98,13 @@ export function TaskListEditor({
     .map((task) => task.id)
     .filter((id, i, ids) => id && ids.indexOf(id) !== i);
 
+  // The same graph the canvas draws, keyed by draft key, so a chip and a drag
+  // agree on which dependencies would close a loop.
+  const graph = tasks.map((task, index) => ({
+    id: task.key,
+    depends_on: effectiveDeps(task, index, tasks),
+  }));
+
   return (
     <div className="space-y-3">
       {tasks.map((task, index) => {
@@ -111,6 +123,10 @@ export function TaskListEditor({
             index={index}
             choices={choices}
             deps={deps}
+            // Turning a dependency off never closes a loop; only adding one can.
+            blocked={choices
+              .filter((other) => !deps.includes(other.key) && wouldCycle(graph, other.key, task.key))
+              .map((other) => other.key)}
             explicit={task.dependsOn !== null}
             agents={agents}
             selected={selected === task.key}
@@ -141,6 +157,7 @@ function TaskCard({
   index,
   choices,
   deps,
+  blocked,
   explicit,
   agents,
   selected,
@@ -152,6 +169,7 @@ function TaskCard({
   index: number;
   choices: TaskDraft[];
   deps: string[];
+  blocked: string[];
   explicit: boolean;
   agents: string[];
   selected: boolean;
@@ -249,17 +267,25 @@ function TaskCard({
               <div className="flex flex-wrap items-center gap-1.5 pt-1">
                 {choices.map((other) => {
                   const on = deps.includes(other.key);
+                  const loops = blocked.includes(other.key);
                   return (
                     <button
                       key={other.key}
                       type="button"
                       aria-pressed={on}
+                      disabled={loops}
+                      title={
+                        loops
+                          ? `${other.id || "that task"} already runs after this one`
+                          : undefined
+                      }
                       onClick={() => toggleDep(other.key)}
                       className={cn(
                         "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
                         on
                           ? "border-transparent bg-primary-soft text-foreground"
                           : "border-border text-muted-foreground hover:bg-secondary",
+                        loops && "cursor-not-allowed text-faint opacity-50 hover:bg-transparent",
                       )}
                     >
                       {other.id || "…"}
