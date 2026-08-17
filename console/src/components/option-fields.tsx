@@ -25,11 +25,21 @@ export const TOOLS = [
 ];
 
 // The built-in BigQuery MCP server: a session asks for it by reference and the
-// sandbox swaps in the live server. Toggling it on also pre-allows its tool —
+// sandbox swaps in the live server. Toggling it on also pre-allows its tools —
 // the toggle is a one-click opt-in, not a capability that then waits for
-// approval. Queries still need the deployment's IAM opt-in (sandbox_bigquery).
+// approval. Queries still need the deployment's IAM opt-in (sandbox_bigquery),
+// and `write` needs its own (sandbox_bigquery_write).
 export const BIGQUERY_SERVER = { type: "builtin", name: "bigquery" };
+export const BIGQUERY_WRITE_SERVER = { type: "builtin", name: "bigquery", write: true };
 export const BIGQUERY_TOOL = "mcp__bq__query";
+// Mirrors options.BIGQUERY_WRITE_TOOLS: the tools the write reference adds.
+export const BIGQUERY_WRITE_TOOLS = [
+  "mcp__bq__tables",
+  "mcp__bq__create_table",
+  "mcp__bq__insert",
+  "mcp__bq__query_into",
+  "mcp__bq__drop_table",
+];
 
 const CUSTOM = " custom"; // sentinel no real name can collide with
 
@@ -143,33 +153,58 @@ export function ConnectorPicker({
   );
 }
 
-/** One pill for the built-in BigQuery tool, styled like the connector chips.
- *  On means the form submits mcp_servers={bq: BIGQUERY_SERVER} and pre-allows
- *  BIGQUERY_TOOL. Read access itself is the deployment's call: without
- *  `sandbox_bigquery = true` in Terraform every query returns a permission
- *  error, which is why the hint rides on the pill. */
+/** Two pills for the built-in BigQuery tools, styled like the connector chips.
+ *  `bigquery` submits mcp_servers={bq: BIGQUERY_SERVER} and pre-allows
+ *  BIGQUERY_TOOL; `write` upgrades that reference and pre-allows the tools that
+ *  keep tables in the agents' own dataset. Access itself is the deployment's
+ *  call — without `sandbox_bigquery` / `sandbox_bigquery_write` in Terraform
+ *  the calls come back as permission errors, which is why the hints ride on the
+ *  pills. Write implies read: they are the same server. */
 export function BigQueryToggle({
   on,
   onChange,
+  write,
+  onWriteChange,
 }: {
   on: boolean;
   onChange: (on: boolean) => void;
+  write: boolean;
+  onWriteChange: (on: boolean) => void;
 }) {
+  const pill = (active: boolean) =>
+    cn(
+      "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
+      active
+        ? "border-transparent bg-primary-soft text-foreground"
+        : "border-border text-muted-foreground hover:bg-secondary",
+    );
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <button
         type="button"
         aria-pressed={on}
         title="Read-only SQL over the project's BigQuery — needs sandbox_bigquery = true in the deployment"
-        onClick={() => onChange(!on)}
-        className={cn(
-          "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
-          on
-            ? "border-transparent bg-primary-soft text-foreground"
-            : "border-border text-muted-foreground hover:bg-secondary",
-        )}
+        onClick={() => {
+          // Turning the server off takes write with it: write is a key on this
+          // same reference, not a second server.
+          if (on) onWriteChange(false);
+          onChange(!on);
+        }}
+        className={pill(on)}
       >
         bigquery
+      </button>
+      <button
+        type="button"
+        aria-pressed={write}
+        title="Let the session keep its own tables in the agent dataset — needs sandbox_bigquery_write = true in the deployment"
+        onClick={() => {
+          if (!write) onChange(true);
+          onWriteChange(!write);
+        }}
+        className={pill(write)}
+      >
+        write
       </button>
     </div>
   );
@@ -179,9 +214,11 @@ export function BigQueryToggle({
  *  renders only the fields it cares about; unrendered fields stay empty and
  *  buildOptionsPayload leaves them out of the payload. */
 export function useOptionsDraft(stored: Record<string, unknown> = {}) {
-  const storedBigquery = Boolean(
-    (stored.mcp_servers as Record<string, unknown> | undefined)?.bq,
-  );
+  const storedBq = (stored.mcp_servers as Record<string, unknown> | undefined)?.bq as
+    | Record<string, unknown>
+    | undefined;
+  const storedBigquery = Boolean(storedBq);
+  const storedBigqueryWrite = Boolean(storedBq?.write);
   // The system prompt is either a hand-written persona that replaces the
   // default prompt or text added after it, so the toggle and the text are one
   // field split in two: with the toggle on, the text is what gets appended.
@@ -203,11 +240,17 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
   );
   const [extraTools, setExtraTools] = useState(
     ((stored.allowed_tools as string[]) ?? [])
-      // The auto-allowed BigQuery tool rides the toggle, not the free-text row.
-      .filter((tool) => !TOOLS.includes(tool) && !(storedBigquery && tool === BIGQUERY_TOOL))
+      // The auto-allowed BigQuery tools ride the toggles, not the free-text row.
+      .filter(
+        (tool) =>
+          !TOOLS.includes(tool) &&
+          !(storedBigquery && tool === BIGQUERY_TOOL) &&
+          !(storedBigqueryWrite && BIGQUERY_WRITE_TOOLS.includes(tool)),
+      )
       .join(", "),
   );
   const [bigquery, setBigquery] = useState(storedBigquery);
+  const [bigqueryWrite, setBigqueryWrite] = useState(storedBigqueryWrite);
   const [connectors, setConnectors] = useState<string[]>((stored.connectors as string[]) ?? []);
   const [budget, setBudget] = useState(
     stored.max_budget_usd == null ? "" : String(stored.max_budget_usd),
@@ -223,6 +266,7 @@ export function useOptionsDraft(stored: Record<string, unknown> = {}) {
     tools, setTools,
     extraTools, setExtraTools,
     bigquery, setBigquery,
+    bigqueryWrite, setBigqueryWrite,
     connectors, setConnectors,
     budget, setBudget,
     maxTurns, setMaxTurns,
@@ -256,9 +300,11 @@ export function buildOptionsPayload(draft: OptionsDraft): Record<string, unknown
   if (draft.workspace.trim()) options.workspace = draft.workspace.trim();
   if (draft.artifacts.trim()) options.artifacts = draft.artifacts.trim();
   const allowed = allowedTools(draft);
-  if (draft.bigquery) {
-    options.mcp_servers = { bq: BIGQUERY_SERVER };
-    if (!allowed.includes(BIGQUERY_TOOL)) allowed.push(BIGQUERY_TOOL);
+  if (draft.bigquery || draft.bigqueryWrite) {
+    const write = draft.bigqueryWrite;
+    options.mcp_servers = { bq: write ? BIGQUERY_WRITE_SERVER : BIGQUERY_SERVER };
+    const tools = write ? [BIGQUERY_TOOL, ...BIGQUERY_WRITE_TOOLS] : [BIGQUERY_TOOL];
+    for (const tool of tools) if (!allowed.includes(tool)) allowed.push(tool);
   }
   if (allowed.length) options.allowed_tools = allowed;
   if (draft.connectors.length) options.connectors = draft.connectors;

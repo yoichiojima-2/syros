@@ -56,6 +56,26 @@ _PRESET_KEYS = ("type", "preset", "append")
 # no google-cloud-bigquery and no reason to import claude_agent_sdk.
 BUILTIN_MCP_SERVERS = ("bigquery",)
 
+# Config keys a builtin accepts beyond {"type", "name"}. Per-builtin rather
+# than one shared set: an option that means nothing to the server it is written
+# on should still be rejected, the same as any other unknown key.
+BUILTIN_MCP_KEYS: dict[str, frozenset[str]] = {"bigquery": frozenset({"write"})}
+
+# The tool names each builtin contributes, for the callers that pre-allow them
+# (cli, console) — kept here rather than beside the @tool decorators so a
+# client with no sandbox dependencies can still name them. The pairing with the
+# live server's tools is asserted in the tests.
+BIGQUERY_TOOLS = ("query",)
+BIGQUERY_WRITE_TOOLS = ("tables", "create_table", "insert", "query_into", "drop_table")
+
+
+def builtin_tools(key: str, config: dict[str, Any]) -> list[str]:
+    """The `mcp__{key}__{tool}` names a builtin reference makes available."""
+    tools = list(BIGQUERY_TOOLS)
+    if config.get("write"):
+        tools += list(BIGQUERY_WRITE_TOOLS)
+    return [f"mcp__{key}__{tool}" for tool in tools]
+
 
 def default_prompt(append: str | None = None) -> dict[str, Any]:
     """The `system_prompt` value that runs the harness's default agent.
@@ -229,15 +249,19 @@ class AgentOptions:
                 # The key becomes part of the tool name (mcp__{key}__query), so
                 # it has to be addressable in allowed_tools.
                 validate_name("mcp server", name)
-                if unknown := sorted(set(config) - {"type", "name"}):
+                builtin = config.get("name")
+                if builtin not in BUILTIN_MCP_SERVERS:
+                    raise OptionsError(
+                        f"mcp server {name!r}: unknown builtin {builtin!r} —"
+                        f" available: {', '.join(BUILTIN_MCP_SERVERS)}"
+                    )
+                allowed = {"type", "name"} | BUILTIN_MCP_KEYS.get(str(builtin), frozenset())
+                if unknown := sorted(set(config) - allowed):
                     raise OptionsError(
                         f"mcp server {name!r}: unknown builtin key(s): {', '.join(unknown)}"
                     )
-                if config.get("name") not in BUILTIN_MCP_SERVERS:
-                    raise OptionsError(
-                        f"mcp server {name!r}: unknown builtin {config.get('name')!r} —"
-                        f" available: {', '.join(BUILTIN_MCP_SERVERS)}"
-                    )
+                if "write" in config and not isinstance(config["write"], bool):
+                    raise OptionsError(f"mcp server {name!r}: write must be true or false")
             elif kind not in ("http", "sse"):
                 raise OptionsError(
                     f"mcp server {name!r}: type must be 'http', 'sse' or 'builtin' — stdio"

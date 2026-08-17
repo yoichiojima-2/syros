@@ -206,6 +206,32 @@ resource "google_bigquery_table" "run_log" {
   ])
 }
 
+# --- the agents' own dataset: the one place a session may write ---
+#
+# Separate from the analytics dataset above, and that separation is the point.
+# The sandbox agent runs as the runner service account with a shell, so the
+# only thing standing between a prompt-injected agent and syros's own audit
+# trail is that its write grant (below, dataEditor) names THIS dataset and
+# nothing else. Never widen it to a project-level role, and never point
+# data_dataset_id at dataset_id — the variable's validation refuses that.
+#
+# No delete_contents_on_destroy, unlike the disposable snapshots above: these
+# tables are whatever agents have accumulated and no export can recreate them,
+# so a `terraform destroy` should stop and make someone decide.
+resource "google_bigquery_dataset" "agent_data" {
+  dataset_id  = var.data_dataset_id
+  location    = var.region
+  description = "Structured data written by sandboxed sessions (the built-in `bigquery` server's write tools)"
+  depends_on  = [google_project_service.apis]
+
+  lifecycle {
+    precondition {
+      condition     = var.data_dataset_id != var.dataset_id
+      error_message = "data_dataset_id must differ from dataset_id — the agent-writable dataset cannot be the one holding syros's own audit tables."
+    }
+  }
+}
+
 resource "google_artifact_registry_repository" "syros" {
   repository_id = "syros"
   location      = var.region
@@ -306,8 +332,13 @@ resource "google_bigquery_table_iam_member" "runner_run_log" {
 # analysis of the project's own data. For a narrower deployment, replace these
 # with a google_bigquery_dataset_iam_member on google_bigquery_dataset.analytics
 # (dataViewer) plus jobUser alone.
+#
+# jobUser rides either opt-in: running any query job needs it, including the
+# write tools' query_into. It is project-level because BigQuery has no smaller
+# scope for it, and it grants no data access on its own — a job can still only
+# touch tables the grants below actually allow.
 resource "google_project_iam_member" "runner_bigquery_jobs" {
-  count   = var.sandbox_bigquery ? 1 : 0
+  count   = var.sandbox_bigquery || var.sandbox_bigquery_write ? 1 : 0
   project = var.project
   role    = "roles/bigquery.jobUser"
   member  = "serviceAccount:${google_service_account.runner.email}"
@@ -318,6 +349,24 @@ resource "google_project_iam_member" "runner_bigquery_data" {
   project = var.project
   role    = "roles/bigquery.dataViewer"
   member  = "serviceAccount:${google_service_account.runner.email}"
+}
+
+# The write grant, and the only one in this file that lets a session change
+# anything in BigQuery. google_bigquery_dataset_iam_member, not
+# google_project_iam_member: dataEditor at project level would hand every
+# session the ability to drop the run_log audit table (and terraform's
+# deletion_protection on it is state-side only, not API-enforced). Scoped here,
+# an agent can create/append/drop tables in its own dataset and cannot read a
+# row of the audit dataset through it.
+#
+# Sessions are not isolated from each other inside this dataset: any session
+# with this grant can drop any other's table. That is the same trust model as
+# the shared session bucket — one deployment, one team.
+resource "google_bigquery_dataset_iam_member" "runner_agent_data" {
+  count      = var.sandbox_bigquery_write ? 1 : 0
+  dataset_id = google_bigquery_dataset.agent_data.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${google_service_account.runner.email}"
 }
 
 # Granted only when the sandbox actually calls Anthropic directly, so the default
@@ -402,6 +451,18 @@ resource "google_cloud_run_v2_job" "runner" {
         env {
           name  = "SYROS_BQ_MAX_ROWS"
           value = tostring(var.bq_max_rows)
+        }
+        env {
+          name  = "SYROS_BQ_DATA_DATASET"
+          value = google_bigquery_dataset.agent_data.dataset_id
+        }
+        env {
+          name  = "SYROS_BQ_MAX_INSERT_ROWS"
+          value = tostring(var.bq_max_insert_rows)
+        }
+        env {
+          name  = "SYROS_BQ_MAX_INSERT_BYTES"
+          value = tostring(var.bq_max_insert_bytes)
         }
 
         dynamic "env" {

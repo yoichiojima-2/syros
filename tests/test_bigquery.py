@@ -7,12 +7,20 @@ touch is constructing QueryJobConfig, which is offline.
 import datetime
 import decimal
 import json
+from dataclasses import replace
+
+import pytest
 
 from syros.analytics import SCHEMAS
-from syros.bigquery import _cell, build_server, describe, run_query
+from mcp import types
+
+from syros.bigquery import _cell, _write_tools, build_server, describe, run_query
 from syros.env import BigQueryEnv
 
 CONFIG = BigQueryEnv(project="p", dataset="syros", max_bytes=1000, max_rows=3, max_result_bytes=400)
+# The same deployment with the agents' own dataset in play. Tiny insert caps
+# so the cap tests do not have to build a real 4 MB payload.
+WRITE_CONFIG = replace(CONFIG, max_insert_rows=3, max_insert_bytes=300)
 
 
 class FakeJob:
@@ -229,3 +237,381 @@ def test_description_points_cost_questions_at_the_audit_log():
         assert column in text
     # and which cost column is summable: cost_usd is a running total
     assert "run_cost_usd" in text
+
+
+# --- the agent's own dataset ----------------------------------------------
+
+
+class FakeTableRef:
+    def __init__(self, table_id):
+        self.table_id = table_id
+        self.reference = self
+
+
+class FakeTable:
+    def __init__(self, table_id, schema=(), rows=0, description=None, partition=None):
+        self.table_id = table_id
+        self.schema = list(schema)
+        self.num_rows = rows
+        self.description = description
+        self.time_partitioning = partition
+
+
+class FakeWriteBQ:
+    """Records every write call instead of making it; the recorded table ids
+    are what the isolation tests assert on."""
+
+    def __init__(self, *jobs, tables=(), error=None, insert_errors=None):
+        self._jobs = list(jobs)
+        self._tables = list(tables)
+        self._error = error
+        self._insert_errors = insert_errors
+        self.calls = []
+        self.created = []
+        self.inserted = []
+        self.deleted = []
+
+    def query(self, sql, job_config=None):
+        self.calls.append((sql, job_config))
+        return self._jobs.pop(0)
+
+    def list_tables(self, dataset_ref, max_results=None):
+        self.listed = (dataset_ref.project, dataset_ref.dataset_id, max_results)
+        return iter([FakeTableRef(t.table_id) for t in self._tables[:max_results]])
+
+    def get_table(self, ref):
+        return next(t for t in self._tables if t.table_id == ref.table_id)
+
+    def create_table(self, table, timeout=None):
+        if self._error:
+            raise self._error
+        self.created.append(table)
+        return table
+
+    def insert_rows_json(self, table_id, rows, timeout=None):
+        self.inserted.append((table_id, rows))
+        return self._insert_errors or []
+
+    def delete_table(self, table_id, not_found_ok=None, timeout=None):
+        if self._error:
+            raise self._error
+        self.deleted.append((table_id, not_found_ok))
+
+
+def _text(result):
+    return result["content"][0]["text"]
+
+
+async def _tool_names(server):
+    """What the session actually sees, asked of the live MCP server rather
+    than of the list we handed it."""
+    handler = server["instance"].request_handlers[types.ListToolsRequest]
+    listed = await handler(types.ListToolsRequest(method="tools/list"))
+    return [tool.name for tool in listed.root.tools]
+
+
+def _server(client, config=WRITE_CONFIG):
+    """The write tools bound to a fake client, keyed by name."""
+    return {tool.name: tool.handler for tool in _write_tools(config, lambda: client)}
+
+
+def _call(server, name, args):
+    return server[name](args)
+
+
+def _qualified(ref):
+    """google.cloud.bigquery normalizes a table id string into a
+    TableReference; this reads it back as the id that was passed in."""
+    return f"{ref.project}.{ref.dataset_id}.{ref.table_id}"
+
+
+async def test_write_tools_are_absent_unless_the_session_asked_for_them():
+    read_only = build_server("bq", CONFIG, client_factory=lambda project: None)
+    assert await _tool_names(read_only) == ["query"]
+
+
+async def test_write_tools_are_present_when_the_session_asked():
+    server = build_server("bq", WRITE_CONFIG, write=True, client_factory=lambda project: None)
+    assert await _tool_names(server) == [
+        "query",
+        "tables",
+        "create_table",
+        "insert",
+        "query_into",
+        "drop_table",
+    ]
+
+
+async def test_the_builtin_advertises_exactly_the_tools_it_builds():
+    """options names the tools for the callers that pre-allow them (cli,
+    console); the server is where they actually come from."""
+    from syros.options import BIGQUERY_TOOLS, BIGQUERY_WRITE_TOOLS
+
+    server = build_server("bq", WRITE_CONFIG, write=True, client_factory=lambda project: None)
+    assert await _tool_names(server) == [*BIGQUERY_TOOLS, *BIGQUERY_WRITE_TOOLS]
+
+
+async def test_a_dataset_qualified_table_name_is_refused():
+    """The one test that matters: the write tools pin project and dataset, and
+    the table argument is the only part the model controls."""
+    client = FakeWriteBQ()
+    server = _server(client)
+    for name in ("syros.run_log", "p.syros.run_log", "run_log`; DROP", "Run_Log", "", "../x"):
+        result = await _call(server, "drop_table", {"table": name})
+        assert result["is_error"] is True, name
+        assert "invalid table name" in _text(result)
+    assert client.deleted == []
+
+
+async def test_every_write_tool_resolves_into_the_write_dataset():
+    client = FakeWriteBQ(FakeJob(processed=1), FakeJob(rows=[]))
+    server = _server(client)
+    await _call(
+        server,
+        "create_table",
+        {"table": "notes", "columns": [{"name": "a", "type": "STRING"}]},
+    )
+    await _call(server, "insert", {"table": "notes", "rows": [{"a": "x"}]})
+    await _call(server, "query_into", {"table": "notes", "sql": "SELECT 1"})
+    await _call(server, "drop_table", {"table": "notes"})
+    expected = "p.syros_data.notes"
+    assert _qualified(client.created[0].reference) == expected
+    assert client.inserted[0][0] == expected
+    assert _qualified(client.calls[-1][1].destination) == expected
+    assert client.deleted[0][0] == expected
+
+
+def test_write_dataset_may_not_be_the_audit_dataset():
+    with pytest.raises(ValueError, match="cannot be the one holding"):
+        BigQueryEnv(
+            project="p",
+            dataset="syros",
+            max_bytes=1,
+            max_rows=1,
+            max_result_bytes=1,
+            write_dataset="syros",
+        )
+
+
+async def test_tables_lists_the_write_dataset_with_schemas():
+    from google.cloud import bigquery
+
+    client = FakeWriteBQ(
+        tables=[
+            FakeTable(
+                "notes",
+                schema=[bigquery.SchemaField("a", "STRING", mode="NULLABLE")],
+                rows=3,
+                description="scratch",
+            )
+        ]
+    )
+    server = _server(client)
+    payload = json.loads(_text(await _call(server, "tables", {})))
+    assert payload["tables"] == [
+        {
+            "table": "notes",
+            "columns": [{"name": "a", "type": "STRING", "mode": "NULLABLE"}],
+            "rows": 3,
+            "description": "scratch",
+            "partition_field": None,
+        }
+    ]
+    assert client.listed[:2] == ("p", "syros_data")
+
+
+async def test_create_table_builds_the_schema_and_partitioning():
+    client = FakeWriteBQ()
+    server = _server(client)
+    result = await _call(
+        server,
+        "create_table",
+        {
+            "table": "runs",
+            "columns": [
+                {"name": "day", "type": "TIMESTAMP", "mode": "REQUIRED"},
+                {"name": "note", "type": "STRING"},
+            ],
+            "description": "one row per run",
+            "partition_field": "day",
+        },
+    )
+    assert result["is_error"] is False
+    (table,) = client.created
+    assert [(f.name, f.field_type, f.mode) for f in table.schema] == [
+        ("day", "TIMESTAMP", "REQUIRED"),
+        ("note", "STRING", "NULLABLE"),
+    ]
+    assert table.description == "one row per run"
+    assert table.time_partitioning.field == "day"
+
+
+async def test_create_table_rejects_unknown_types_and_bad_partition_fields():
+    server = _server(FakeWriteBQ())
+    bad_type = await _call(
+        server, "create_table", {"table": "t", "columns": [{"name": "a", "type": "TEXT"}]}
+    )
+    assert bad_type["is_error"] is True
+    assert "unknown type" in _text(bad_type)
+
+    bad_partition = await _call(
+        server,
+        "create_table",
+        {
+            "table": "t",
+            "columns": [{"name": "a", "type": "STRING"}],
+            "partition_field": "a",
+        },
+    )
+    assert bad_partition["is_error"] is True
+    assert "partition_field" in _text(bad_partition)
+
+
+async def test_create_table_reports_a_conflict_instead_of_raising():
+    server = _server(FakeWriteBQ(error=RuntimeError("Already Exists: Table p:syros_data.t")))
+    result = await _call(
+        server, "create_table", {"table": "t", "columns": [{"name": "a", "type": "STRING"}]}
+    )
+    assert result["is_error"] is True
+    assert "Already Exists" in _text(result)
+
+
+async def test_insert_appends_rows_and_reports_the_count():
+    client = FakeWriteBQ()
+    server = _server(client)
+    payload = json.loads(
+        _text(await _call(server, "insert", {"table": "notes", "rows": [{"a": 1}, {"a": 2}]}))
+    )
+    assert payload == {"inserted": 2, "table": "p.syros_data.notes"}
+    assert client.inserted == [("p.syros_data.notes", [{"a": 1}, {"a": 2}])]
+
+
+async def test_insert_refuses_a_batch_over_the_row_cap():
+    client = FakeWriteBQ()
+    server = _server(client)
+    rows = [{"a": n} for n in range(WRITE_CONFIG.max_insert_rows + 1)]
+    result = await _call(server, "insert", {"table": "notes", "rows": rows})
+    assert result["is_error"] is True
+    assert "per-call cap" in _text(result)
+    assert client.inserted == []  # refused before the round trip
+
+
+async def test_insert_refuses_a_batch_over_the_byte_cap():
+    client = FakeWriteBQ()
+    server = _server(client)
+    rows = [{"a": "x" * 200}, {"a": "y" * 200}]
+    result = await _call(server, "insert", {"table": "notes", "rows": rows})
+    assert result["is_error"] is True
+    assert "bytes" in _text(result)
+    assert client.inserted == []
+
+
+async def test_insert_reports_per_row_errors_as_a_failure():
+    """A partial insert the agent believes succeeded is the worse outcome."""
+    client = FakeWriteBQ(insert_errors=[{"index": 0, "errors": [{"reason": "invalid"}]}])
+    server = _server(client)
+    result = await _call(server, "insert", {"table": "notes", "rows": [{"a": 1}]})
+    assert result["is_error"] is True
+    assert "invalid" in _text(result)
+
+
+async def test_insert_rejects_rows_that_are_not_objects():
+    server = _server(FakeWriteBQ())
+    for rows in ([], "not a list", [1, 2]):
+        result = await _call(server, "insert", {"table": "notes", "rows": rows})
+        assert result["is_error"] is True
+
+
+async def test_query_into_sets_the_destination_and_disposition():
+    client = FakeWriteBQ(FakeJob(processed=10), FakeJob(rows=[{"a": 1}], billed=20))
+    server = _server(client)
+    payload = json.loads(
+        _text(
+            await _call(
+                server,
+                "query_into",
+                {"table": "summary", "sql": "SELECT 1", "mode": "truncate"},
+            )
+        )
+    )
+    assert payload["table"] == "p.syros_data.summary"
+    assert payload["mode"] == "truncate"
+    assert payload["bytes_billed"] == 20
+    _, job_config = client.calls[-1]
+    assert _qualified(job_config.destination) == "p.syros_data.summary"
+    assert job_config.write_disposition == "WRITE_TRUNCATE"
+    assert job_config.maximum_bytes_billed == WRITE_CONFIG.max_bytes
+
+
+async def test_query_into_keeps_the_select_only_guard():
+    client = FakeWriteBQ(FakeJob(statement_type="DELETE"))
+    server = _server(client)
+    result = await _call(server, "query_into", {"table": "t", "sql": "DELETE FROM x"})
+    assert result["is_error"] is True
+    assert "must be a SELECT" in _text(result)
+    assert len(client.calls) == 1  # the dry run, and nothing after it
+
+
+async def test_query_into_keeps_the_byte_cap():
+    client = FakeWriteBQ(FakeJob(processed=WRITE_CONFIG.max_bytes + 1))
+    server = _server(client)
+    result = await _call(server, "query_into", {"table": "t", "sql": "SELECT 1"})
+    assert result["is_error"] is True
+    assert "over the" in _text(result)
+    assert len(client.calls) == 1
+
+
+async def test_query_into_validates_the_table_before_spending_a_dry_run():
+    client = FakeWriteBQ()
+    server = _server(client)
+    result = await _call(server, "query_into", {"table": "syros.run_log", "sql": "SELECT 1"})
+    assert result["is_error"] is True
+    assert client.calls == []
+
+
+async def test_query_into_rejects_an_unknown_mode():
+    server = _server(FakeWriteBQ())
+    result = await _call(server, "query_into", {"table": "t", "sql": "SELECT 1", "mode": "replace"})
+    assert result["is_error"] is True
+    assert "mode must be" in _text(result)
+
+
+async def test_drop_table_deletes_only_from_the_write_dataset():
+    client = FakeWriteBQ()
+    server = _server(client)
+    payload = json.loads(_text(await _call(server, "drop_table", {"table": "notes"})))
+    assert payload == {"dropped": "p.syros_data.notes"}
+    assert client.deleted == [("p.syros_data.notes", False)]
+
+
+def test_write_description_names_the_write_dataset_not_the_audit_one():
+    text = describe(WRITE_CONFIG, write=True)
+    assert "p.syros_data" in text
+    assert "read-only no matter what" in text
+    # and the read-only description says nothing about writing
+    assert "syros_data" not in describe(WRITE_CONFIG)
+
+
+def test_data_dataset_from_env(monkeypatch):
+    assert BigQueryEnv.from_env("p").write_dataset == "syros_data"
+    monkeypatch.setenv("SYROS_BQ_DATA_DATASET", "scratch")
+    monkeypatch.setenv("SYROS_BQ_MAX_INSERT_ROWS", "11")
+    monkeypatch.setenv("SYROS_BQ_MAX_INSERT_BYTES", "13")
+    config = BigQueryEnv.from_env("p")
+    assert (config.write_dataset, config.max_insert_rows, config.max_insert_bytes) == (
+        "scratch",
+        11,
+        13,
+    )
+
+
+async def test_tables_says_when_the_listing_is_truncated():
+    """A capped listing that looks complete would have an agent conclude a
+    table does not exist and create a second one beside it."""
+    from syros.bigquery import LIST_TABLES_LIMIT
+
+    client = FakeWriteBQ(tables=[FakeTable(f"t{n}") for n in range(LIST_TABLES_LIMIT + 1)])
+    server = _server(client)
+    payload = json.loads(_text(await _call(server, "tables", {})))
+    assert len(payload["tables"]) == LIST_TABLES_LIMIT
+    assert "there are more" in payload["truncated"]

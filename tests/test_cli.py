@@ -20,6 +20,7 @@ def args(**overrides):
         max_turns=None,
         max_budget_usd=None,
         bigquery=False,
+        bigquery_write=False,
         connector=None,
     )
     base.update(overrides)
@@ -35,6 +36,25 @@ def test_bigquery_flag_sets_server_and_pre_allows_tool():
 def test_bigquery_flag_does_not_duplicate_an_explicit_allow():
     options = _run_options(args(bigquery=True, allow=["Read", "mcp__bq__query"]))
     assert options.allowed_tools == ["Read", "mcp__bq__query"]
+
+
+def test_bigquery_write_flag_upgrades_the_reference_and_pre_allows_the_write_tools():
+    options = _run_options(args(bigquery_write=True))
+    assert options.mcp_servers == {"bq": {"type": "builtin", "name": "bigquery", "write": True}}
+    assert options.allowed_tools == [
+        "mcp__bq__query",
+        "mcp__bq__tables",
+        "mcp__bq__create_table",
+        "mcp__bq__insert",
+        "mcp__bq__query_into",
+        "mcp__bq__drop_table",
+    ]
+
+
+def test_bigquery_write_flag_validates():
+    options = _run_options(args(bigquery_write=True))
+    options.project = "p"
+    options.validate()
 
 
 def test_without_flag_no_mcp_servers():

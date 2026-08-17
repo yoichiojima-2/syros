@@ -270,8 +270,13 @@ export function SessionForm({
               <Field label="Connectors" hint="official hosted MCP servers; ∅ = no credential yet">
                 <ConnectorPicker value={draft.connectors} onChange={draft.setConnectors} />
               </Field>
-              <Field label="BigQuery" hint="read-only SQL; pre-allows its tool">
-                <BigQueryToggle on={draft.bigquery} onChange={draft.setBigquery} />
+              <Field label="BigQuery" hint="read-only SQL, plus the agents' own dataset">
+                <BigQueryToggle
+                  on={draft.bigquery}
+                  onChange={draft.setBigquery}
+                  write={draft.bigqueryWrite}
+                  onWriteChange={draft.setBigqueryWrite}
+                />
               </Field>
             </>
           )}

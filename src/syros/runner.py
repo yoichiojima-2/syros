@@ -44,9 +44,12 @@ NOISY_SYSTEM_SUBTYPES = {"thinking_tokens"}
 # Serialized builtin references -> live in-process SDK servers. Keyed by the
 # same names options.BUILTIN_MCP_SERVERS advertises; the pair is asserted equal
 # in the tests, so a builtin can't be accepted client-side and then be
-# unresolvable in the sandbox.
-BUILTIN_SERVERS: dict[str, Callable[[str, str], Any]] = {
-    "bigquery": lambda key, project: bigquery.build_server(key, env.BigQueryEnv.from_env(project)),
+# unresolvable in the sandbox. Each takes the reference's own config, so a
+# builtin's optional keys (bigquery's `write`) reach the server that means them.
+BUILTIN_SERVERS: dict[str, Callable[[str, dict[str, Any], str], Any]] = {
+    "bigquery": lambda key, config, project: bigquery.build_server(
+        key, env.BigQueryEnv.from_env(project), write=bool(config.get("write"))
+    ),
 }
 
 
@@ -56,7 +59,7 @@ def resolve_mcp_servers(configs: dict[str, dict[str, Any]], project: str) -> dic
     resolved: dict[str, Any] = {}
     for key, config in configs.items():
         if config.get("type") == "builtin":
-            resolved[key] = BUILTIN_SERVERS[config["name"]](key, project)
+            resolved[key] = BUILTIN_SERVERS[config["name"]](key, config, project)
         else:
             resolved[key] = dict(config)
     return resolved
