@@ -14,7 +14,8 @@ import {
   ToolPicker,
   useOptionsDraft,
 } from "@/components/option-fields";
-import { emptyTask, TaskListEditor, type TaskDraft } from "@/components/task-list-editor";
+import { emptyTask, type TaskDraft } from "@/components/task-list-editor";
+import { WorkflowGraphEditor } from "@/components/workflow-graph-editor";
 import { useAgents, useArtifactSpaces, useWorkspaces } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -173,7 +174,7 @@ export function WorkflowForm({
         <CardDescription>
           {editing
             ? "Edits apply to future runs — a run in flight keeps the definition it started with."
-            : "Tasks run one after another, each as a fresh session. One task and a cron is the classic scheduled prompt."}
+            : "Each task is a fresh session, and the graph says what waits for what. One task and a cron is the classic scheduled prompt."}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -231,9 +232,11 @@ export function WorkflowForm({
               <span className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
                 Tasks
               </span>
-              <span className="text-[10px] text-faint">run in order; each one a fresh session</span>
+              <span className="text-[10px] text-faint">
+                each one a fresh session; the graph is the order they run in
+              </span>
             </span>
-            <TaskListEditor
+            <WorkflowGraphEditor
               tasks={tasks}
               onChange={setTasks}
               agents={(agents ?? []).map((a) => a.name)}

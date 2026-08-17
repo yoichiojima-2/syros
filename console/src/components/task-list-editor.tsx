@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,23 +44,31 @@ function nextId(tasks: TaskDraft[]): string {
 
 /** The dependencies a task effectively has, as editor keys: an untouched draft
  *  chains to the task above it, which is what the server will do with the
- *  omitted key. */
-function effectiveDeps(task: TaskDraft, index: number, tasks: TaskDraft[]): string[] {
+ *  omitted key. Shared with the graph, which draws these as its edges. */
+export function effectiveDeps(task: TaskDraft, index: number, tasks: TaskDraft[]): string[] {
   if (task.dependsOn !== null) return task.dependsOn;
   return index === 0 ? [] : [tasks[index - 1].key];
 }
 
 /** Databricks-Jobs-style task list: a card per task, "+ Add task" to grow the
  *  chain, and dependencies picked from the tasks above (which makes a cycle
- *  unrepresentable). A one-task list is the ordinary scheduled prompt. */
+ *  unrepresentable). A one-task list is the ordinary scheduled prompt.
+ *
+ *  The graph above it (see `workflow-graph-editor.tsx`) is the map; these cards
+ *  stay the body being edited, so every task's prompt is readable at once and
+ *  everything the drag shortcut does is also reachable from the keyboard. */
 export function TaskListEditor({
   tasks,
   onChange,
   agents,
+  selected,
+  onSelect,
 }: {
   tasks: TaskDraft[];
   onChange: (tasks: TaskDraft[]) => void;
   agents: string[];
+  selected?: string | null;
+  onSelect?: (key: string) => void;
 }) {
   const patch = (index: number, fields: Partial<TaskDraft>) =>
     onChange(tasks.map((task, i) => (i === index ? { ...task, ...fields } : task)));
@@ -104,6 +113,8 @@ export function TaskListEditor({
             deps={deps}
             explicit={task.dependsOn !== null}
             agents={agents}
+            selected={selected === task.key}
+            onSelect={onSelect}
             onPatch={(fields) => patch(index, fields)}
             onRemove={tasks.length > 1 ? () => remove(index) : undefined}
           />
@@ -132,6 +143,8 @@ function TaskCard({
   deps,
   explicit,
   agents,
+  selected,
+  onSelect,
   onPatch,
   onRemove,
 }: {
@@ -141,6 +154,8 @@ function TaskCard({
   deps: string[];
   explicit: boolean;
   agents: string[];
+  selected: boolean;
+  onSelect?: (key: string) => void;
   onPatch: (fields: Partial<TaskDraft>) => void;
   onRemove?: () => void;
 }) {
@@ -151,8 +166,23 @@ function TaskCard({
       dependsOn: deps.includes(key) ? deps.filter((d) => d !== key) : [...deps, key],
     });
 
+  // Picking a node in the graph brings its card into view; "nearest" makes the
+  // usual case — clicking the card itself — a no-op.
+  const card = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (selected) card.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selected]);
+
   return (
-    <div className="rounded-lg border border-border px-3 py-3">
+    <div
+      ref={card}
+      onFocusCapture={onSelect ? () => onSelect(task.key) : undefined}
+      onClick={onSelect ? () => onSelect(task.key) : undefined}
+      className={cn(
+        "rounded-lg border border-border px-3 py-3",
+        selected && "border-transparent ring-2 ring-ring",
+      )}
+    >
       <div className="mb-3 flex items-center gap-2">
         <span className="font-mono text-[11px] text-faint tabular-nums">{index + 1}</span>
         <Input

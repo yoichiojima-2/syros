@@ -308,9 +308,11 @@ Semantics, all inherited from today's deployments:
   (`create --cron ... --prompt ...` for the one-task case; `--tasks tasks.json`
   for chains; `run`, `runs`, `pause`, `resume`, `delete`). `syros tick` keeps
   its name and its Cloud Scheduler wiring.
-- Console: `/api/workflows` routes mirror the deployment routes; the run view
-  is a task list linking to each task's ordinary session page. `types.ts`
-  mirrors the new shapes.
+- Console: `/api/workflows` routes mirror the deployment routes; the definition
+  and every run are drawn as the DAG they are — one layered graph component
+  (`console/src/lib/dag.ts` + `workflow-graph.tsx`) serving the definition, a
+  run's live task statuses, and the editor's canvas, with each node linking to
+  the task's ordinary session page. `types.ts` mirrors the new shapes.
 - Firestore: `deployments/*` documents are dropped, not migrated
   (experimental stage; `migrate.py` is the pattern if we regret this).
   Sessions' historical `deployment` field stays on old docs and is simply no
