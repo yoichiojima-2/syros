@@ -128,6 +128,40 @@ def test_preset_files_sit_at_the_prefix_they_install_to():
 
     workspace_files = dict(presets.files("workspaces/research/ws"))
     assert set(workspace_files) == {"CLAUDE.md"}  # the skill beside it is not swept in
+    assert set(dict(presets.files("workspaces/ops/ws"))) == {"CLAUDE.md"}
+
+
+def test_a_prompt_that_names_a_skill_pre_allows_it():
+    """Running a skill is a `Skill` tool call, and a tool call an allowlist does
+    not cover goes to the approval gate — which times out to a denial when the
+    run is a 3am cron with nobody watching. The rule has to carry the skill name:
+    the harness matches Skill rules on their content and skips contentless ones,
+    so a bare "Skill" (or "Skill(*)") allows nothing.
+    """
+    skills = {preset.object_name for preset in presets.CATALOG if preset.kind == "skill"}
+    agents = {p.object_name: p for p in presets.CATALOG if p.kind == "agent"}
+
+    def allowed(agent_name):
+        return set((agents[agent_name].spec.get("options") or {}).get("allowed_tools") or ())
+
+    def named(text):
+        return {skill for skill in skills if f"'{skill}'" in text}
+
+    for name, preset in agents.items():
+        prompt = (preset.spec.get("options") or {}).get("system_prompt") or ""
+        for skill in named(prompt if isinstance(prompt, str) else ""):
+            assert f"Skill({skill})" in allowed(name), (name, skill)
+            assert skill in {presets.get(r).object_name for r in preset.requires}, (name, skill)
+
+    # ...and the same for a task prompt, where the agent is named by the task.
+    for preset in presets.CATALOG:
+        if preset.kind != "workflow":
+            continue
+        for task in preset.spec["tasks"]:
+            if not task.get("agent"):
+                continue
+            for skill in named(task["prompt"]):
+                assert f"Skill({skill})" in allowed(task["agent"]), (preset.name, task["id"])
 
 
 def test_scheduled_workflows_install_paused():
@@ -204,10 +238,27 @@ async def test_install_creates_every_kind():
     summary, store, objects = await install()
 
     assert summary["skipped"] == []
-    assert set(store.agents) == {"researcher", "writer", "reviewer", "analyst"}
-    assert set(store.workflows) == {"daily-brief", "research-pipeline"}
-    assert set(store.workspaces) == {"research"}
-    assert set(objects.skills) == {"brief"}
+    assert set(store.agents) == {
+        "researcher",
+        "writer",
+        "reviewer",
+        "analyst",
+        "advocate",
+        "contrarian",
+        "archivist",
+        "recorder",
+        "listener",
+    }
+    assert set(store.workflows) == {
+        "daily-brief",
+        "research-pipeline",
+        "decision-review",
+        "risk-register",
+        "retro",
+        "faq",
+    }
+    assert set(store.workspaces) == {"research", "ops"}
+    assert set(objects.skills) == {"brief", "decision-record", "pre-mortem"}
     assert set(objects.workspace_skills["research"]) == {"brief"}
 
 
@@ -230,11 +281,16 @@ async def test_the_two_brief_skills_are_distinct_and_scoped():
 
 
 async def test_install_reports_files_written():
+    """Counted from what actually landed rather than from a list of presets, so
+    adding one to the catalog does not silently need this test edited."""
     summary, _store, objects = await install()
-    written = (
-        len(objects.workspaces["research"])
-        + len(objects.skills["brief"])
-        + len(objects.workspace_skills["research"]["brief"])
+    written = sum(
+        len(stored)
+        for stored in (
+            *objects.workspaces.values(),
+            *objects.skills.values(),
+            *(skill for scope in objects.workspace_skills.values() for skill in scope.values()),
+        )
     )
     assert summary["files"] == written
 
@@ -283,6 +339,95 @@ async def test_parallel_branches_share_an_artifact_space_not_the_workspace():
     assert tasks["sources"]["depends_on"] == ["plan"]
     assert tasks["landscape"]["depends_on"] == ["plan"]
     assert tasks["synthesize"]["depends_on"] == ["sources", "landscape"]
+
+
+async def test_opposing_branches_run_at_the_same_time_and_take_no_workspace():
+    """decision-review's whole point is that the case for and the case against
+    are argued at once by different agents. Either branch acquiring the ops
+    workspace would serialize them — and workflows.create would have rejected
+    the definition outright."""
+    _summary, store, _objects = await install()
+    workflow = store.workflows["decision-review"]
+    assert workflow["options"]["artifacts"] == {"ops": "rw"}
+
+    tasks = {task["id"]: task for task in workflow["tasks"]}
+    assert tasks["case-for"]["depends_on"] == ["frame"]
+    assert tasks["case-against"]["depends_on"] == ["frame"]
+    assert tasks["record"]["depends_on"] == ["case-for", "case-against"]
+    for parallel in ("case-for", "case-against"):
+        agent = store.agents[tasks[parallel]["agent"]]
+        assert agent["options"]["workspace"] is None, parallel
+        assert agent["options"]["artifacts"] == {"ops": "rw"}, parallel
+
+
+async def test_the_three_premortem_lenses_are_one_agent_under_three_prompts():
+    """The task is the unit of work, not the agent: risk-register fans out to
+    three concurrent tasks that all run as 'contrarian'."""
+    _summary, store, _objects = await install()
+    tasks = {task["id"]: task for task in store.workflows["risk-register"]["tasks"]}
+    lenses = ("dependency", "adoption", "operational")
+
+    assert {tasks[lens]["agent"] for lens in lenses} == {"contrarian"}
+    assert all(tasks[lens]["depends_on"] == ["frame"] for lens in lenses)
+    assert tasks["register"]["depends_on"] == list(lenses)
+    assert len({tasks[lens]["prompt"] for lens in lenses}) == 3
+
+
+async def test_a_serial_chain_may_share_the_workspace():
+    """The converse of the fan-out rule, and why retro is allowed to hold ops
+    from end to end: its three tasks are strictly ordered."""
+    _summary, store, _objects = await install()
+    tasks = store.workflows["retro"]["tasks"]
+
+    assert [task["id"] for task in tasks] == ["due", "verdict", "record"]
+    assert [task["depends_on"] for task in tasks] == [[], ["due"], ["verdict"]]
+    workspaces = {store.agents[task["agent"]]["options"]["workspace"] for task in tasks}
+    assert "ops" in workspaces
+
+
+async def test_ops_members_are_the_two_agents_that_name_the_workspace():
+    from syros import workspaces
+
+    _summary, store, _objects = await install()
+    assert workspaces.members("ops", await store.list_agents()) == ["archivist", "recorder"]
+
+
+async def test_retro_carries_a_schedule_that_is_not_daily():
+    _summary, store, _objects = await install()
+    workflow = store.workflows["retro"]
+    assert workflow["enabled"] is False
+    assert workflow["schedule"] == {"cron": "0 9 1 1,4,7,10 *", "timezone": "UTC"}
+    assert workflow["next_run_at"] > 0
+
+
+def test_only_the_connector_backed_presets_name_a_connector():
+    """What the "works on a fresh install" claim rests on: an agent naming a
+    connector with no stored credential fails the run before its first turn, so
+    a stray connector on any other preset would break the whole track."""
+    from syros.connectors import CATALOG as CONNECTORS
+
+    named = {
+        preset.name: (preset.spec.get("options") or {}).get("connectors")
+        for preset in presets.CATALOG
+        if (preset.spec.get("options") or {}).get("connectors")
+    }
+    assert named == {"listener": ["slack"]}
+    assert all(name in CONNECTORS for names in named.values() for name in names)
+
+    # ...and nothing that requires it is scheduled to fire without warning.
+    faq = presets.get("faq")
+    assert "listener" in faq.requires and faq.spec["enabled"] is False
+
+
+async def test_installing_one_ops_workflow_leaves_the_research_track_alone():
+    summary, store, objects = await install(["decision-review"])
+
+    assert set(store.agents) == {"archivist", "advocate", "contrarian", "recorder"}
+    assert set(store.workspaces) == {"ops"}
+    # pre-mortem rides along on recorder and archivist, which are told to follow it
+    assert set(objects.skills) == {"decision-record", "pre-mortem"}
+    assert "listener" not in store.agents  # the connector-backed one stays out
+    assert named(summary["installed"])[-1] == "decision-review"
 
 
 async def test_installing_one_workflow_pulls_in_the_agents_it_names():

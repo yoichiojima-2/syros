@@ -8,10 +8,27 @@ collections as everything else, with no version pointer back here. Re-running
 the installer never overwrites what you changed (`force=True` is the explicit
 opt-out).
 
-The catalog is chosen to demonstrate the option-resolution chain rather than to
-be useful out of the box: agents that differ along one axis each, a workspace
-whose `CLAUDE.md` loads as project memory, a fan-out/fan-in task DAG, and two
-skills with the same name in different scopes so the shadowing rule is visible.
+The catalog has two tracks. The **research** track is chosen to demonstrate the
+option-resolution chain rather than to be useful out of the box: agents that
+differ along one axis each, a workspace whose `CLAUDE.md` loads as project
+memory, a fan-out/fan-in task DAG, and two skills with the same name in
+different scopes so the shadowing rule is visible.
+
+The **ops** track is meant to be resumed and used. It models a decision-making
+organization as five stances — `advocate`, `contrarian`, `archivist`,
+`recorder`, `listener` — over one workspace that holds decisions, risk registers
+and retros. The rituals it automates (a decision record with a real opposing
+case, a pre-mortem, a retro that audits past decisions) are the ones every
+company believes in and never runs, and they happen to be the catalog's best
+showcase of the machinery: two *opposing* personas run in parallel, which is
+possible only because neither takes the workspace lease, and fan into the one
+agent that does. `retro` is the deliberate contrast — a serial chain, so it may
+share the workspace all the way through.
+
+One caveat travels with the ops track: an agent naming a connector fails the run
+at start (`stop_reason=connector_error`) when the credential is missing, so
+everything here is connector-free except `listener`/`faq`, whose descriptions
+say what to authorize first.
 
 Install order is by kind — workspaces, then skills, then agents, then workflows
 — because `workflows._validate_tasks` resolves each task's agent against the
@@ -178,7 +195,7 @@ CATALOG: tuple[Preset, ...] = (
                     " your final message when a downstream task will read it."
                 ),
                 "model": "claude-sonnet-5",
-                "allowed_tools": ["WebSearch", "WebFetch", "Read", "Write"],
+                "allowed_tools": ["WebSearch", "WebFetch", "Read", "Write", "Skill(brief)"],
                 "artifacts": {"research": "rw"},
                 "max_budget_usd": 2.0,
             },
@@ -192,7 +209,7 @@ CATALOG: tuple[Preset, ...] = (
             " approval, and the workspace's CLAUDE.md loads as project memory. The fan-in task"
             " of research-pipeline runs as this."
         ),
-        requires=("research",),
+        requires=("research", "brief"),
         spec={
             "name": "writer",
             "options": {
@@ -206,7 +223,7 @@ CATALOG: tuple[Preset, ...] = (
                     " 'brief' skill for structure. Rewrite files in place; do not accumulate"
                     " dated copies."
                 ),
-                "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep"],
+                "allowed_tools": ["Read", "Write", "Edit", "Glob", "Grep", "Skill(brief)"],
                 "permission_mode": "acceptEdits",
                 "workspace": "research",
             },
@@ -404,6 +421,544 @@ CATALOG: tuple[Preset, ...] = (
                         " the lead says what changed and why it matters.\n\n"
                         "You cannot edit. Return the findings as your final message — file,"
                         " passage, and the specific problem — or 'no findings'."
+                    ),
+                },
+            ],
+        },
+    ),
+    # --- the ops track: meant to be edited and resumed, not just read -------
+    Preset(
+        name="ops",
+        kind="workspace",
+        description=(
+            "The organization's memory: decisions, risk registers and retros, with the"
+            " conventions the ops workflows depend on in its CLAUDE.md — every decision names"
+            " the option it rejected, the assumption underneath, and a tripwire. Loads as"
+            " project memory for every session under it."
+        ),
+        spec={
+            "name": "ops",
+            "options": {"model": "claude-sonnet-5", "max_budget_usd": 5.0},
+            "files": "workspaces/ops/ws",
+        },
+    ),
+    Preset(
+        name="decision-record",
+        kind="skill",
+        description=(
+            "Global skill: how to write a decision record that outlives the people who wrote"
+            " it — the question, the option rejected, the assumption it rests on, and the"
+            " tripwire that reopens it. 'decision-review' writes to this format and 'retro'"
+            " reads it back, so the two workflows agree on a layout without sharing code."
+        ),
+        spec={"name": "decision-record", "workspace": None, "files": "skills/decision-record"},
+    ),
+    Preset(
+        name="pre-mortem",
+        kind="skill",
+        description=(
+            "Global skill: assume the plan already failed, work backwards to the causes, and"
+            " convert each into a risk with an owner and a tripwire. The three parallel lenses"
+            " of 'risk-register' each follow it."
+        ),
+        spec={"name": "pre-mortem", "workspace": None, "files": "skills/pre-mortem"},
+    ),
+    Preset(
+        name="advocate",
+        kind="agent",
+        description=(
+            "Argues *for* a proposal at full strength. Has no workspace on purpose: it runs at"
+            " the same time as 'contrarian', and two concurrent tasks cannot both hold a"
+            " workspace's exclusive lease — they trade through the ops artifact space instead."
+        ),
+        spec={
+            "name": "advocate",
+            "options": {
+                "system_prompt": (
+                    "You make the strongest honest case for a proposal.\n\n"
+                    "Argue it as its most capable supporter would, not as its author does:"
+                    " find the version that survives the obvious objections, and say what the"
+                    " proposal gets right that a skeptic would miss. You are trying to make the"
+                    " decision better, not to win it.\n\n"
+                    "Concede what is genuinely weak, and name the single thing most likely to"
+                    " undermine your own case. An argument that claims every part is strong"
+                    " tells the reader nothing about which parts to trust, and gets discounted"
+                    " whole.\n\n"
+                    "Be concrete about what the proposal buys and by when. Deliverables go"
+                    " under ./artifacts/ops/. Return the same content as your final message"
+                    " when a downstream task will read it."
+                ),
+                "model": "claude-sonnet-5",
+                "allowed_tools": ["Read", "Write"],
+                "artifacts": {"ops": "rw"},
+                "max_budget_usd": 2.0,
+            },
+        },
+    ),
+    Preset(
+        name="contrarian",
+        kind="agent",
+        description=(
+            "Argues *against*, and is told outright that manufacturing objections is the"
+            " failure mode — 'this holds up' is a permitted answer. 'risk-register' runs three"
+            " of these at once under different failure lenses: one agent, three tasks, because"
+            " the task is the unit of work."
+        ),
+        spec={
+            "name": "contrarian",
+            "options": {
+                "system_prompt": (
+                    "You make the strongest honest case against a proposal.\n\n"
+                    "Attack the load-bearing assumption, not the wording. The useful objection"
+                    " is the one that would still matter if the proposal were written twice as"
+                    " well: what has to be true for this to work, and how likely is that?\n\n"
+                    "Manufacturing objections to look useful is the failure mode. 'This holds"
+                    " up, and here is the one thing I would still watch' is a permitted and"
+                    " often correct answer — five minor concerns is how a real problem gets"
+                    " hidden among four fake ones. Rank what you find and say which single"
+                    " objection you would spend the meeting on.\n\n"
+                    "Be specific about consequences: who is hurt, when, and how anyone would"
+                    " notice. Deliverables go under ./artifacts/ops/. Return the same content"
+                    " as your final message when a downstream task will read it."
+                ),
+                "model": "claude-sonnet-5",
+                "allowed_tools": ["Read", "Write"],
+                "artifacts": {"ops": "rw"},
+                "max_budget_usd": 2.0,
+            },
+        },
+    ),
+    Preset(
+        name="archivist",
+        kind="agent",
+        description=(
+            "Least privilege over the organization's memory: read-only tools, writes denied"
+            " outright. Its value is the precedent it finds — what was decided before, what it"
+            " assumed, and whether that assumption still holds."
+        ),
+        requires=("ops", "pre-mortem"),
+        spec={
+            "name": "archivist",
+            "options": {
+                "system_prompt": (
+                    "You are the organization's memory.\n\n"
+                    "Before something is decided, you find out whether it was decided before."
+                    " Search decisions/, risks/ and retros/ for the question at hand —"
+                    " including the versions of it that used different words — and report what"
+                    " was decided, what it assumed, and whether anything since has contradicted"
+                    " that assumption.\n\n"
+                    "You cannot edit anything, so your output is the finding. Name the file and"
+                    " quote the passage: a paraphrase is not evidence that a record says what"
+                    " you claim.\n\n"
+                    "Say plainly when there is no precedent. 'Nothing in the record touches"
+                    " this' is a useful answer; a strained link to an unrelated decision is"
+                    " worse than silence, because someone will act on it."
+                ),
+                # Skill(x) and not a bare "Skill": the harness matches a Skill
+                # rule on its content, so a contentless one is skipped and the
+                # call falls through to the approval gate — which, on a run
+                # nobody is watching, times out to a denial.
+                "allowed_tools": ["Read", "Grep", "Glob", "Skill(pre-mortem)"],
+                "disallowed_tools": ["Write", "Edit", "Bash"],
+                "workspace": "ops",
+                "max_turns": 20,
+            },
+        },
+    ),
+    Preset(
+        name="recorder",
+        kind="agent",
+        description=(
+            "The only agent in the track that writes into the workspace: acceptEdits, so writes"
+            " do not queue for an approval nobody is watching at 09:00 on a Sunday, and the ops"
+            " CLAUDE.md loads as project memory. Sets no budget of its own, so the workspace"
+            " layer's cap is what applies."
+        ),
+        requires=("ops", "decision-record", "pre-mortem"),
+        spec={
+            "name": "recorder",
+            "options": {
+                "system_prompt": (
+                    "You write the record.\n\n"
+                    "You are the only agent here that writes into the workspace, so what you"
+                    " produce is what the organization still has in a year. Work from the"
+                    " material you were given — the cases, the findings, the notes — and do not"
+                    " add positions nobody argued or attribute one to a person who did not take"
+                    " it.\n\n"
+                    "Follow the workspace's CLAUDE.md for layout and house rules, and the"
+                    " 'decision-record' and 'pre-mortem' skills for structure. Every decision"
+                    " names the option rejected, the assumption underneath, and a tripwire; a"
+                    " risk with no owner and no tripwire is a worry, and belongs in notes/"
+                    " rather than the register.\n\n"
+                    "Rewrite files in place. Supersede a decision with a new record that links"
+                    " back and a forward pointer on the old one — never by editing the old one,"
+                    " which loses the reasoning that makes the history worth keeping."
+                ),
+                "allowed_tools": [
+                    "Read",
+                    "Write",
+                    "Edit",
+                    "Glob",
+                    "Grep",
+                    "Skill(decision-record)",
+                    "Skill(pre-mortem)",
+                ],
+                "permission_mode": "acceptEdits",
+                "workspace": "ops",
+            },
+        },
+    ),
+    Preset(
+        name="listener",
+        kind="agent",
+        description=(
+            "Connector-backed: mines Slack for the questions the organization keeps"
+            " re-answering, on the theory that the third repeat is a missing document. Needs"
+            " `syros connectors auth slack` first — an agent naming a connector with no stored"
+            " credential fails the run before its first turn."
+        ),
+        spec={
+            "name": "listener",
+            "options": {
+                "system_prompt": (
+                    "You listen for the questions the organization keeps re-answering.\n\n"
+                    "Read the channels you are pointed at and find questions asked more than"
+                    " once — the same question, not the same words. For each: how often it"
+                    " comes back, who ends up answering it, and what the answer actually"
+                    " is.\n\n"
+                    "Three occurrences is a missing document, and that is what you produce: the"
+                    " question as people actually ask it, the answer as the person who knows it"
+                    " gave it, and a link to one thread where it happened.\n\n"
+                    "Skip conversations that are not questions, and skip anything personal or"
+                    " sensitive — this output is published to a shared artifact space that"
+                    " anyone with bucket access can read. Report volume honestly: a quiet week"
+                    " with two repeats is a two-item list, not a padded one."
+                ),
+                "connectors": ["slack"],
+                # The whole server, not one tool: which tools a vendor's hosted
+                # MCP server exposes is the vendor's business and changes
+                # without us. Anything left un-allowed would stall this run on
+                # the approval gate, which times out to a denial — fatal for a
+                # workflow that fires on a Friday afternoon.
+                "allowed_tools": ["mcp__slack", "Read", "Write"],
+                "artifacts": {"ops": "rw"},
+                "max_budget_usd": 2.0,
+            },
+        },
+    ),
+    Preset(
+        name="decision-review",
+        kind="workflow",
+        description=(
+            "Four tasks: precedent, then the case for and the case against argued in parallel,"
+            " then one record written from both. The fan-out is the point — an opposing case"
+            " produced by the same agent that just argued the other side is worth nothing."
+            " Manual-only: fire it with `syros workflows run decision-review` once the proposal"
+            " is in the 'frame' prompt."
+        ),
+        requires=("archivist", "advocate", "contrarian", "recorder", "ops", "decision-record"),
+        spec={
+            "name": "decision-review",
+            "cron": None,
+            "enabled": True,
+            # An artifact space, not a workspace: 'case-for' and 'case-against'
+            # run at the same time, and two concurrent tasks cannot both hold a
+            # workspace's exclusive lease — _validate_tasks rejects such a
+            # definition outright. The archivist and recorder tasks do take the
+            # workspace, from their agents, and they are ordered.
+            "options": {"artifacts": {"ops": "rw"}},
+            "tasks": [
+                {
+                    "id": "frame",
+                    "agent": "archivist",
+                    "depends_on": [],
+                    "prompt": (
+                        "The proposal under review: adopt a vendor for internal authentication"
+                        " instead of continuing to build it in-house.\n\n"
+                        "(Workflows take no run parameters yet, so the proposal lives here —"
+                        " edit this task's prompt before each run.)\n\n"
+                        "State it as a decision question, list the options as their own"
+                        " advocates would state them, and search decisions/, risks/ and retros/"
+                        " for anything that already touches it: what was decided, what it"
+                        " assumed, and whether that assumption still holds.\n\n"
+                        "Return the question, the options, and the precedent. Both downstream"
+                        " tasks read this text verbatim, so do not editorialize — you are"
+                        " setting up the argument, not making it."
+                    ),
+                },
+                {
+                    "id": "case-for",
+                    "agent": "advocate",
+                    "depends_on": ["frame"],
+                    "prompt": (
+                        "{{tasks.frame.result}}\n\n"
+                        "Make the strongest honest case for the proposal. Save it to"
+                        " ./artifacts/ops/{{run.id}}-case-for.md and return the same text as"
+                        " your final message.\n\n"
+                        "Someone is arguing the other side at this moment and you cannot see"
+                        " their work, so do not pre-empt or strawman it. Argue your own case as"
+                        " well as it can be argued."
+                    ),
+                },
+                {
+                    "id": "case-against",
+                    "agent": "contrarian",
+                    # Explicit, and the same as 'case-for': both depend only on
+                    # frame, so they are launched together. Omitting depends_on
+                    # would have meant "the previous task in the list" and
+                    # quietly made this a serial chain — one side reading the
+                    # other's argument, which is the single thing this workflow
+                    # exists to prevent.
+                    "depends_on": ["frame"],
+                    "prompt": (
+                        "{{tasks.frame.result}}\n\n"
+                        "Make the strongest honest case against the proposal. Save it to"
+                        " ./artifacts/ops/{{run.id}}-case-against.md and return the same text"
+                        " as your final message.\n\n"
+                        "If the proposal genuinely holds up, say so and name what you would"
+                        " watch instead. A manufactured objection here becomes a permanent line"
+                        " in a decision record."
+                    ),
+                },
+                {
+                    "id": "record",
+                    "agent": "recorder",
+                    "depends_on": ["case-for", "case-against"],
+                    "prompt": (
+                        "Case for:\n{{tasks.case-for.result}}\n\n"
+                        "Case against:\n{{tasks.case-against.result}}\n\n"
+                        "Write the decision record to decisions/<the question, kebab-case>.md"
+                        " following the 'decision-record' skill: the question, both options as"
+                        " their advocates stated them, the decision and the tradeoff it"
+                        " accepts, the assumption it rests on, the tripwire that reopens it,"
+                        " and the disagreement.\n\n"
+                        "Where the two cases actually conflict, record the conflict — do not"
+                        " average them into a position neither side argued. If the decision has"
+                        " not in fact been made, write the record with it left open and say"
+                        " what would settle it."
+                    ),
+                },
+            ],
+        },
+    ),
+    Preset(
+        name="risk-register",
+        kind="workflow",
+        description=(
+            "A pre-mortem as a five-task DAG: frame the failure, then three lenses —"
+            " dependency, adoption, operational — running in parallel as the same 'contrarian'"
+            " agent under different prompts, fanning into one register. Each lens is blind to"
+            " the others on purpose. Manual-only."
+        ),
+        requires=("archivist", "contrarian", "recorder", "ops", "pre-mortem"),
+        spec={
+            "name": "risk-register",
+            "cron": None,
+            "enabled": True,
+            "options": {"artifacts": {"ops": "rw"}},
+            "tasks": [
+                {
+                    "id": "frame",
+                    "agent": "archivist",
+                    "depends_on": [],
+                    "prompt": (
+                        "The plan under review: migrate every internal service onto the new"
+                        " deployment pipeline by the end of the quarter.\n\n"
+                        "(Edit this task's prompt to change the plan — workflows take no run"
+                        " parameters yet.)\n\n"
+                        "Following the 'pre-mortem' skill, fix a date and a concrete definition"
+                        " of failure: what would have to be true for everyone to agree, on that"
+                        " date, that this failed. Then search risks/ and retros/ for risks that"
+                        " fired on comparable plans before.\n\n"
+                        "Return the plan, the failure definition, and the prior risks. Three"
+                        " tasks read this verbatim; do not name causes yourself, that is their"
+                        " job."
+                    ),
+                },
+                {
+                    "id": "dependency",
+                    "agent": "contrarian",
+                    "depends_on": ["frame"],
+                    "prompt": (
+                        "{{tasks.frame.result}}\n\n"
+                        "It is that date and the plan failed. Write the story of how, through"
+                        " the **dependency** lens only: what we do not control — another team,"
+                        " a vendor, a review, a hire, a decision not yet made.\n\n"
+                        "A story, not a list: causes in a list look independently survivable,"
+                        " and failure arrives by compounding. Work back from each cause to the"
+                        " earliest moment someone could have acted, and give each a rough"
+                        " likelihood. Save to ./artifacts/ops/{{run.id}}-dependency.md and"
+                        " return the same text."
+                    ),
+                },
+                {
+                    "id": "adoption",
+                    "agent": "contrarian",
+                    "depends_on": ["frame"],
+                    "prompt": (
+                        "{{tasks.frame.result}}\n\n"
+                        "It is that date and the plan failed. Write the story of how, through"
+                        " the **adoption** lens only: it worked and nobody used it. Who has to"
+                        " change their behaviour, what that costs them, and what happens when"
+                        " they simply do not.\n\n"
+                        "A story, not a list. Work back from each cause to the earliest moment"
+                        " someone could have acted, and give each a rough likelihood. Save to"
+                        " ./artifacts/ops/{{run.id}}-adoption.md and return the same text."
+                    ),
+                },
+                {
+                    "id": "operational",
+                    "agent": "contrarian",
+                    "depends_on": ["frame"],
+                    "prompt": (
+                        "{{tasks.frame.result}}\n\n"
+                        "It is that date and the plan failed. Write the story of how, through"
+                        " the **operational** lens only: it shipped and then broke. What it"
+                        " costs to run, who is on call for it, what it does at ten times the"
+                        " load, and what happens the first time it fails at 3am.\n\n"
+                        "A story, not a list. Work back from each cause to the earliest moment"
+                        " someone could have acted, and give each a rough likelihood. Save to"
+                        " ./artifacts/ops/{{run.id}}-operational.md and return the same text."
+                    ),
+                },
+                {
+                    "id": "register",
+                    "agent": "recorder",
+                    "depends_on": ["dependency", "adoption", "operational"],
+                    "prompt": (
+                        "Dependency:\n{{tasks.dependency.result}}\n\n"
+                        "Adoption:\n{{tasks.adoption.result}}\n\n"
+                        "Operational:\n{{tasks.operational.result}}\n\n"
+                        "Write risks/<the plan, kebab-case>.md following the 'pre-mortem'"
+                        " skill. Merge the three lenses, keeping a cause that appears in more"
+                        " than one as a single risk — that overlap is the strongest signal in"
+                        " the run.\n\n"
+                        "Every risk gets one named owner, a tripwire someone would notice"
+                        " without being told to look, and the response decided now rather than"
+                        " under pressure. Where you cannot name an owner, write the role and"
+                        " mark it unassigned rather than leaving it blank.\n\n"
+                        "End with the one risk that should change the plan today, and say"
+                        " plainly if there isn't one."
+                    ),
+                },
+            ],
+        },
+    ),
+    Preset(
+        name="retro",
+        kind="workflow",
+        description=(
+            "The half of a decision nobody does: quarterly, it reads back every tripwire in"
+            " decisions/ and risks/, asks which fired while nobody was looking, and records the"
+            " verdict. A serial chain, so unlike the other two it may hold the ops workspace"
+            " end to end. Installs paused — resume it once the record has something in it."
+        ),
+        requires=("archivist", "contrarian", "recorder", "ops", "decision-record"),
+        spec={
+            "name": "retro",
+            # Quarterly, on the first of the month at 09:00 UTC. The first
+            # preset schedule that is not daily — cron.py takes comma lists —
+            # and a retro is worth about as much as the distance between it and
+            # the decisions it reviews.
+            "cron": "0 9 1 1,4,7,10 *",
+            "timezone": workflows.DEFAULT_TIMEZONE,
+            "enabled": False,
+            "options": {},
+            "tasks": [
+                {
+                    "id": "due",
+                    "agent": "archivist",
+                    "depends_on": [],
+                    "prompt": (
+                        "Read every record under decisions/ and risks/. For each, extract the"
+                        " assumption and the tripwire, and judge from what is in the workspace"
+                        " whether the tripwire has fired, is close, or is quiet.\n\n"
+                        "Return one line per record: the file, the tripwire, the state, and the"
+                        " evidence you judged from. List separately any record with no tripwire"
+                        " or no assumption — those are invisible to this workflow, and that is"
+                        " worth saying out loud.\n\n"
+                        "Judge only from the record. You cannot see production, and a guess"
+                        " here becomes a line in a retro."
+                    ),
+                },
+                {
+                    "id": "verdict",
+                    "agent": "contrarian",
+                    "depends_on": ["due"],
+                    "prompt": (
+                        "{{tasks.due.result}}\n\n"
+                        "Which of these decisions look wrong now, and what signal was already"
+                        " visible when they were made? Rank by what the mistake still costs,"
+                        " not by how obvious it looks in hindsight.\n\n"
+                        "Hindsight bias is the failure mode here: a decision that was right on"
+                        " what was known and turned out badly is not a mistake, and calling it"
+                        " one teaches people to avoid deciding. Say which category each one"
+                        " falls into. If the record holds up, say so."
+                    ),
+                },
+                {
+                    "id": "record",
+                    "agent": "recorder",
+                    "depends_on": ["verdict"],
+                    "prompt": (
+                        "Verdict:\n{{tasks.verdict.result}}\n\n"
+                        "Write retros/<year>-q<n>.md: the tripwires that fired, the assumptions"
+                        " that broke, the decisions nobody revisited, and the records missing a"
+                        " tripwire entirely.\n\n"
+                        "Then update the affected records themselves — a line at the top of"
+                        " each saying what this retro found, and on what date. A retro nothing"
+                        " links back from is read once."
+                    ),
+                },
+            ],
+        },
+    ),
+    Preset(
+        name="faq",
+        kind="workflow",
+        description=(
+            "Connector-backed, and the only preset here that reaches outside the bucket:"
+            " weekly, it mines Slack for questions asked more than once and turns them into a"
+            " document. Needs `syros connectors auth slack` — without the credential the first"
+            " task fails at start and skips the second. Installs paused."
+        ),
+        requires=("listener", "recorder", "ops"),
+        spec={
+            "name": "faq",
+            "cron": "0 16 * * 5",
+            "timezone": workflows.DEFAULT_TIMEZONE,
+            "enabled": False,
+            "options": {"artifacts": {"ops": "rw"}},
+            "tasks": [
+                {
+                    "id": "listen",
+                    "agent": "listener",
+                    "depends_on": [],
+                    "prompt": (
+                        "Read the last week in the team's shared channels and find the"
+                        " questions asked more than once.\n\n"
+                        "For each: the question as people actually phrase it, the answer as the"
+                        " person who knows it gave it, how often it came back, and a link to"
+                        " one thread. Save to ./artifacts/ops/questions.md and return the same"
+                        " text.\n\n"
+                        "If nothing repeated, say so in one line. A padded list here becomes a"
+                        " document nobody trusts."
+                    ),
+                },
+                {
+                    "id": "write",
+                    "agent": "recorder",
+                    "depends_on": ["listen"],
+                    "prompt": (
+                        "Repeated questions:\n{{tasks.listen.result}}\n\n"
+                        "Merge these into faq.md — rewrite the file, do not append a"
+                        " dated section. An entry already there whose answer has changed gets"
+                        " the new answer and a note that it changed; an entry nobody asked"
+                        " about this week stays.\n\n"
+                        "Where an answer contradicts a record in decisions/, do not silently"
+                        " pick one: write the entry pointing at the decision, and say in your"
+                        " final message which decision looks out of date. That is a decision to"
+                        " reopen, not a document to fix."
                     ),
                 },
             ],
