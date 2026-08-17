@@ -551,9 +551,10 @@ else has a copy of what agents put here.
   `dataEditor`), and `run_log` is append-only by a table-scoped custom role with exactly
   `tables.get` + `tables.updateData` — no delete, no schema rewrite. So a session cannot
   edit or erase its own audit trail. Two caveats: `data_dataset_id` must not be
-  `dataset_id` (Terraform and `BigQueryEnv` both refuse it, since pointing it there would
-  hand agents the audit dataset), and inside the writable dataset there is no
-  session-to-session isolation. Storage is billed and unbounded — agents append, nothing
+  `dataset_id` — pointing it there would aim the write tools at the audit dataset, so
+  Terraform refuses the combination at plan time and every write tool fails closed if one
+  ever reaches a sandbox — and inside the writable dataset there is no session-to-session
+  isolation. Storage is billed and unbounded — agents append, nothing
   expires — so set a default table expiration on the dataset if unattended workflows will
   write to it for a long time.
 - **Network egress** — by default the sandbox has unrestricted internet access, which

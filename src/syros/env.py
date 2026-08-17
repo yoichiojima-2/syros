@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import OptionsError
 from .names import validate_table
 
 DEFAULT_APPROVAL_TIMEOUT = 300.0
@@ -66,22 +67,31 @@ class BigQueryEnv:
     max_insert_rows: int = DEFAULT_BQ_MAX_INSERT_ROWS
     max_insert_bytes: int = DEFAULT_BQ_MAX_INSERT_BYTES
 
-    def __post_init__(self) -> None:
-        # The separation of the two datasets is the whole security model: the
-        # sandbox identity holds write IAM on write_dataset, so pointing it at
-        # the control-plane snapshot would hand an agent its own audit log.
-        # Cheaper to refuse the misconfiguration than to explain it later.
+    def writable_dataset(self) -> str:
+        """The dataset the write tools address, or a refusal.
+
+        The separation of the two datasets is the whole security model: the
+        sandbox identity holds write IAM on write_dataset, so a deployment that
+        set both names the same would have the write tools pointed at syros's
+        own audit log. Terraform refuses that combination up front
+        (google_bigquery_dataset.agent_data's precondition); this is the second
+        line, and it fails closed inside the tool rather than at session setup
+        so the run survives to report it.
+        """
         if self.write_dataset == self.dataset:
-            raise ValueError(
-                f"SYROS_BQ_DATA_DATASET must differ from SYROS_DATASET (both {self.dataset!r}):"
-                " the agent-writable dataset cannot be the one holding syros's own audit tables"
+            raise OptionsError(
+                "this deployment is misconfigured and no table can be written:"
+                f" SYROS_BQ_DATA_DATASET and SYROS_DATASET are both {self.dataset!r},"
+                " and the agent-writable dataset must not be the one holding syros's"
+                " own audit tables. Report this to whoever runs the deployment."
             )
+        return self.write_dataset
 
     def table(self, table: str) -> str:
         """The fully-qualified id of an agent table. The single place a
         model-supplied name becomes a table id — `names.validate_table` is what
         stops that name from naming a dataset."""
-        return f"{self.project}.{self.write_dataset}.{validate_table(table)}"
+        return f"{self.project}.{self.writable_dataset()}.{validate_table(table)}"
 
     @classmethod
     def from_env(cls, project: str) -> BigQueryEnv:

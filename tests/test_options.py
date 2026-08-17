@@ -305,3 +305,11 @@ def test_connectors_mcp_server_collision_rejected():
     )
     with pytest.raises(OptionsError):
         options.validate()
+
+
+def test_builtin_tools_are_per_builtin_not_a_default():
+    """A second builtin must not inherit BigQuery's tool names by falling
+    through — it would pre-allow tools that do not exist and none that do."""
+    from syros.options import builtin_tools
+
+    assert builtin_tools("x", {"type": "builtin", "name": "spanner", "write": True}) == []

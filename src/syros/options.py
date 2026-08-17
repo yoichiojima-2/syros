@@ -68,12 +68,18 @@ BUILTIN_MCP_KEYS: dict[str, frozenset[str]] = {"bigquery": frozenset({"write"})}
 BIGQUERY_TOOLS = ("query",)
 BIGQUERY_WRITE_TOOLS = ("tables", "create_table", "insert", "query_into", "drop_table")
 
+# Per builtin, like BUILTIN_MCP_KEYS: the second builtin to arrive must not
+# inherit BigQuery's tool names by falling through a default.
+BUILTIN_TOOLS: dict[str, tuple[str, ...]] = {"bigquery": BIGQUERY_TOOLS}
+BUILTIN_WRITE_TOOLS: dict[str, tuple[str, ...]] = {"bigquery": BIGQUERY_WRITE_TOOLS}
+
 
 def builtin_tools(key: str, config: dict[str, Any]) -> list[str]:
     """The `mcp__{key}__{tool}` names a builtin reference makes available."""
-    tools = list(BIGQUERY_TOOLS)
+    name = str(config.get("name") or "")
+    tools = list(BUILTIN_TOOLS.get(name, ()))
     if config.get("write"):
-        tools += list(BIGQUERY_WRITE_TOOLS)
+        tools += list(BUILTIN_WRITE_TOOLS.get(name, ()))
     return [f"mcp__{key}__{tool}" for tool in tools]
 
 

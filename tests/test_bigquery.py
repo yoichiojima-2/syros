@@ -11,11 +11,20 @@ from dataclasses import replace
 
 import pytest
 
-from syros.analytics import SCHEMAS
 from mcp import types
 
-from syros.bigquery import _cell, _write_tools, build_server, describe, run_query
+from syros.analytics import SCHEMAS
+
+from syros.bigquery import (
+    WRITE_TIMEOUT_SECONDS,
+    _cell,
+    _write_tools,
+    build_server,
+    describe,
+    run_query,
+)
 from syros.env import BigQueryEnv
+from syros.errors import OptionsError
 
 CONFIG = BigQueryEnv(project="p", dataset="syros", max_bytes=1000, max_rows=3, max_result_bytes=400)
 # The same deployment with the agents' own dataset in play. Tiny insert caps
@@ -270,16 +279,18 @@ class FakeWriteBQ:
         self.created = []
         self.inserted = []
         self.deleted = []
+        self.get_timeouts = []
 
     def query(self, sql, job_config=None):
         self.calls.append((sql, job_config))
         return self._jobs.pop(0)
 
-    def list_tables(self, dataset_ref, max_results=None):
-        self.listed = (dataset_ref.project, dataset_ref.dataset_id, max_results)
+    def list_tables(self, dataset_ref, max_results=None, timeout=None):
+        self.listed = (dataset_ref.project, dataset_ref.dataset_id, max_results, timeout)
         return iter([FakeTableRef(t.table_id) for t in self._tables[:max_results]])
 
-    def get_table(self, ref):
+    def get_table(self, ref, timeout=None):
+        self.get_timeouts.append(timeout)
         return next(t for t in self._tables if t.table_id == ref.table_id)
 
     def create_table(self, table, timeout=None):
@@ -381,16 +392,32 @@ async def test_every_write_tool_resolves_into_the_write_dataset():
     assert client.deleted[0][0] == expected
 
 
-def test_write_dataset_may_not_be_the_audit_dataset():
-    with pytest.raises(ValueError, match="cannot be the one holding"):
-        BigQueryEnv(
-            project="p",
-            dataset="syros",
-            max_bytes=1,
-            max_rows=1,
-            max_result_bytes=1,
-            write_dataset="syros",
-        )
+COLLIDED = replace(WRITE_CONFIG, write_dataset=CONFIG.dataset)
+
+
+def test_a_deployment_that_collides_the_datasets_has_no_writable_one():
+    with pytest.raises(OptionsError, match="misconfigured"):
+        COLLIDED.writable_dataset()
+
+
+async def test_every_write_tool_fails_closed_when_the_datasets_collide():
+    """Terraform refuses this combination up front; if one ever reaches a
+    sandbox, no write tool may reach the audit dataset — and the run has to
+    survive to say so rather than dying during setup."""
+    client = FakeWriteBQ(tables=[FakeTable("run_log")])
+    server = _server(client, COLLIDED)
+    calls = {
+        "tables": {},
+        "create_table": {"table": "run_log", "columns": [{"name": "a", "type": "STRING"}]},
+        "insert": {"table": "run_log", "rows": [{"a": 1}]},
+        "query_into": {"table": "run_log", "sql": "SELECT 1"},
+        "drop_table": {"table": "run_log"},
+    }
+    for name, args in calls.items():
+        result = await _call(server, name, args)
+        assert result["is_error"] is True, name
+        assert "misconfigured" in _text(result), name
+    assert (client.created, client.inserted, client.deleted, client.calls) == ([], [], [], [])
 
 
 async def test_tables_lists_the_write_dataset_with_schemas():
@@ -418,6 +445,9 @@ async def test_tables_lists_the_write_dataset_with_schemas():
         }
     ]
     assert client.listed[:2] == ("p", "syros_data")
+    # every metadata round trip is bounded, like the rest of the module
+    assert client.listed[3] == WRITE_TIMEOUT_SECONDS
+    assert client.get_timeouts == [WRITE_TIMEOUT_SECONDS]
 
 
 async def test_create_table_builds_the_schema_and_partitioning():
@@ -517,7 +547,7 @@ async def test_insert_reports_per_row_errors_as_a_failure():
 
 async def test_insert_rejects_rows_that_are_not_objects():
     server = _server(FakeWriteBQ())
-    for rows in ([], "not a list", [1, 2]):
+    for rows in ([], "not a list", [1, 2], [None], [0], [""], [[]], [{"a": 1}, None]):
         result = await _call(server, "insert", {"table": "notes", "rows": rows})
         assert result["is_error"] is True
 

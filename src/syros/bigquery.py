@@ -259,7 +259,11 @@ def _describe_tables(config: BigQueryEnv) -> str:
         f" `{config.project}.{config.write_dataset}`, with each one's columns and"
         " row count. Start here before writing — tables persist across sessions,"
         " so the one you want may already exist (and may have been made by"
-        " another agent). Read the rows back with the query tool."
+        " another agent). Read the rows back with the query tool.\n"
+        "The row count is table metadata and lags the streaming buffer, so rows"
+        " you just inserted may not be counted here for several minutes. Do not"
+        " read a low count as a failed insert — SELECT COUNT(*) to check, and"
+        " never re-insert on the strength of this number."
     )
 
 
@@ -288,9 +292,11 @@ def _describe_insert(config: BigQueryEnv) -> str:
         f" {config.max_insert_bytes} bytes per call — split a larger load into"
         " several calls.\n"
         "This is a streaming insert: rows appear in queries within seconds, and"
-        " there is no deduplication, so re-sending the same batch after a"
-        " successful call duplicates it. Nothing here can update or delete an"
-        " existing row."
+        " there is no deduplication. Re-sending a batch duplicates it — that"
+        " includes retrying after an error, because a call can fail after"
+        " BigQuery has already committed the rows. If a call fails, query the"
+        " table to see what landed before sending anything again. Nothing here"
+        " can update or delete an existing row."
     )
 
 
@@ -326,13 +332,19 @@ def _list_tables(client: Any, config: BigQueryEnv) -> dict[str, Any]:
     query job, so discovery costs nothing and needs no jobUser."""
     from google.cloud import bigquery
 
-    dataset_ref = bigquery.DatasetReference(config.project, config.write_dataset)
+    dataset_ref = bigquery.DatasetReference(config.project, config.writable_dataset())
     # One over the cap, so a truncated listing is detectable and can be said
     # out loud rather than looking like the whole dataset.
-    listed = list(client.list_tables(dataset_ref, max_results=LIST_TABLES_LIMIT + 1))
+    listed = list(
+        client.list_tables(
+            dataset_ref, max_results=LIST_TABLES_LIMIT + 1, timeout=WRITE_TIMEOUT_SECONDS
+        )
+    )
     described = []
     for item in listed[:LIST_TABLES_LIMIT]:
-        table = client.get_table(item.reference)
+        # Bounded like every other call here: this is up to LIST_TABLES_LIMIT
+        # round trips, and one stalled metadata read must not hold the turn.
+        table = client.get_table(item.reference, timeout=WRITE_TIMEOUT_SECONDS)
         described.append(
             {
                 "table": table.table_id,
@@ -463,8 +475,10 @@ async def run_insert(client: Any, table: str, rows: Any, config: BigQueryEnv) ->
     """Cap the batch before spending a round trip on it."""
     if not isinstance(rows, list) or not rows:
         return _error("rows is required: a non-empty list of JSON objects")
-    if bad := next((r for r in rows if not isinstance(r, dict)), None):
-        return _error(f"every row must be a JSON object keyed by column name, not {bad!r}")
+    # Membership, not truthiness: a falsy row (null, 0, "") is exactly the
+    # shape mistake worth catching, and `if bad := next(...)` would let it past.
+    if bad := [row for row in rows if not isinstance(row, dict)]:
+        return _error(f"every row must be a JSON object keyed by column name, not {bad[0]!r}")
     if len(rows) > config.max_insert_rows:
         return _error(
             f"{len(rows)} rows is over the {config.max_insert_rows} per-call cap —"
