@@ -170,7 +170,8 @@ def _cell(value: Any) -> Any:
     """BigQuery hands back rich Python objects (datetime/date, Decimal, bytes,
     dict for STRUCT, list for REPEATED); JSON needs plain leaves, and timestamps
     should read the same as in the exported tables (analytics._timestamp)."""
-    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+    # datetime.datetime is a date subclass, so date | time covers all three.
+    if isinstance(value, datetime.date | datetime.time):
         return value.isoformat()
     if isinstance(value, decimal.Decimal):
         return float(value)
@@ -178,7 +179,7 @@ def _cell(value: Any) -> Any:
         return base64.b64encode(value).decode()
     if isinstance(value, dict):
         return {k: _cell(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_cell(v) for v in value]
     return value
 
@@ -218,26 +219,43 @@ def format_result(
     return json.dumps(payload, default=str, ensure_ascii=False)
 
 
+async def _guard_select(
+    client: Any, sql: str, config: BigQueryEnv, *, not_select: str
+) -> tuple[int, None] | tuple[None, dict[str, Any]]:
+    """Dry-run the statement and refuse anything that isn't a capped SELECT.
+
+    Returns (estimate, None) when the query may run, or (None, error_result)
+    with `not_select` explaining why only SELECT is accepted at that call site.
+    """
+    try:
+        statement_type, estimate = await asyncio.to_thread(_dry_run, client, sql)
+    except Exception as exc:
+        return None, _error(f"BigQuery rejected the query: {_reason(exc)}")
+    if statement_type != "SELECT":
+        return None, _error(not_select.format(statement_type=statement_type))
+    if estimate > config.max_bytes:
+        return None, _error(
+            f"query would scan {estimate} bytes, over the {config.max_bytes} cap —"
+            " narrow the columns, filter on a partition column, or aggregate in SQL"
+        )
+    return estimate, None
+
+
 async def run_query(client: Any, sql: str, config: BigQueryEnv) -> dict[str, Any]:
     """Dry-run guard + capped query, as an SDK tool result. Never raises: a
     failure the agent can fix (bad SQL, too many bytes, denied dataset) is worth
     more to it as text than as a crashed turn."""
     if not sql.strip():
         return _error("sql is required")
-    try:
-        statement_type, estimate = await asyncio.to_thread(_dry_run, client, sql)
-    except Exception as exc:
-        return _error(f"BigQuery rejected the query: {_reason(exc)}")
-    if statement_type != "SELECT":
-        return _error(
-            f"only SELECT is allowed here (BigQuery parsed this as {statement_type});"
-            " the sandbox identity has read access only"
-        )
-    if estimate > config.max_bytes:
-        return _error(
-            f"query would scan {estimate} bytes, over the {config.max_bytes} cap —"
-            " narrow the columns, filter on a partition column, or aggregate in SQL"
-        )
+    estimate, refused = await _guard_select(
+        client,
+        sql,
+        config,
+        not_select="only SELECT is allowed here (BigQuery parsed this as"
+        " {statement_type}); the sandbox identity has read access only",
+    )
+    if refused is not None:
+        return refused
     try:
         rows, billed = await asyncio.to_thread(_execute, client, sql, config)
     except Exception as exc:
@@ -508,20 +526,15 @@ async def run_query_into(
         config.table(table)
     except OptionsError as exc:
         return _error(str(exc))
-    try:
-        statement_type, estimate = await asyncio.to_thread(_dry_run, client, sql)
-    except Exception as exc:
-        return _error(f"BigQuery rejected the query: {_reason(exc)}")
-    if statement_type != "SELECT":
-        return _error(
-            f"sql must be a SELECT (BigQuery parsed this as {statement_type}); the"
-            " destination table is set by the `table` argument, not by the query"
-        )
-    if estimate > config.max_bytes:
-        return _error(
-            f"query would scan {estimate} bytes, over the {config.max_bytes} cap —"
-            " narrow the columns, filter on a partition column, or aggregate in SQL"
-        )
+    _, refused = await _guard_select(
+        client,
+        sql,
+        config,
+        not_select="sql must be a SELECT (BigQuery parsed this as {statement_type}); the"
+        " destination table is set by the `table` argument, not by the query",
+    )
+    if refused is not None:
+        return refused
     return await _write("query_into", lambda: _query_into(client, config, table, sql, mode))
 
 

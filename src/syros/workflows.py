@@ -56,13 +56,13 @@ from .names import validate_name
 from .options import AgentOptions, options_from_doc
 from .store import (
     START_GRACE_SECONDS,
-    Store,
     StoreProtocol,
     lease_active,
     new_run_id,
     new_session_id,
     runtime,
     start_pending,
+    store_or_default as _store,
 )
 
 DEFAULT_TIMEZONE = "UTC"
@@ -84,12 +84,25 @@ class WorkflowError(SyrosError):
     """A workflow definition is invalid, missing, or already exists."""
 
 
-def _epoch(value: Any) -> float:
+def epoch(value: Any) -> float:
     """Firestore hands back datetimes for SERVER_TIMESTAMP fields and floats
     for the ones syros writes with time.time()."""
     if isinstance(value, datetime):
         return value.timestamp()
     return float(value or 0.0)
+
+
+def _schedule(
+    cron_expression: str | None, timezone: str, now: float | None
+) -> tuple[dict[str, Any] | None, float]:
+    """The stored schedule dict and the first slot, or (None, 0.0) for a
+    manual-only workflow."""
+    if not cron_expression:
+        return None, 0.0
+    cron.validate(cron_expression, timezone)
+    now = time.time() if now is None else now
+    schedule = {"cron": cron.describe(cron_expression), "timezone": timezone}
+    return schedule, cron.next_after(cron_expression, now, timezone)
 
 
 def result_refs(prompt: str) -> set[str]:
@@ -209,13 +222,7 @@ def build(
     """
     validate_name("workflow", name)
     normalized = normalize_tasks(tasks)
-    schedule = None
-    next_run_at = 0.0
-    if cron_expression:
-        cron.validate(cron_expression, timezone)
-        schedule = {"cron": cron.describe(cron_expression), "timezone": timezone}
-        now = time.time() if now is None else now
-        next_run_at = cron.next_after(cron_expression, now, timezone)
+    schedule, next_run_at = _schedule(cron_expression, timezone, now)
     return {
         "tasks": normalized,
         "options": (defaults or AgentOptions()).serialize(),
@@ -230,10 +237,6 @@ def build(
         "skip_count": 0,
         "created_by": created_by,
     }
-
-
-def _store(options: AgentOptions, store: StoreProtocol | None) -> StoreProtocol:
-    return store or Store(options.resolved_project())
 
 
 async def _validate_tasks(
@@ -364,13 +367,7 @@ async def update(
     options = options or AgentOptions()
     defaults = defaults or AgentOptions()
     normalized = normalize_tasks(tasks)
-    schedule = None
-    next_run_at = 0.0
-    if cron_expression:
-        cron.validate(cron_expression, timezone)
-        schedule = {"cron": cron.describe(cron_expression), "timezone": timezone}
-        now = time.time() if now is None else now
-        next_run_at = cron.next_after(cron_expression, now, timezone)
+    schedule, next_run_at = _schedule(cron_expression, timezone, now)
     store = _store(options, store)
     await _validate_tasks(store, normalized, defaults, options)
     workflow = await _require(store, name)
@@ -574,6 +571,48 @@ async def advance(
     return await _advance(store, options, name, run_id, finished=finished, now=now)
 
 
+def _record_finished(tasks: dict[str, Any], finished: dict[str, Any], now: float) -> bool:
+    """Apply a finished task's outcome; False means a racing advancer already
+    recorded it and the caller must abort without changes."""
+    state = tasks.get(finished["task"])
+    if state is None or state["status"] in TERMINAL:
+        return False
+    state.update(
+        status=finished["status"],
+        result=finished.get("result"),
+        error=finished.get("error"),
+        finished_at=now,
+    )
+    return True
+
+
+def _propagate_skips(tasks: dict[str, Any], spec: dict[str, Any], now: float) -> bool:
+    """A failed (or skipped) dependency skips the whole downstream cone."""
+    changed, skipping = False, True
+    while skipping:
+        skipping = False
+        for tid, state in tasks.items():
+            if state["status"] != "pending":
+                continue
+            if any(tasks[d]["status"] in ("failed", "skipped") for d in spec[tid]["depends_on"]):
+                state.update(status="skipped", finished_at=now)
+                changed = skipping = True
+    return changed
+
+
+def _claim_ready(tasks: dict[str, Any], spec: dict[str, Any], now: float) -> list[str]:
+    """Claim every task whose dependencies all succeeded. The session id is
+    assigned inside the transaction, so exactly one advancer owns each launch."""
+    claimed = []
+    for tid, state in tasks.items():
+        if state["status"] != "pending":
+            continue
+        if all(tasks[d]["status"] == "succeeded" for d in spec[tid]["depends_on"]):
+            state.update(status="launching", session_id=new_session_id(), launching_at=now)
+            claimed.append(tid)
+    return claimed
+
+
 async def _advance(
     store: StoreProtocol,
     options: AgentOptions,
@@ -597,45 +636,18 @@ async def _advance(
             return None
         spec = {t["id"]: t for t in run.get("spec") or []}
         tasks = {tid: dict(state) for tid, state in (run.get("tasks") or {}).items()}
+
         changed = False
-
         if finished is not None:
-            state = tasks.get(finished["task"])
-            if state is None or state["status"] in TERMINAL:
+            if not _record_finished(tasks, finished, now):
                 return None  # a racing advancer recorded it (and launched)
-            state.update(
-                status=finished["status"],
-                result=finished.get("result"),
-                error=finished.get("error"),
-                finished_at=now,
-            )
             changed = True
-
-        # A failed (or skipped) dependency skips the whole downstream cone.
-        skipping = True
-        while skipping:
-            skipping = False
-            for tid, state in tasks.items():
-                if state["status"] != "pending":
-                    continue
-                if any(
-                    tasks[d]["status"] in ("failed", "skipped") for d in spec[tid]["depends_on"]
-                ):
-                    state.update(status="skipped", finished_at=now)
-                    changed = skipping = True
-
-        # Claim what became ready: the session id is assigned inside the
-        # transaction, so exactly one advancer owns each launch.
-        for tid, state in tasks.items():
-            if state["status"] != "pending":
-                continue
-            if all(tasks[d]["status"] == "succeeded" for d in spec[tid]["depends_on"]):
-                state.update(status="launching", session_id=new_session_id(), launching_at=now)
-                claimed.append(tid)
-                changed = True
+        changed |= _propagate_skips(tasks, spec, now)
+        claimed.extend(_claim_ready(tasks, spec, now))
+        changed |= bool(claimed)
 
         status, finished_at = run["status"], run.get("finished_at")
-        if not any(state["status"] not in TERMINAL for state in tasks.values()):
+        if all(state["status"] in TERMINAL for state in tasks.values()):
             failed = any(state["status"] != "succeeded" for state in tasks.values())
             status = "failed" if failed else "succeeded"
             finished_at = now
@@ -709,33 +721,8 @@ async def _start_task(
         # else: a launcher died between creating the session and recording it
         # here — the session (and its trigger) stands; just mark it running.
     except Exception as exc:  # a bad task must fail its cone, not the advancer
-        error = f"{type(exc).__name__}: {exc}"  # `exc` is gone by the time this runs
-        try:
-            taken = await store.get_session(session_id) is not None
-        except Exception:
-            taken = False  # cannot tell; the guard below is what stands then
-        if taken:
-            # Someone got further with this launch than we did — the session may
-            # already be prompted and running, and it is not yet marked running,
-            # so the guard below would not catch it. Failing the task here would
-            # leave a live session working on a run that declared it dead; the
-            # reconcile pass settles it either way, from the session's own state.
-            return
-
-        def fail_launch(run_doc: dict[str, Any]) -> dict[str, Any] | None:
-            tasks = {tid: dict(state) for tid, state in (run_doc.get("tasks") or {}).items()}
-            state = tasks.get(task_id)
-            # Only the owner of this launch may fail it: a racing launcher may
-            # already have the task running, and failing it here would kill a
-            # live session and skip its whole downstream cone.
-            if not state or state["status"] != "launching" or state["session_id"] != session_id:
-                return None
-            state.update(status="failed", result=None, error=error, finished_at=now)
-            return {**run_doc, "tasks": tasks}
-
-        if await store.transition_run(name, run_id, fail_launch) is not None:
-            # Propagate the skip cone and close the run, same as any outcome.
-            await _advance(store, options, name, run_id, now=now)
+        error = f"{type(exc).__name__}: {exc}"  # `exc` is gone once the handler returns
+        await _fail_launch(store, options, name, run_id, task_id, session_id, error, now)
         return
 
     def mark_running(run_doc: dict[str, Any]) -> dict[str, Any] | None:
@@ -747,6 +734,45 @@ async def _start_task(
         return {**run_doc, "tasks": tasks}
 
     await store.transition_run(name, run_id, mark_running)
+
+
+async def _fail_launch(
+    store: StoreProtocol,
+    options: AgentOptions,
+    name: str,
+    run_id: str,
+    task_id: str,
+    session_id: str,
+    error: str,
+    now: float,
+) -> None:
+    """Record a launch that blew up, unless someone else got further with it."""
+    try:
+        taken = await store.get_session(session_id) is not None
+    except Exception:
+        taken = False  # cannot tell; the transition guard below is what stands then
+    if taken:
+        # Someone got further with this launch than we did — the session may
+        # already be prompted and running, and it is not yet marked running,
+        # so the transition guard would not catch it. Failing the task here
+        # would leave a live session working on a run that declared it dead;
+        # the reconcile pass settles it either way, from the session's own state.
+        return
+
+    def fail_launch(run_doc: dict[str, Any]) -> dict[str, Any] | None:
+        tasks = {tid: dict(state) for tid, state in (run_doc.get("tasks") or {}).items()}
+        state = tasks.get(task_id)
+        # Only the owner of this launch may fail it: a racing launcher may
+        # already have the task running, and failing it here would kill a
+        # live session and skip its whole downstream cone.
+        if not state or state["status"] != "launching" or state["session_id"] != session_id:
+            return None
+        state.update(status="failed", result=None, error=error, finished_at=now)
+        return {**run_doc, "tasks": tasks}
+
+    if await store.transition_run(name, run_id, fail_launch) is not None:
+        # Propagate the skip cone and close the run, same as any outcome.
+        await _advance(store, options, name, run_id, now=now)
 
 
 async def reconcile(
@@ -795,7 +821,7 @@ async def reconcile(
                     now=now,
                 )
         elif status == "launching":
-            if now - _epoch(state.get("launching_at")) < START_GRACE_SECONDS:
+            if now - epoch(state.get("launching_at")) < START_GRACE_SECONDS:
                 continue
             await _start_task(store, options, name, run, task_id, now=now)
     # Close a run whose every task finished but whose last advancer died

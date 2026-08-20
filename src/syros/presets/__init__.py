@@ -1136,8 +1136,9 @@ async def _write_files(preset: Preset, *, store: Any, objects: Any, force: bool)
     )
     present = {item["name"] for item in listed}
 
-    pending = [(file, data) for file, data in files(source) if force or file not in present]
-    kept = len(files(source)) - len(pending)
+    shipped = files(source)
+    pending = [(file, data) for file, data in shipped if force or file not in present]
+    kept = len(shipped) - len(pending)
     if not pending:
         return 0, kept
     if not skill:

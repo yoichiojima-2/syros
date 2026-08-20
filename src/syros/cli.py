@@ -262,8 +262,8 @@ def _run_options(args) -> AgentOptions:
     """The AgentOptions subset worth having on the command line."""
     allow = list(args.allow or [])
     mcp_servers: dict[str, dict] = {}
-    write = getattr(args, "bigquery_write", False)
-    if write or getattr(args, "bigquery", False):
+    write = args.bigquery_write
+    if write or args.bigquery:
         # The built-in BigQuery server, plus its tools pre-allowed: --bigquery
         # is a one-flag opt-in, not a capability that then waits for approval.
         # --bigquery-write implies it: the write tools are the same server.
@@ -272,7 +272,7 @@ def _run_options(args) -> AgentOptions:
             config["write"] = True
         mcp_servers["bq"] = config
         allow += [tool for tool in builtin_tools("bq", config) if tool not in allow]
-    flags = getattr(args, "connector", None) or []
+    flags = args.connector or []
     connectors = [name for flag in flags for name in flag.split(",") if name]
     return AgentOptions(
         connectors=connectors or None,
@@ -352,9 +352,10 @@ def _parse_tasks(args) -> list[dict] | None:
     """--tasks tasks.json (or `-` for stdin): the chain; --prompt: one task."""
     if not args.tasks:
         return None
-    import sys as _sys
+    import sys
+    from pathlib import Path
 
-    raw = _sys.stdin.read() if args.tasks == "-" else open(args.tasks).read()
+    raw = sys.stdin.read() if args.tasks == "-" else Path(args.tasks).read_text()
     tasks = json.loads(raw)
     if isinstance(tasks, dict):
         tasks = tasks.get("tasks")
@@ -452,18 +453,12 @@ async def _workflows(args) -> None:
     for run in await workflows.runs(args.name, limit=args.limit, store=store):
         print(
             f"{run['id']}  {run.get('status'):<10}  {run.get('trigger') or '':<9}"
-            f"  {_local(_epoch(run.get('started_at')))}"
+            f"  {_local(workflows.epoch(run.get('started_at')))}"
         )
         for task_id, task in (run.get("tasks") or {}).items():
             print(f"    {task_id:<20}  {task.get('status'):<10}  {task.get('session_id') or ''}")
             if task.get("error"):
                 print(f"        error: {task['error']}")
-
-
-def _epoch(value) -> float | None:
-    from datetime import datetime
-
-    return value.timestamp() if isinstance(value, datetime) else value
 
 
 async def _tick(args) -> None:

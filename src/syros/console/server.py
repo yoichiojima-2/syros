@@ -345,11 +345,19 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
             return asyncio.run_coroutine_threadsafe(coro, loop).result(CALL_TIMEOUT_SECONDS)
 
         def _send(
-            self, status: int, body: bytes, content_type: str, cache: str | None = None
+            self,
+            status: int,
+            body: bytes,
+            content_type: str,
+            cache: str | None = None,
+            *,
+            nosniff: bool = False,
         ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if nosniff:
+                self.send_header("X-Content-Type-Options", "nosniff")
             if cache:
                 self.send_header("Cache-Control", cache)
             self.end_headers()
@@ -367,13 +375,7 @@ def _make_handler(api: ConsoleAPI, loop: asyncio.AbstractEventLoop, static: dict
                     # rendering happens in the frontend's sandboxed iframes,
                     # never by navigating to this endpoint.
                     data, content_type = result
-                    self.send_response(200)
-                    self.send_header("Content-Type", content_type)
-                    self.send_header("Content-Length", str(len(data)))
-                    self.send_header("X-Content-Type-Options", "nosniff")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.end_headers()
-                    self.wfile.write(data)
+                    self._send(200, data, content_type, "no-cache", nosniff=True)
                 else:
                     self._json(result)
             except NotFound as exc:

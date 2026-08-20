@@ -14,6 +14,7 @@ contract as workspace.py); the CLI's OAuth login flows live in cli.py.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import urllib.parse
 import urllib.request
@@ -160,14 +161,13 @@ def credential_status(project: str) -> dict[str, dict[str, object]]:
     status: dict[str, dict[str, object]] = {}
     for name in CATALOG:
         configured, updated = False, None
-        try:
+        # NotFound: container not created yet (terraform apply pending)
+        with contextlib.suppress(exceptions.NotFound):
             for version in client.list_secret_versions(parent=_secret_path(project, name)):
                 if version.state.name == "ENABLED":
                     configured = True
                     created = version.create_time.timestamp()
                     updated = created if updated is None else max(updated, created)
-        except exceptions.NotFound:
-            pass  # container not created yet (terraform apply pending)
         status[name] = {"configured": configured, "updated": updated}
     return status
 

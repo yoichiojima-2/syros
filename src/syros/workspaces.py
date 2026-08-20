@@ -30,7 +30,7 @@ from typing import Any
 from .errors import SyrosError
 from .names import validate_name
 from .options import AgentOptions
-from .store import Store, StoreProtocol
+from .store import StoreProtocol, store_or_default as _store
 
 
 class WorkspaceError(SyrosError):
@@ -52,10 +52,6 @@ def build(
         "description": description,
         "created_by": created_by,
     }
-
-
-def _store(options: AgentOptions, store: StoreProtocol | None) -> StoreProtocol:
-    return store or Store(options.resolved_project())
 
 
 async def create(
@@ -85,13 +81,6 @@ async def get(
     name: str, *, options: AgentOptions | None = None, store: StoreProtocol | None = None
 ) -> dict[str, Any] | None:
     return await _store(options or AgentOptions(), store).get_workspace(name)
-
-
-async def list_all(
-    *, options: AgentOptions | None = None, store: StoreProtocol | None = None
-) -> list[dict[str, Any]]:
-    workspaces = await _store(options or AgentOptions(), store).list_workspaces()
-    return sorted(workspaces, key=lambda w: w.get("name") or "")
 
 
 async def update(

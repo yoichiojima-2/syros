@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-import syros.remote
 from syros.console.api import (
     MAX_BULK_DELETE,
     Conflict,
@@ -21,17 +20,6 @@ from syros.console.api import (
 from syros.errors import OptionsError, SyrosError
 from syros.options import AgentOptions
 from .fakes import FakeObjects, FakeStore, append_message
-
-
-@pytest.fixture(autouse=True)
-def no_job_trigger(monkeypatch):
-    triggered = []
-
-    async def fake_trigger(project, region, job, session_id):
-        triggered.append((project, region, job, session_id))
-
-    monkeypatch.setattr(syros.remote, "_trigger_job", fake_trigger)
-    return triggered
 
 
 def api(store, **kwargs):
@@ -1309,7 +1297,7 @@ async def test_deleting_a_workspace_takes_its_skills_with_it(monkeypatch):
     from syros import artifacts, workspace
     from syros.console.objects import GcsObjects
 
-    from .test_workspace import FakeBucket
+    from .fakes import FakeBucket
 
     fake = FakeBucket(
         {
