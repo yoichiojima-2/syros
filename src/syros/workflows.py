@@ -632,7 +632,7 @@ async def _advance(
                 changed = True
 
         status, finished_at = run["status"], run.get("finished_at")
-        if not any(state["status"] not in TERMINAL for state in tasks.values()):
+        if all(state["status"] in TERMINAL for state in tasks.values()):
             failed = any(state["status"] != "succeeded" for state in tasks.values())
             status = "failed" if failed else "succeeded"
             finished_at = now

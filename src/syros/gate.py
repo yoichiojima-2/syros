@@ -113,8 +113,8 @@ class Gate:
         )
         deadline = time.monotonic() + self._approval_timeout
         while time.monotonic() < deadline:
-            approval = await self._store.get_approval(self._session_id, hash_)
-            status = (approval or {}).get("status")
+            approval = await self._store.get_approval(self._session_id, hash_) or {}
+            status = approval.get("status")
             if status in ("allow", "deny"):
                 await self._journal.append(
                     "approval",
@@ -123,15 +123,15 @@ class Gate:
                         "call_hash": hash_,
                         "tool_name": tool_name,
                         "status": status,
-                        "decided_by": (approval or {}).get("decided_by"),
-                        "deny_message": (approval or {}).get("deny_message"),
+                        "decided_by": approval.get("decided_by"),
+                        "deny_message": approval.get("deny_message"),
                     },
                 )
             if status == "allow":
                 return PermissionResultAllow()
             if status == "deny":
                 return PermissionResultDeny(
-                    message=(approval or {}).get("deny_message") or "denied by operator"
+                    message=approval.get("deny_message") or "denied by operator"
                 )
             if await self._killed():
                 return PermissionResultDeny(message="session disabled by operator")

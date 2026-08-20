@@ -132,12 +132,12 @@ class RunnerEnv:
         # The lease is short and heartbeat-renewed (default every ttl/3), so a
         # dead runner is detected within minutes instead of masquerading as
         # "running" for the rest of a long ttl.
-        lease_ttl = float(os.environ.get("SYROS_LEASE_TTL", "180"))
+        lease_ttl = float(os.environ.get("SYROS_LEASE_TTL") or 180)
         return cls(
             project=project,
             bucket=default_bucket(None, project),
-            stay_alive=float(os.environ.get("SYROS_STAY_ALIVE", "60")),
+            stay_alive=float(os.environ.get("SYROS_STAY_ALIVE") or 60),
             lease_ttl=lease_ttl,
-            heartbeat=float(os.environ.get("SYROS_HEARTBEAT", str(lease_ttl / 3))),
-            work_dir=Path(os.environ.get("SYROS_WORK_DIR", "/work")),
+            heartbeat=float(os.environ.get("SYROS_HEARTBEAT") or lease_ttl / 3),
+            work_dir=Path(os.environ.get("SYROS_WORK_DIR") or "/work"),
         )

@@ -170,7 +170,8 @@ def _cell(value: Any) -> Any:
     """BigQuery hands back rich Python objects (datetime/date, Decimal, bytes,
     dict for STRUCT, list for REPEATED); JSON needs plain leaves, and timestamps
     should read the same as in the exported tables (analytics._timestamp)."""
-    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+    # datetime.datetime is a date subclass, so date | time covers all three.
+    if isinstance(value, datetime.date | datetime.time):
         return value.isoformat()
     if isinstance(value, decimal.Decimal):
         return float(value)
@@ -178,7 +179,7 @@ def _cell(value: Any) -> Any:
         return base64.b64encode(value).decode()
     if isinstance(value, dict):
         return {k: _cell(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_cell(v) for v in value]
     return value
 

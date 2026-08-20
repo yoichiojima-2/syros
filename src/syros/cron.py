@@ -157,15 +157,14 @@ def next_after(expression: str, after: float, timezone: str = "UTC") -> float:
     tz = zone(timezone)
     cursor = dt.datetime.fromtimestamp(after, tz=tz).replace(second=0, microsecond=0)
     day = cursor.date()
+    hours, minutes = sorted(cron.hours), sorted(cron.minutes)
     for offset in range(MAX_LOOKAHEAD_DAYS):
         candidate_day = day + dt.timedelta(days=offset)
         if not cron.matches_day(candidate_day):
             continue
-        for hour in sorted(cron.hours):
-            for minute in sorted(cron.minutes):
-                fire = dt.datetime(
-                    candidate_day.year, candidate_day.month, candidate_day.day, hour, minute
-                ).replace(tzinfo=tz)
+        for hour in hours:
+            for minute in minutes:
+                fire = dt.datetime.combine(candidate_day, dt.time(hour, minute), tzinfo=tz)
                 # The comparison is on the instant, not the wall clock: a DST
                 # jump can make a later wall-clock time an earlier instant, and
                 # a schedule must never fire backwards.

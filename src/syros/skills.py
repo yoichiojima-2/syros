@@ -339,10 +339,15 @@ def sync_official(
         for member in members:
             if not member.isfile():
                 continue  # symlinks/devices don't belong in a skill upload
-            roots = [d for d in dirs if member.name.startswith(d + "/")]
-            if not roots:
+            parts = member.name.split("/")
+            # Walk the member's own parent chain longest-first: the nearest
+            # enclosing skill root wins if dirs nest.
+            root = next(
+                (p for i in range(len(parts) - 1, 0, -1) if (p := "/".join(parts[:i])) in dirs),
+                None,
+            )
+            if root is None:
                 continue
-            root = max(roots, key=len)  # nearest skill root wins if dirs nest
             name = dirs[root]
             file = member.name[len(root) + 1 :]
             if not file or file.startswith("/") or ".." in file.split("/"):

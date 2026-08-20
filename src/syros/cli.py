@@ -352,9 +352,10 @@ def _parse_tasks(args) -> list[dict] | None:
     """--tasks tasks.json (or `-` for stdin): the chain; --prompt: one task."""
     if not args.tasks:
         return None
-    import sys as _sys
+    import sys
+    from pathlib import Path
 
-    raw = _sys.stdin.read() if args.tasks == "-" else open(args.tasks).read()
+    raw = sys.stdin.read() if args.tasks == "-" else Path(args.tasks).read_text()
     tasks = json.loads(raw)
     if isinstance(tasks, dict):
         tasks = tasks.get("tasks")
