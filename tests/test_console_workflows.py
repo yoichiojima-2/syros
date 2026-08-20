@@ -1,12 +1,10 @@
 """Console API tests for the workflows surface."""
 
-import time
-
 import pytest
 
 import syros.remote
 from syros import workflows
-from syros.console.api import Conflict, ConsoleAPI, NotFound, run_outcome
+from syros.console.api import Conflict, ConsoleAPI, NotFound
 from syros.errors import OptionsError
 from syros.options import AgentOptions
 
@@ -41,22 +39,6 @@ async def seed(store, name="nightly", **kwargs):
 
 def only_session(store, name, run_id):
     return store.runs[name][run_id]["tasks"]["main"]["session_id"]
-
-
-# --- run_outcome ---
-
-
-def test_run_outcome():
-    live = time.time() + 60
-    assert run_outcome({"status": "running", "lease_expires": live}) == "running"
-    assert run_outcome({"status": "running", "lease_expires": 0}) == "stalled"
-    assert run_outcome({"status": "queued"}) == "queued"
-    assert run_outcome({"status": "terminated"}) == "cancelled"
-    assert run_outcome({"status": "idle", "disabled": True}) == "cancelled"
-    assert run_outcome({"status": "idle", "stop_reason": "success"}) == "succeeded"
-    assert run_outcome({"status": "idle", "stop_reason": "end_turn"}) == "succeeded"
-    assert run_outcome({"status": "idle", "stop_reason": "error_max_turns"}) == "failed"
-    assert run_outcome({"status": "idle", "stop_reason": "workspace_busy"}) == "failed"
 
 
 # --- list / detail ---

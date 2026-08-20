@@ -262,8 +262,8 @@ def _run_options(args) -> AgentOptions:
     """The AgentOptions subset worth having on the command line."""
     allow = list(args.allow or [])
     mcp_servers: dict[str, dict] = {}
-    write = getattr(args, "bigquery_write", False)
-    if write or getattr(args, "bigquery", False):
+    write = args.bigquery_write
+    if write or args.bigquery:
         # The built-in BigQuery server, plus its tools pre-allowed: --bigquery
         # is a one-flag opt-in, not a capability that then waits for approval.
         # --bigquery-write implies it: the write tools are the same server.
@@ -272,7 +272,7 @@ def _run_options(args) -> AgentOptions:
             config["write"] = True
         mcp_servers["bq"] = config
         allow += [tool for tool in builtin_tools("bq", config) if tool not in allow]
-    flags = getattr(args, "connector", None) or []
+    flags = args.connector or []
     connectors = [name for flag in flags for name in flag.split(",") if name]
     return AgentOptions(
         connectors=connectors or None,

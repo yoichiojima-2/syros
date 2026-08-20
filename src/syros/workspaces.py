@@ -87,13 +87,6 @@ async def get(
     return await _store(options or AgentOptions(), store).get_workspace(name)
 
 
-async def list_all(
-    *, options: AgentOptions | None = None, store: StoreProtocol | None = None
-) -> list[dict[str, Any]]:
-    workspaces = await _store(options or AgentOptions(), store).list_workspaces()
-    return sorted(workspaces, key=lambda w: w.get("name") or "")
-
-
 async def update(
     name: str,
     run_options: AgentOptions,

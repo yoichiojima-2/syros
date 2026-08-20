@@ -80,32 +80,6 @@ def derived_state(session: dict[str, Any]) -> str:
     return status or "unknown"
 
 
-# States in which a session is still going, so its outcome isn't decided and
-# its duration is still growing. Mirrors ACTIVE_STATES in console/src/lib/types.ts.
-ACTIVE_STATES = ("running", "starting", "queued", "stalled")
-
-
-def run_outcome(session: dict[str, Any]) -> str:
-    """What a run *did*, as opposed to whether it is live (derived_state).
-
-    A finished session's verdict is its stop_reason: the harness reports
-    `success`/`end_turn` for a clean finish and an `error_*` subtype otherwise,
-    and syros adds `workspace_busy` for a run that lost a workspace lease and
-    `connector_error` for one whose connector credential was missing or stale.
-
-    Mirrors RunOutcome in console/src/lib/types.ts — keep the two in sync.
-    """
-    state = derived_state(session)
-    if state == "terminated":
-        return "cancelled"
-    if state in ACTIVE_STATES:
-        return state
-    stop_reason = runtime(session).get("stop_reason") or ""
-    if stop_reason.startswith("error") or stop_reason in ("workspace_busy", "connector_error"):
-        return "failed"
-    return "succeeded"
-
-
 def _summary(session: dict[str, Any]) -> dict[str, Any]:
     options = session.get("options") or {}
     return to_jsonable(
@@ -135,22 +109,6 @@ def _summary(session: dict[str, Any]) -> dict[str, Any]:
             "agent": session.get("agent"),
         }
     )
-
-
-def _run(session: dict[str, Any]) -> dict[str, Any]:
-    """A session seen as a run: the summary plus outcome and wall-clock time.
-
-    duration_s is None while the run is still going — the browser ticks that
-    one off created_at so it counts up between polls.
-    """
-    summary = _summary(session)
-    started, ended = summary["created_at"], summary["updated_at"]
-    active = summary["state"] in ACTIVE_STATES
-    return {
-        **summary,
-        "outcome": run_outcome(session),
-        "duration_s": None if active or not (started and ended) else max(0.0, ended - started),
-    }
 
 
 def _decode_content(content: str, encoding: str) -> bytes:
