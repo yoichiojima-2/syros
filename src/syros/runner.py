@@ -267,6 +267,7 @@ async def run(session_id: str) -> None:
             lost=lost,
         )
     )
+
     async def fail_fast(
         reason: str, payload: dict, *, result: str | None = None, release_workspace: bool = False
     ) -> None:

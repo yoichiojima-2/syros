@@ -123,6 +123,30 @@ def _decode_content(content: str, encoding: str) -> bytes:
     raise ValueError(f"unknown encoding {encoding!r}: use 'utf-8' or 'base64'")
 
 
+def _decode_limited(file: str, content: str, encoding: str) -> bytes:
+    data = _decode_content(content, encoding)
+    if len(data) > MAX_PREVIEW_BYTES:
+        raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
+    return data
+
+
+async def _mapped(coro, *, too_large: bool = False):
+    """Await a bucket call, remapping file errors to their API exceptions.
+
+    too_large turns ValueError (an over-the-cap read) into TooLarge — only the
+    read paths want that; elsewhere ValueError stays a plain bad request."""
+    try:
+        return await coro
+    except FileNotFoundError as exc:
+        raise NotFound(str(exc)) from exc
+    except FileExistsError as exc:
+        raise Conflict(f"destination exists: {exc}") from exc
+    except ValueError as exc:
+        if too_large:
+            raise TooLarge(str(exc)) from exc
+        raise
+
+
 def _decided_by() -> str:
     try:
         return getpass.getuser()
@@ -159,11 +183,15 @@ class ConsoleAPI:
             )
         return self._objects
 
-    def _parse_run_options(self, doc: Any) -> "AgentOptions":
-        """Body options -> validated AgentOptions, defaulted to the console's
-        project — the shared parse for every endpoint that accepts options."""
+    def _body_options(self, doc: Any) -> AgentOptions:
+        """Body options -> AgentOptions defaulted to the console's project —
+        the shared parse for every endpoint that accepts options."""
         run_options = options_from_doc(dict(doc or {}))
         run_options.project = run_options.project or self._options.project
+        return run_options
+
+    def _parse_run_options(self, doc: Any) -> AgentOptions:
+        run_options = self._body_options(doc)
         run_options.validate()
         return run_options
 
@@ -430,8 +458,7 @@ class ConsoleAPI:
         name = str(body.get("name") or "").strip()
         if await self._store.get_workflow(name) is not None:
             raise Conflict(f"workflow {name} already exists")
-        defaults = options_from_doc(dict(body.get("options") or {}))
-        defaults.project = defaults.project or self._options.project
+        defaults = self._body_options(body.get("options"))
         tasks = body.get("tasks") or None
         single = (
             {}
@@ -463,8 +490,7 @@ class ConsoleAPI:
         pause state, counters, and run history stay put.
         """
         await self._require_workflow(name)
-        defaults = options_from_doc(dict(body.get("options") or {}))
-        defaults.project = defaults.project or self._options.project
+        defaults = self._body_options(body.get("options"))
         workflow = await workflows.update(
             name,
             list(body.get("tasks") or []),
@@ -525,8 +551,7 @@ class ConsoleAPI:
         name = str(body.get("name") or "").strip()
         if await self._store.get_agent(name) is not None:
             raise Conflict(f"agent {name} already exists")
-        run_options = options_from_doc(dict(body.get("options") or {}))
-        run_options.project = run_options.project or self._options.project
+        run_options = self._body_options(body.get("options"))
         agent = await agents.create(
             name,
             run_options,
@@ -543,8 +568,7 @@ class ConsoleAPI:
         existing = await self._store.get_agent(name)
         if existing is None:
             raise NotFound(f"agent {name} not found")
-        run_options = options_from_doc(dict(body.get("options") or {}))
-        run_options.project = run_options.project or self._options.project
+        run_options = self._body_options(body.get("options"))
         agent = await agents.update(
             name,
             run_options,
@@ -631,6 +655,31 @@ class ConsoleAPI:
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
 
+    async def _delete_files(self, label: str, names: list[str], delete) -> dict[str, Any]:
+        """Best-effort bulk delete over one delete callable; reports per-file
+        failures rather than stopping at the first."""
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise ValueError(f"{label} must be a list of strings")
+        names = list(dict.fromkeys(names))
+        if len(names) > MAX_BULK_FILES:
+            raise ValueError(f"too many files: {len(names)} > {MAX_BULK_FILES}")
+        deleted, failed = [], []
+        for name in names:
+            try:
+                await delete(name)
+                deleted.append(name)
+            except Exception as exc:
+                failed.append({"name": name, "error": str(exc)})
+        return {"now": time.time(), "ok": not failed, "deleted": deleted, "failed": failed}
+
+    async def _delete_folder(self, folder: str, delete_prefix, *, missing: str) -> int:
+        if not isinstance(folder, str) or not folder.strip("/"):
+            raise ValueError("folder must be a non-empty path")
+        count = await delete_prefix(folder.strip("/") + "/")
+        if count == 0:
+            raise NotFound(missing)
+        return count
+
     async def _require_free(self, name: str) -> None:
         """Refuse to write a workspace a live run holds.
 
@@ -647,40 +696,25 @@ class ConsoleAPI:
 
     async def workspace_file(self, name: str, file: str) -> tuple[bytes, str]:
         """Raw bytes + content type, same contract as artifact_file."""
-        try:
-            return await self._bucket_objects().read_workspace_file(name, file)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
-        except ValueError as exc:
-            raise TooLarge(str(exc)) from exc
+        return await _mapped(self._bucket_objects().read_workspace_file(name, file), too_large=True)
 
     async def write_workspace_file(
         self, name: str, file: str, content: str, encoding: str = "utf-8"
     ) -> dict[str, Any]:
         """Create or overwrite one file. Text rides as utf-8, uploads as base64."""
-        data = _decode_content(content, encoding)
-        if len(data) > MAX_PREVIEW_BYTES:
-            raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
+        data = _decode_limited(file, content, encoding)
         await self._require_free(name)
         await self._bucket_objects().write_workspace_file(name, file, data)
         return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
 
     async def delete_workspace_file(self, name: str, file: str) -> dict[str, Any]:
         await self._require_free(name)
-        try:
-            await self._bucket_objects().delete_workspace_file(name, file)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
+        await _mapped(self._bucket_objects().delete_workspace_file(name, file))
         return {"now": time.time(), "ok": True, "name": name, "file": file}
 
     async def rename_workspace_file(self, name: str, src: str, dst: str) -> dict[str, Any]:
         await self._require_free(name)
-        try:
-            await self._bucket_objects().rename_workspace_file(name, src, dst)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
-        except FileExistsError as exc:
-            raise Conflict(f"destination exists: {exc}") from exc
+        await _mapped(self._bucket_objects().rename_workspace_file(name, src, dst))
         return {"now": time.time(), "ok": True, "name": name, "file": dst}
 
     async def set_workspace_file_tags(
@@ -688,38 +722,25 @@ class ConsoleAPI:
     ) -> dict[str, Any]:
         tags = validate_tags(tags)
         await self._require_free(name)
-        try:
-            await self._bucket_objects().set_workspace_tags(name, file, tags)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
+        await _mapped(self._bucket_objects().set_workspace_tags(name, file, tags))
         return {"now": time.time(), "ok": True, "name": name, "file": file, "tags": tags}
 
     async def delete_workspace_files(self, name: str, files: list[str]) -> dict[str, Any]:
         """Best-effort bulk delete; reports per-file failures like delete_many."""
-        if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
-            raise ValueError("files must be a list of strings")
-        files = list(dict.fromkeys(files))
-        if len(files) > MAX_BULK_FILES:
-            raise ValueError(f"too many files: {len(files)} > {MAX_BULK_FILES}")
         await self._require_free(name)
-        deleted, failed = [], []
-        for file in files:
-            try:
-                await self._bucket_objects().delete_workspace_file(name, file)
-                deleted.append(file)
-            except Exception as exc:
-                failed.append({"name": file, "error": str(exc)})
-        return {"now": time.time(), "ok": not failed, "deleted": deleted, "failed": failed}
+        return await self._delete_files(
+            "files", files, lambda f: self._bucket_objects().delete_workspace_file(name, f)
+        )
 
     async def delete_workspace_folder(self, name: str, folder: str) -> dict[str, Any]:
-        if not isinstance(folder, str) or not folder.strip("/"):
-            raise ValueError("folder must be a non-empty path")
         await self._require_free(name)
-        count = await self._bucket_objects().delete_workspace_prefix(
-            name, folder.strip("/") + "/", MAX_PREFIX_DELETE
+        count = await self._delete_folder(
+            folder,
+            lambda prefix: self._bucket_objects().delete_workspace_prefix(
+                name, prefix, MAX_PREFIX_DELETE
+            ),
+            missing=f"folder {folder} not found in workspace {name}",
         )
-        if count == 0:
-            raise NotFound(f"folder {folder} not found in workspace {name}")
         return {"now": time.time(), "ok": True, "name": name, "count": count}
 
     async def create_workspace(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -821,12 +842,9 @@ class ConsoleAPI:
         self, name: str, file: str, workspace: str | None = None
     ) -> tuple[bytes, str]:
         """Raw bytes + content type, same contract as artifact_file."""
-        try:
-            return await self._bucket_objects().read_skill_file(name, file, workspace)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
-        except ValueError as exc:
-            raise TooLarge(str(exc)) from exc
+        return await _mapped(
+            self._bucket_objects().read_skill_file(name, file, workspace), too_large=True
+        )
 
     async def write_skill_file(
         self,
@@ -836,26 +854,18 @@ class ConsoleAPI:
         encoding: str = "utf-8",
         workspace: str | None = None,
     ) -> dict[str, Any]:
-        data = _decode_content(content, encoding)
-        if len(data) > MAX_PREVIEW_BYTES:
-            raise TooLarge(f"{file} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
+        data = _decode_limited(file, content, encoding)
         await self._bucket_objects().write_skill_file(name, file, data, workspace)
         return {"now": time.time(), "ok": True, "name": name, "file": file, "size": len(data)}
 
     async def delete_skill_file(
         self, name: str, file: str, workspace: str | None = None
     ) -> dict[str, Any]:
-        try:
-            await self._bucket_objects().delete_skill_file(name, file, workspace)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
+        await _mapped(self._bucket_objects().delete_skill_file(name, file, workspace))
         return {"now": time.time(), "ok": True, "name": name, "file": file}
 
     async def delete_skill(self, name: str, workspace: str | None = None) -> dict[str, Any]:
-        try:
-            deleted = await self._bucket_objects().delete_skill(name, workspace)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
+        deleted = await _mapped(self._bucket_objects().delete_skill(name, workspace))
         return {"now": time.time(), "ok": True, "name": name, "deleted": deleted}
 
     async def sync_official_skills(self) -> dict[str, Any]:
@@ -904,69 +914,41 @@ class ConsoleAPI:
 
     async def artifact_file(self, space: str, name: str) -> tuple[bytes, str]:
         """Raw bytes + content type — the one non-JSON response in the API."""
-        try:
-            return await self._bucket_objects().read_artifact(space, name)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
-        except ValueError as exc:
-            raise TooLarge(str(exc)) from exc
+        return await _mapped(self._bucket_objects().read_artifact(space, name), too_large=True)
 
     async def write_artifact(
         self, space: str, name: str, content: str, encoding: str = "utf-8"
     ) -> dict[str, Any]:
-        data = _decode_content(content, encoding)
-        if len(data) > MAX_PREVIEW_BYTES:
-            raise TooLarge(f"{name} is {len(data)} bytes (limit {MAX_PREVIEW_BYTES})")
+        data = _decode_limited(name, content, encoding)
         await self._bucket_objects().write_artifact_file(space, name, data)
         return {"now": time.time(), "ok": True, "space": space, "file": name, "size": len(data)}
 
     async def delete_artifact(self, space: str, name: str) -> dict[str, Any]:
-        try:
-            await self._bucket_objects().delete_artifact_file(space, name)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
+        await _mapped(self._bucket_objects().delete_artifact_file(space, name))
         return {"now": time.time(), "ok": True, "space": space, "file": name}
 
     async def rename_artifact(self, space: str, src: str, dst: str) -> dict[str, Any]:
-        try:
-            await self._bucket_objects().rename_artifact_file(space, src, dst)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
-        except FileExistsError as exc:
-            raise Conflict(f"destination exists: {exc}") from exc
+        await _mapped(self._bucket_objects().rename_artifact_file(space, src, dst))
         return {"now": time.time(), "ok": True, "space": space, "file": dst}
 
     async def set_artifact_tags(self, space: str, name: str, tags: list[str]) -> dict[str, Any]:
         tags = validate_tags(tags)
-        try:
-            await self._bucket_objects().set_artifact_tags(space, name, tags)
-        except FileNotFoundError as exc:
-            raise NotFound(str(exc)) from exc
+        await _mapped(self._bucket_objects().set_artifact_tags(space, name, tags))
         return {"now": time.time(), "ok": True, "space": space, "file": name, "tags": tags}
 
     async def delete_artifacts(self, space: str, names: list[str]) -> dict[str, Any]:
-        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
-            raise ValueError("names must be a list of strings")
-        names = list(dict.fromkeys(names))
-        if len(names) > MAX_BULK_FILES:
-            raise ValueError(f"too many files: {len(names)} > {MAX_BULK_FILES}")
-        deleted, failed = [], []
-        for name in names:
-            try:
-                await self._bucket_objects().delete_artifact_file(space, name)
-                deleted.append(name)
-            except Exception as exc:
-                failed.append({"name": name, "error": str(exc)})
-        return {"now": time.time(), "ok": not failed, "deleted": deleted, "failed": failed}
+        return await self._delete_files(
+            "names", names, lambda n: self._bucket_objects().delete_artifact_file(space, n)
+        )
 
     async def delete_artifact_folder(self, space: str, folder: str) -> dict[str, Any]:
-        if not isinstance(folder, str) or not folder.strip("/"):
-            raise ValueError("folder must be a non-empty path")
-        count = await self._bucket_objects().delete_artifact_prefix(
-            space, folder.strip("/") + "/", MAX_PREFIX_DELETE
+        count = await self._delete_folder(
+            folder,
+            lambda prefix: self._bucket_objects().delete_artifact_prefix(
+                space, prefix, MAX_PREFIX_DELETE
+            ),
+            missing=f"folder {folder} not found in space {space}",
         )
-        if count == 0:
-            raise NotFound(f"folder {folder} not found in space {space}")
         return {"now": time.time(), "ok": True, "space": space, "count": count}
 
     async def create_space(self, name: str) -> dict[str, Any]:
