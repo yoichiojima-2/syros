@@ -84,7 +84,7 @@ class WorkflowError(SyrosError):
     """A workflow definition is invalid, missing, or already exists."""
 
 
-def _epoch(value: Any) -> float:
+def epoch(value: Any) -> float:
     """Firestore hands back datetimes for SERVER_TIMESTAMP fields and floats
     for the ones syros writes with time.time()."""
     if isinstance(value, datetime):
@@ -821,7 +821,7 @@ async def reconcile(
                     now=now,
                 )
         elif status == "launching":
-            if now - _epoch(state.get("launching_at")) < START_GRACE_SECONDS:
+            if now - epoch(state.get("launching_at")) < START_GRACE_SECONDS:
                 continue
             await _start_task(store, options, name, run, task_id, now=now)
     # Close a run whose every task finished but whose last advancer died

@@ -453,7 +453,7 @@ async def _workflows(args) -> None:
     for run in await workflows.runs(args.name, limit=args.limit, store=store):
         print(
             f"{run['id']}  {run.get('status'):<10}  {run.get('trigger') or '':<9}"
-            f"  {_local(workflows._epoch(run.get('started_at')))}"
+            f"  {_local(workflows.epoch(run.get('started_at')))}"
         )
         for task_id, task in (run.get("tasks") or {}).items():
             print(f"    {task_id:<20}  {task.get('status'):<10}  {task.get('session_id') or ''}")

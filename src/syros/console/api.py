@@ -655,14 +655,25 @@ class ConsoleAPI:
         files.sort(key=lambda f: f["name"])
         return {"now": time.time(), "name": name, "files": to_jsonable(files)}
 
-    async def _delete_files(self, label: str, names: list[str], delete) -> dict[str, Any]:
-        """Best-effort bulk delete over one delete callable; reports per-file
-        failures rather than stopping at the first."""
+    @staticmethod
+    def _valid_files(label: str, names: list[str]) -> list[str]:
+        """A bad request must be rejected before any lease check runs."""
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
             raise ValueError(f"{label} must be a list of strings")
         names = list(dict.fromkeys(names))
         if len(names) > MAX_BULK_FILES:
             raise ValueError(f"too many files: {len(names)} > {MAX_BULK_FILES}")
+        return names
+
+    @staticmethod
+    def _valid_folder(folder: str) -> str:
+        if not isinstance(folder, str) or not folder.strip("/"):
+            raise ValueError("folder must be a non-empty path")
+        return folder.strip("/") + "/"
+
+    async def _delete_files(self, names: list[str], delete) -> dict[str, Any]:
+        """Best-effort bulk delete over one delete callable; reports per-file
+        failures rather than stopping at the first."""
         deleted, failed = [], []
         for name in names:
             try:
@@ -672,10 +683,8 @@ class ConsoleAPI:
                 failed.append({"name": name, "error": str(exc)})
         return {"now": time.time(), "ok": not failed, "deleted": deleted, "failed": failed}
 
-    async def _delete_folder(self, folder: str, delete_prefix, *, missing: str) -> int:
-        if not isinstance(folder, str) or not folder.strip("/"):
-            raise ValueError("folder must be a non-empty path")
-        count = await delete_prefix(folder.strip("/") + "/")
+    async def _delete_folder(self, prefix: str, delete_prefix, *, missing: str) -> int:
+        count = await delete_prefix(prefix)
         if count == 0:
             raise NotFound(missing)
         return count
@@ -727,15 +736,17 @@ class ConsoleAPI:
 
     async def delete_workspace_files(self, name: str, files: list[str]) -> dict[str, Any]:
         """Best-effort bulk delete; reports per-file failures like delete_many."""
+        files = self._valid_files("files", files)
         await self._require_free(name)
         return await self._delete_files(
-            "files", files, lambda f: self._bucket_objects().delete_workspace_file(name, f)
+            files, lambda f: self._bucket_objects().delete_workspace_file(name, f)
         )
 
     async def delete_workspace_folder(self, name: str, folder: str) -> dict[str, Any]:
+        prefix = self._valid_folder(folder)
         await self._require_free(name)
         count = await self._delete_folder(
-            folder,
+            prefix,
             lambda prefix: self._bucket_objects().delete_workspace_prefix(
                 name, prefix, MAX_PREFIX_DELETE
             ),
@@ -938,12 +949,13 @@ class ConsoleAPI:
 
     async def delete_artifacts(self, space: str, names: list[str]) -> dict[str, Any]:
         return await self._delete_files(
-            "names", names, lambda n: self._bucket_objects().delete_artifact_file(space, n)
+            self._valid_files("names", names),
+            lambda n: self._bucket_objects().delete_artifact_file(space, n),
         )
 
     async def delete_artifact_folder(self, space: str, folder: str) -> dict[str, Any]:
         count = await self._delete_folder(
-            folder,
+            self._valid_folder(folder),
             lambda prefix: self._bucket_objects().delete_artifact_prefix(
                 space, prefix, MAX_PREFIX_DELETE
             ),

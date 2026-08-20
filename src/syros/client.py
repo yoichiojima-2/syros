@@ -75,11 +75,13 @@ class SyrosClient:
             yield message
 
     async def interrupt(self) -> None:
-        await self._store.push_inbox(self._connected(), "interrupt")
+        session_id = self._connected()
+        await self._store.push_inbox(session_id, "interrupt")
 
     async def terminate(self) -> None:
         """End the session for good: kill switch + terminated status."""
-        await self._store.update_session(self._connected(), status="terminated", disabled=True)
+        session_id = self._connected()
+        await self._store.update_session(session_id, status="terminated", disabled=True)
 
     async def disconnect(self) -> None:
         # The session stays durable; forgetting where we were is enough.
