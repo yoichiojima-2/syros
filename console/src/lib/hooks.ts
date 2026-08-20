@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, serverNow, setOnlineListener } from "./api";
 import type {
   AgentResponse,
@@ -11,6 +11,7 @@ import type {
   ApprovalWithSession,
   ConnectorsResponse,
   ConnectorSummary,
+  PendingPrompt,
   PollResponse,
   WorkflowResponse,
   WorkflowRun,
@@ -30,6 +31,7 @@ import type {
   WorkspaceSummary,
   TranscriptEvent,
 } from "./types";
+import { eventInboxId } from "./types";
 
 /** Ticker on the server's clock (see api.ts) driving countdowns and relative times. */
 export function useNow(intervalMs = 500): number {
@@ -376,17 +378,30 @@ function sameApprovals(a: Approval[], b: Approval[]): boolean {
   return a.map((x) => x.call_hash).join(",") === b.map((x) => x.call_hash).join(",");
 }
 
+// Same idea as sameApprovals, for the queue of unread prompts.
+function samePending(a: PendingPrompt[], b: PendingPrompt[]): boolean {
+  return a.map((x) => x.id).join(",") === b.map((x) => x.id).join(",");
+}
+
 export interface SessionPoll {
   session: SessionSummary | null;
   events: TranscriptEvent[];
+  /** Prompts nobody has answered yet: what the server says is queued, plus
+   *  anything sent from here that the next poll hasn't caught up with. */
+  pending: PendingPrompt[];
   approvals: Approval[];
   removeApproval: (callHash: string) => void;
+  trackSent: (update: PendingPrompt[] | ((prev: PendingPrompt[]) => PendingPrompt[])) => void;
 }
 
-/** 1s poll of the focused session: append-only event cursor + approvals. */
+/** 1s poll of the focused session: append-only event cursor, the inbox queue,
+ *  and approvals. The queue is server state, not an optimistic echo — a prompt
+ *  nobody has read yet exists only there, so it has to survive a remount. */
 export function useSessionPoll(sid: string | null): SessionPoll {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [events, setEvents] = useState<TranscriptEvent[]>([]);
+  const [queued, setQueued] = useState<PendingPrompt[]>([]);
+  const [sent, setSent] = useState<PendingPrompt[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const cursorRef = useRef(0);
   const branchRef = useRef<string | null>(null);
@@ -394,6 +409,8 @@ export function useSessionPoll(sid: string | null): SessionPoll {
   useEffect(() => {
     setSession(null);
     setEvents([]);
+    setQueued([]);
+    setSent([]);
     setApprovals([]);
     cursorRef.current = 0;
     branchRef.current = null;
@@ -405,6 +422,8 @@ export function useSessionPoll(sid: string | null): SessionPoll {
         const data = await api<PollResponse>(`/api/sessions/${sid}/poll?after=${cursorRef.current}`);
         if (cancelled) return;
         setSession(data.session);
+        // Ahead of the branch check below, so a rewind doesn't drop the queue.
+        setQueued((prev) => (samePending(prev, data.pending) ? prev : data.pending));
         // A rewind switches the session's active branch: restart the cursor
         // so the transcript re-fetches from the branch base instead of
         // gluing two branches together.
@@ -419,6 +438,12 @@ export function useSessionPoll(sid: string | null): SessionPoll {
         if (data.events.length) {
           cursorRef.current = data.events[data.events.length - 1].seq;
           setEvents((prev) => [...prev, ...data.events]);
+          // A prompt is journaled before it leaves the inbox, so a record
+          // arriving here is the end of the line for the locally-tracked copy.
+          const journaled = new Set(
+            data.events.map(eventInboxId).filter((id): id is string => id !== null),
+          );
+          if (journaled.size) setSent((prev) => prev.filter((p) => !journaled.has(p.id)));
         }
         setApprovals((prev) => (sameApprovals(prev, data.approvals) ? prev : data.approvals));
       } catch {
@@ -436,7 +461,15 @@ export function useSessionPoll(sid: string | null): SessionPoll {
   const removeApproval = (callHash: string) =>
     setApprovals((prev) => prev.filter((a) => a.call_hash !== callHash));
 
-  return { session, events, approvals, removeApproval };
+  // The composer's way in: a send knows what it queued a poll interval before
+  // this hook does, and carrying it here is what keeps the bubble on screen
+  // across that gap without ever double-rendering one the poll also reports.
+  const pending = useMemo(() => {
+    const known = new Set(queued.map((p) => p.id));
+    return [...queued, ...sent.filter((p) => !known.has(p.id))];
+  }, [queued, sent]);
+
+  return { session, events, pending, approvals, removeApproval, trackSent: setSent };
 }
 
 /** Transient status line; clears itself after 4s. */

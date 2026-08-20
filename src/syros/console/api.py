@@ -189,6 +189,8 @@ class ConsoleAPI:
         # Injectable for tests; defaults to the real Secret Manager metadata
         # read (version state only — the console never touches payloads).
         self._credential_status = credential_status or connectors_mod.credential_status
+        # The official-skills sync outlives its request; see sync_official_skills.
+        self._skills_sync: asyncio.Task[dict[str, Any]] | None = None
 
     def _bucket_objects(self) -> ObjectStoreProtocol:
         # Built lazily so the console starts (and tests run) without touching
@@ -257,10 +259,17 @@ class ConsoleAPI:
         return {"now": time.time(), "ok": True, "session_id": session_id}
 
     async def poll(self, session_id: str, after: int) -> dict[str, Any]:
-        """One polling unit: session summary, events past the cursor, pending
-        approvals (with absolute deadlines so the browser renders countdowns)."""
+        """One polling unit: session summary, queued prompts, events past the
+        cursor, pending approvals (with absolute deadlines so the browser
+        renders countdowns)."""
         session = await self._session(session_id)
         branch = active_branch(session)
+        # Queued prompts are read *before* the events. A prompt has no journal
+        # record until a runner consumes it, so this is the only thing standing
+        # between "sent" and "answered" — and reading it first means one
+        # consumed mid-poll appears in both halves (the browser drops the
+        # queued copy by id) rather than in neither for a tick.
+        pending = await self._store.peek_messages(session_id)
         events: list[dict[str, Any]] = []
         cursor = after
         for _ in range(MAX_EVENT_PAGES):
@@ -276,6 +285,7 @@ class ConsoleAPI:
         return {
             "now": now,
             "session": _summary(session),
+            "pending": [to_jsonable(p) for p in pending],
             "events": [to_jsonable(e) for e in events],
             "approvals": approvals,
         }
@@ -324,8 +334,16 @@ class ConsoleAPI:
         if runtime(session).get("status") == "terminated" or session.get("disabled"):
             raise Conflict(f"session {session_id} is terminated")
         triggered = not lease_active(session)
-        await remote.send_prompt(self._store, session_id, self._options, text)
-        return {"ok": True, "triggered": triggered}
+        now = time.time()
+        ids = await remote.send_prompt(self._store, session_id, self._options, text)
+        # What was queued rides back with the response, so the sender can show
+        # its own prompt under the id the runner will journal it with — instead
+        # of waiting out a poll interval for a message already made durable.
+        return {
+            "ok": True,
+            "triggered": triggered,
+            "queued": [{"id": message_id, "text": text, "ts": now} for message_id in ids],
+        }
 
     async def interrupt(self, session_id: str) -> dict[str, Any]:
         await self._session(session_id)
@@ -901,9 +919,44 @@ class ConsoleAPI:
         return {"now": time.time(), "ok": True, "name": name, "deleted": deleted}
 
     async def sync_official_skills(self) -> dict[str, Any]:
-        """Seed skills/ from the official anthropics/skills repo (editable copies)."""
-        summary = await self._bucket_objects().sync_official_skills()
-        return {"now": time.time(), "ok": True, **to_jsonable(summary)}
+        """Start the official-skills sync, or report the one already running.
+
+        Deliberately not awaited. The sync rewrites thousands of blobs and runs
+        for minutes — well past the server's 30s per-call ceiling — and a call
+        that hits that ceiling abandons the *response*, not the work. Returning
+        a 500 on a sync that is still going is how one click became three
+        overlapping syncs, each rewriting the skills prefix underneath every
+        session that tried to start. One at a time; the browser polls
+        skills_sync_status for the summary.
+        """
+        running = self._skills_sync is not None and not self._skills_sync.done()
+        if not running:
+            task = asyncio.create_task(self._bucket_objects().sync_official_skills())
+            # Read the outcome even if nobody polls, so a failed sync doesn't
+            # surface as asyncio's "never retrieved" complaint at GC time.
+            task.add_done_callback(lambda done: done.cancelled() or done.exception())
+            self._skills_sync = task
+        return {"now": time.time(), "ok": True, "running": True, "started": not running}
+
+    async def skills_sync_status(self) -> dict[str, Any]:
+        """Where the sync got to: still running, its summary, or how it failed.
+
+        State lives in this process, which is the whole state there is — the
+        console runs one instance, and a restart loses the sync along with it.
+        """
+        task = self._skills_sync
+        now = time.time()
+        if task is None or not task.done():
+            running = task is not None
+            return {"now": now, "ok": True, "running": running, "result": None, "error": None}
+        error = task.exception()
+        return {
+            "now": now,
+            "ok": error is None,
+            "running": False,
+            "result": None if error else to_jsonable(task.result()),
+            "error": None if error is None else str(error),
+        }
 
     # --- presets ---
 

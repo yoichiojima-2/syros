@@ -210,6 +210,14 @@ export function eventMessage(event: TranscriptEvent): TranscriptMessage | null {
   return null;
 }
 
+/** The inbox item a prompt record came from, if the runner stamped one — how a
+ *  queued prompt is retired from the pending list once it lands in the feed. */
+export function eventInboxId(event: TranscriptEvent): string | null {
+  if (event.type !== "prompt") return null;
+  const id = (event.payload as { inbox_id?: unknown })?.inbox_id;
+  return typeof id === "string" ? id : null;
+}
+
 export interface SessionsResponse {
   now: number;
   sessions: SessionSummary[];
@@ -223,11 +231,29 @@ export interface BulkDeleteResponse {
   failed: { id: string; error: string }[];
 }
 
+/** A prompt sitting in the session's inbox, waiting for a runner to read it.
+ *  It has no journal record until then, so this is the only thing the session
+ *  view can show for it — mirrors store.peek_messages. */
+export interface PendingPrompt {
+  id: string;
+  text: string;
+  ts: number | null;
+}
+
 export interface PollResponse {
   now: number;
   session: SessionSummary;
+  pending: PendingPrompt[];
   events: TranscriptEvent[];
   approvals: Approval[];
+}
+
+/** POST /api/sessions/{sid}/prompt — `queued` is what this call put in the
+ *  inbox, under the ids the runner will journal it with. */
+export interface PromptResponse {
+  ok: boolean;
+  triggered: boolean;
+  queued: PendingPrompt[];
 }
 
 export interface ApprovalsResponse {
@@ -359,13 +385,29 @@ export interface SkillFilesResponse {
   files: StoredFile[];
 }
 
-/** Reply shape of POST /api/skills/sync. */
-export interface SyncSkillsResponse {
-  now: number;
-  ok: boolean;
+/** What a finished official-skills sync did. */
+export interface SyncSkillsSummary {
   skills: string[];
   files: number;
   skipped: { skill: string; file: string; size: number }[];
+}
+
+/** POST /api/skills/sync — starts the sync, or joins the one already running.
+ *  It never carries the summary: the sync outlives any single request. */
+export interface SyncSkillsStart {
+  now: number;
+  ok: boolean;
+  running: boolean;
+  started: boolean;
+}
+
+/** GET /api/skills/sync — poll until `running` goes false. */
+export interface SyncSkillsStatus {
+  now: number;
+  ok: boolean;
+  running: boolean;
+  result: SyncSkillsSummary | null;
+  error: string | null;
 }
 
 /** One row of GET /api/presets — an example object the install can create.

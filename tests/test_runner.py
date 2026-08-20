@@ -97,6 +97,18 @@ def fake_harness(monkeypatch):
 
 
 @pytest.fixture
+def triggers(monkeypatch):
+    """Capture the job triggers a release hands off, instead of calling GCP."""
+    fired = []
+
+    async def fake_trigger(project, region, job, session_id):
+        fired.append(session_id)
+
+    monkeypatch.setattr(syros.runner.remote, "_trigger_job", fake_trigger)
+    return fired
+
+
+@pytest.fixture
 def gcs_sync(monkeypatch):
     """Record every restore/checkpoint as (prefix, root dir name)."""
     calls = {"restore": [], "checkpoint": [], "exclude": []}
@@ -654,3 +666,106 @@ async def test_runner_logs_the_connector_error_run(
     (row,) = run_log
     assert row["stop_reason"] == "connector_error"
     assert row["run_cost_usd"] == 0.0
+
+
+# --- a prompt survives a run that never reads it ---
+
+
+async def test_prompt_is_journaled_before_the_inbox_item_is_consumed(
+    env, store, fake_harness, monkeypatch
+):
+    """The record goes in first, so a run that dies between the two replays the
+    prompt on the next execution instead of swallowing it."""
+    order = []
+    append, consume = store.append_event, store.consume_message
+
+    async def track_append(session_id, event):
+        if event["type"] == "prompt":
+            order.append(("journal", event["payload"]["inbox_id"]))
+        await append(session_id, event)
+
+    async def track_consume(session_id, message_id):
+        order.append(("consume", message_id))
+        await consume(session_id, message_id)
+
+    monkeypatch.setattr(store, "append_event", track_append)
+    monkeypatch.setattr(store, "consume_message", track_consume)
+
+    await store.create_session(SID, {})
+    message_id = await store.push_inbox(SID, "message", "do the thing")
+
+    await run(SID)
+
+    assert order == [("journal", message_id), ("consume", message_id)]
+
+
+async def test_a_run_that_dies_releases_and_leaves_the_prompt_queued(
+    env, store, fake_harness, triggers, run_log, monkeypatch
+):
+    """A crash used to end the process with the session still "running" and the
+    lease left to expire: the console showed a bare "stalled" with nothing in
+    the transcript, and no replacement could be triggered while that stale lease
+    looked alive."""
+
+    def boom(*args):
+        raise RuntimeError("skills rewritten mid-restore")
+
+    monkeypatch.setattr(syros.runner.workspace, "restore", boom)
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "do the thing")
+
+    with pytest.raises(RuntimeError):
+        await run(SID)
+
+    session = await store.get_session(SID)
+    assert session["runtime"]["status"] == "idle"
+    assert session["runtime"]["stop_reason"] == "error"
+    assert session["runtime"]["lease_expires"] == 0.0
+
+    events = feed(store)
+    assert [e["type"] for e in events] == ["lifecycle", "lifecycle", "message"]
+    assert events[1]["payload"]["event"] == "error"
+    assert "rewritten mid-restore" in events[1]["payload"]["error"]
+    (doc,) = messages(store)
+    assert doc["kind"] == "result" and doc["subtype"] == "error" and doc["is_error"] is True
+    assert run_log[-1]["stop_reason"] == "error"
+
+    # the prompt waits for whoever runs next, and the failed run does not
+    # re-trigger itself — a deterministic failure would loop forever
+    assert [m["text"] for m in await store.peek_messages(SID)] == ["do the thing"]
+    assert triggers == []
+
+
+async def test_release_hands_off_a_prompt_that_arrived_during_shutdown(
+    env, store, fake_harness, triggers, monkeypatch
+):
+    """The message loop closes before the shutdown tail, so a prompt arriving in
+    that window sees a live lease and its sender triggers nothing. The releasing
+    run is the only one left who can."""
+
+    def describe_and_race(options, prompts, result):
+        # a second browser sends one while this run is being labelled
+        store.inbox.setdefault(SID, []).append(
+            {"id": "late", "kind": "message", "text": "late", "ts": 1.0, "consumed": False}
+        )
+        return {"title": "t", "summary": None}
+
+    monkeypatch.setattr(syros.runner.titles, "describe", describe_and_race)
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "do the thing")
+
+    await run(SID)
+
+    assert triggers == [SID]
+    session = await store.get_session(SID)
+    assert session["runtime"]["status"] == "starting"
+    assert [m["text"] for m in await store.peek_messages(SID)] == ["late"]
+
+
+async def test_release_with_an_empty_inbox_triggers_nothing(env, store, fake_harness, triggers):
+    await store.create_session(SID, {})
+    await store.push_inbox(SID, "message", "do the thing")
+
+    await run(SID)
+
+    assert triggers == []

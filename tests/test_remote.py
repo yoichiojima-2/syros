@@ -35,8 +35,10 @@ def options(**kwargs):
 
 async def drive_runner(store, session_id, messages, *, start_seq=0):
     """Simulate the runner: wait for the inbox, then mirror messages."""
-    while not await store.pop_messages(session_id):
+    while not (queued := await store.peek_messages(session_id)):
         await asyncio.sleep(0.01)
+    for item in queued:
+        await store.consume_message(session_id, item["id"])
     seq = start_seq
     for message in messages:
         seq += 1
@@ -234,8 +236,10 @@ async def test_approval_relay(no_job_trigger):
     (session_id,) = store.sessions
 
     async def runner():
-        while not await store.pop_messages(session_id):
+        while not (queued := await store.peek_messages(session_id)):
             await asyncio.sleep(0.01)
+        for item in queued:
+            await store.consume_message(session_id, item["id"])
         await store.request_approval(session_id, "hash1", "Bash", {"command": "rm"})
         while (await store.get_approval(session_id, "hash1"))["status"] == "pending":
             await asyncio.sleep(0.01)

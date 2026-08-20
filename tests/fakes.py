@@ -4,13 +4,14 @@ which is what lets the whole suite run without touching GCP."""
 
 from __future__ import annotations
 
+import secrets
 import time
 from typing import Any
 
 from syros.errors import SessionExists
 from syros.names import validate_file
 from syros.skills import parse_description, skill_prefix
-from syros.store import RUNTIME_FIELDS
+from syros.store import RUNTIME_FIELDS, lease_active
 from syros.workspace import workspace_prefix
 
 
@@ -116,11 +117,10 @@ class FakeStore:
 
     async def mark_starting(self, session_id):
         session = self.sessions.get(session_id)
-        if (
-            not session
-            or session.get("disabled")
-            or session["runtime"]["status"] in ("running", "terminated")
-        ):
+        if not session or session.get("disabled"):
+            return
+        status = session["runtime"]["status"]
+        if status == "terminated" or (status == "running" and lease_active(session)):
             return
         session["runtime"].update(status="starting", triggered_at=time.time())
         session["updated_at"] = time.time()
@@ -203,17 +203,23 @@ class FakeStore:
         return int(head["seq"]), head.get("uuid")
 
     async def push_inbox(self, session_id, kind, text=None):
+        message_id = secrets.token_hex(10)
         self.inbox.setdefault(session_id, []).append(
-            {"kind": kind, "text": text, "ts": time.time(), "consumed": False}
+            {"id": message_id, "kind": kind, "text": text, "ts": time.time(), "consumed": False}
         )
+        return message_id
 
-    async def pop_messages(self, session_id):
-        texts = []
+    async def peek_messages(self, session_id):
+        return [
+            {"id": item["id"], "text": item["text"] or "", "ts": item["ts"]}
+            for item in self.inbox.get(session_id, [])
+            if item["kind"] == "message" and not item["consumed"]
+        ]
+
+    async def consume_message(self, session_id, message_id):
         for item in self.inbox.get(session_id, []):
-            if item["kind"] == "message" and not item["consumed"]:
+            if item["id"] == message_id:
                 item["consumed"] = True
-                texts.append(item["text"] or "")
-        return texts
 
     async def take_interrupt(self, session_id):
         taken = False

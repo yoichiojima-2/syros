@@ -19,6 +19,7 @@ from syros.console.api import (
     to_jsonable,
 )
 from syros.errors import OptionsError, SyrosError
+from syros.journal import make_event
 from syros.options import AgentOptions
 from .fakes import FakeObjects, FakeStore, append_message
 
@@ -302,6 +303,42 @@ async def test_prompt_triggers_job_when_idle(no_job_trigger):
     (queued,) = store.inbox["sess_1"]
     assert (queued["kind"], queued["text"], queued["consumed"]) == ("message", "hello", False)
     assert (await api(store).poll("sess_1", after=0))["session"]["state"] == "starting"
+
+
+async def test_queued_prompt_is_visible_until_a_runner_journals_it(no_job_trigger):
+    """A prompt has no journal record until a runner reads it, so the queue is
+    the only thing standing between "sent" and "answered" — and the browser
+    throws its copy away on navigation. Without this the prompt simply vanished
+    from the transcript."""
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+
+    result = await api(store).prompt("sess_1", "hello")
+    (queued,) = result["queued"]
+    assert queued["text"] == "hello"
+
+    # a fresh page load sees it too — this is server state, not an echo
+    poll = await api(store).poll("sess_1", after=0)
+    assert [p["text"] for p in poll["pending"]] == ["hello"]
+    assert [p["id"] for p in poll["pending"]] == [queued["id"]]
+    assert poll["events"] == []
+
+    # once the runner journals it, the record carries the id the queue used and
+    # the queued copy drops out
+    await store.append_event(
+        "sess_1",
+        make_event(
+            "prompt",
+            {"text": "hello", "source": "inbox", "inbox_id": queued["id"]},
+            parent_uuid=None,
+            branch="main",
+            seq=1,
+        ),
+    )
+    await store.consume_message("sess_1", queued["id"])
+    poll = await api(store).poll("sess_1", after=0)
+    assert poll["pending"] == []
+    assert poll["events"][0]["payload"]["inbox_id"] == queued["id"]
 
 
 async def test_prompt_skips_trigger_when_lease_active(no_job_trigger):
@@ -896,9 +933,55 @@ async def test_delete_skill_and_sync():
     with pytest.raises(NotFound):
         await console.delete_skill("pdf")
 
-    result = await console.sync_official_skills()
-    assert result["ok"] is True and result["skills"] == ["pdf"]
+    # The sync is started, not awaited: the summary arrives through the status.
+    started = await console.sync_official_skills()
+    assert started["ok"] is True and started["started"] is True and started["running"] is True
+    while (await console.skills_sync_status())["running"]:
+        await asyncio.sleep(0)
+    status = await console.skills_sync_status()
+    assert status["ok"] is True and status["result"]["skills"] == ["pdf"]
     assert objects.skills["pdf"]["SKILL.md"] == b"# pdf"
+
+
+async def test_skills_sync_runs_one_at_a_time():
+    """A retry joins the running sync instead of stacking a second rewrite of
+    the skills prefix on top of it — which is what used to break every session
+    start while the sync was in flight."""
+    objects = FakeObjects()
+    console = api(FakeStore(), objects=objects)
+    gate, calls = asyncio.Event(), []
+
+    async def blocking():
+        calls.append(1)
+        await gate.wait()
+        return {"skills": ["pdf"], "files": 1, "skipped": []}
+
+    objects.sync_official_skills = blocking
+
+    first = await console.sync_official_skills()
+    second = await console.sync_official_skills()
+    assert first["started"] is True and second["started"] is False
+    assert (await console.skills_sync_status())["running"] is True
+
+    gate.set()
+    while (await console.skills_sync_status())["running"]:
+        await asyncio.sleep(0)
+    assert calls == [1]
+    assert (await console.skills_sync_status())["result"]["files"] == 1
+
+
+async def test_skills_sync_status_reports_failure():
+    console = api(FakeStore(), objects=FakeObjects())
+
+    async def boom():
+        raise RuntimeError("tarball unreachable")
+
+    console._bucket_objects().sync_official_skills = boom
+    await console.sync_official_skills()
+    while (await console.skills_sync_status())["running"]:
+        await asyncio.sleep(0)
+    status = await console.skills_sync_status()
+    assert status["ok"] is False and "tarball unreachable" in status["error"]
 
 
 # --- http smoke ---
@@ -1115,7 +1198,14 @@ async def test_http_artifact_and_workspace_routes():
 
         # sync must not be shadowed by the /api/skills/{name}/... wildcards
         status, body = await asyncio.to_thread(post, "/api/skills/sync", {})
-        assert status == 200 and json.loads(body)["skills"] == ["pdf"]
+        assert status == 200 and json.loads(body)["started"] is True
+        # it runs past the response, so the summary comes from the status route
+        for _ in range(500):
+            status, body, _ = await asyncio.to_thread(fetch, "/api/skills/sync")
+            if not json.loads(body)["running"]:
+                break
+            await asyncio.sleep(0.01)
+        assert json.loads(body)["result"]["skills"] == ["pdf"]
 
         status, body = await asyncio.to_thread(post, "/api/skills/pdf/delete", {})
         assert status == 200 and json.loads(body)["deleted"] == 1

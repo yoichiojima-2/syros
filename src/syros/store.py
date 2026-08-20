@@ -16,7 +16,10 @@ Layout:
                             crashed runner resuming with a stale counter can
                             never overwrite history; recover_head reads the
                             real head back from the journal.
-    sessions/{sid}/inbox/{auto}       {kind, text, ts, consumed}
+    sessions/{sid}/inbox/{id}         {kind, text, ts, consumed} — client -> runner.
+                            A queued message is the only record of a prompt until
+                            the runner journals it, so the console reads the
+                            unconsumed ones back (see peek_messages).
     sessions/{sid}/approvals/{hash}   {tool_name, input, status, ...} — the
                                       operational approval queue; the journal
                                       carries mirror "approval" records
@@ -184,8 +187,9 @@ class StoreProtocol(Protocol):
     ) -> list[dict[str, Any]]: ...
     async def get_event(self, session_id: str, uuid: str) -> dict[str, Any] | None: ...
     async def recover_head(self, session_id: str, branch: str) -> tuple[int, str | None]: ...
-    async def push_inbox(self, session_id: str, kind: str, text: str | None = None) -> None: ...
-    async def pop_messages(self, session_id: str) -> list[str]: ...
+    async def push_inbox(self, session_id: str, kind: str, text: str | None = None) -> str: ...
+    async def peek_messages(self, session_id: str) -> list[dict[str, Any]]: ...
+    async def consume_message(self, session_id: str, message_id: str) -> None: ...
     async def take_interrupt(self, session_id: str) -> bool: ...
     async def request_approval(
         self,
@@ -366,7 +370,11 @@ class Store:
 
         Transactional and best-effort: a run that claimed the session between
         the trigger and this write is already past "starting", and walking it
-        back would make a live session look like it never started.
+        back would make a live session look like it never started. A *live*
+        one — a session left at "running" by an execution that died without
+        releasing has no run to protect, and skipping it there is what kept the
+        console showing "stalled" through the whole cold start of the very job
+        this call is recording.
         """
         transaction = self._db.transaction()
         reference = self._session(session_id)
@@ -378,10 +386,10 @@ class Store:
             if not snapshot.exists:
                 return
             session = snapshot.to_dict()
-            if session.get("disabled") or runtime(session).get("status") in (
-                "running",
-                "terminated",
-            ):
+            status = runtime(session).get("status")
+            if session.get("disabled") or status == "terminated":
+                return
+            if status == "running" and lease_active(session):
                 return
             transaction.update(
                 reference,
@@ -570,12 +578,22 @@ class Store:
 
     # --- inbox (client -> runner) ---
 
-    async def push_inbox(self, session_id: str, kind: str, text: str | None = None) -> None:
+    async def push_inbox(self, session_id: str, kind: str, text: str | None = None) -> str:
+        """Queue one item for the runner; returns its id.
+
+        The id is minted here rather than left to Firestore's auto-id because
+        callers need it before the write lands: a queued prompt is echoed to
+        the console under this id, and the journal record the runner writes
+        carries it, which is how the two are matched up.
+        """
+        message_id = secrets.token_hex(10)
         await (
             self._session(session_id)
             .collection("inbox")
-            .add({"kind": kind, "text": text, "ts": time.time(), "consumed": False})
+            .document(message_id)
+            .set({"kind": kind, "text": text, "ts": time.time(), "consumed": False})
         )
+        return message_id
 
     async def _unconsumed_inbox(self, session_id: str) -> list[Any]:
         query = (
@@ -589,15 +607,27 @@ class Store:
         snapshots.sort(key=lambda s: s.get("ts"))
         return snapshots
 
-    async def pop_messages(self, session_id: str) -> list[str]:
-        """Consume queued user messages, in arrival order."""
-        texts = []
-        for snapshot in await self._unconsumed_inbox(session_id):
-            if snapshot.get("kind") != "message":
-                continue
-            await snapshot.reference.update({"consumed": True})
-            texts.append(snapshot.get("text") or "")
-        return texts
+    async def peek_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Queued user messages in arrival order, without consuming them.
+
+        Read-only on purpose, and read by two callers: the runner, which
+        consumes each one only after its journal record is written, and the
+        console, which renders what is still queued (a prompt has no other
+        representation until a runner picks it up).
+        """
+        return [
+            {"id": s.id, "text": s.get("text") or "", "ts": s.get("ts")}
+            for s in await self._unconsumed_inbox(session_id)
+            if s.get("kind") == "message"
+        ]
+
+    async def consume_message(self, session_id: str, message_id: str) -> None:
+        await (
+            self._session(session_id)
+            .collection("inbox")
+            .document(message_id)
+            .update({"consumed": True})
+        )
 
     async def take_interrupt(self, session_id: str) -> bool:
         """Consume a pending interrupt, if any."""
