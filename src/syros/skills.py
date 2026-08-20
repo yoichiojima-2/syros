@@ -13,7 +13,6 @@ in asyncio.to_thread (same contract as workspace.py / artifacts.py).
 from __future__ import annotations
 
 import io
-import mimetypes
 import tarfile
 import urllib.request
 from collections.abc import Callable
@@ -21,8 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from .layout import skill_prefix
-from .names import NAME, validate_file, validate_name
-from .workspace import _bucket
+from .names import NAME, validate_name
+from .workspace import _bucket, delete_in_prefix, read_in_prefix, write_in_prefix
 
 OFFICIAL_SKILLS_TARBALL = "https://github.com/anthropics/skills/archive/refs/heads/main.tar.gz"
 
@@ -140,34 +139,21 @@ def read_file(
 ) -> tuple[bytes, str]:
     """Download one skill file: (data, content type). Raises FileNotFoundError
     for a missing blob and ValueError when it exceeds max_bytes."""
-    prefix = skill_prefix(name, workspace)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("skill file", file))
-    if not blob.exists():
-        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
-    blob.reload()
-    if (blob.size or 0) > max_bytes:
-        raise ValueError(f"{file} is {blob.size} bytes (limit {max_bytes})")
-    return blob.download_as_bytes(), mimetypes.guess_type(file)[0] or "application/octet-stream"
+    return read_in_prefix(
+        project, bucket_name, skill_prefix(name, workspace), "skill file", file, max_bytes=max_bytes
+    )
 
 
 def write_file(
     project: str, bucket_name: str, name: str, file: str, data: bytes, workspace: str | None = None
 ) -> None:
-    prefix = skill_prefix(name, workspace)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("skill file", file))
-    blob.upload_from_string(
-        data, content_type=mimetypes.guess_type(file)[0] or "application/octet-stream"
-    )
+    write_in_prefix(project, bucket_name, skill_prefix(name, workspace), "skill file", file, data)
 
 
 def delete_file(
     project: str, bucket_name: str, name: str, file: str, workspace: str | None = None
 ) -> None:
-    prefix = skill_prefix(name, workspace)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("skill file", file))
-    if not blob.exists():
-        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
-    blob.delete()
+    delete_in_prefix(project, bucket_name, skill_prefix(name, workspace), "skill file", file)
 
 
 def delete_skill(project: str, bucket_name: str, name: str, workspace: str | None = None) -> int:
