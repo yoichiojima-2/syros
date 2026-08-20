@@ -69,6 +69,17 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
   Do not add them to `RUNTIME_FIELDS` in `store.py` — that nests under `runtime.`.
 - Store CRUD blocks are symmetric across `StoreProtocol`, `Store`, and
   `tests/fakes.py::FakeStore` — extend all three together.
+- A prompt lands in `sessions/{sid}/inbox` and stays the *only* record of itself
+  until a runner journals it (`prompt` record, stamped with the inbox id), so
+  `poll` returns the unconsumed ones as `pending` and the session view renders
+  those rather than a local echo. The runner journals before it consumes: a run
+  that dies in between replays the prompt instead of swallowing it.
+- Every exit path releases the session, crashes included (`runner._fail`) — one
+  left at `running` with an expiring lease reads as `stalled` in the console and
+  blocks a replacement from being triggered. Same reflex in `workspace.restore`:
+  download through a fresh handle, never the listed blob, since a listing pins
+  each blob's generation and anything rewriting the prefix (the skills sync
+  rewrites thousands) would 404 the restore and take the run down.
 - Console: routes are data in `console/server.py::ROUTES`; handlers in
   `console/api.py` return JSON-safe dicts with a `"now"` timestamp; the TS mirror
   of shapes lives in `console/src/lib/types.ts` (keep in sync).

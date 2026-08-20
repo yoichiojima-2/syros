@@ -15,7 +15,7 @@ from typing import Any
 from . import journal
 from .errors import SessionTerminated, SyrosError
 from .journal import MAIN_BRANCH, active_branch
-from .store import Store, StoreProtocol, lease_active, new_session_id, runtime
+from .store import Store, StoreProtocol, is_dead, lease_active, new_session_id, runtime
 from .options import AgentOptions
 from .types import Message, PermissionResultAllow, ResultMessage, doc_to_message
 
@@ -183,26 +183,44 @@ async def attach_session(store: StoreProtocol, options: AgentOptions) -> tuple[s
     return session_id, MAIN_BRANCH, 0
 
 
+async def ensure_running(store: StoreProtocol, session_id: str, options: AgentOptions) -> bool:
+    """Trigger a sandbox execution unless one is already (or can never be) running.
+
+    False means nothing was started: an execution holds the lease, or the
+    session is dead. Whoever leaves a message in the inbox has to call this —
+    a session with no execution behind it holds its queue indefinitely.
+    """
+    session = await store.get_session(session_id)
+    if session is None or is_dead(session) or lease_active(session):
+        return False
+    await _trigger_job(
+        options.resolved_project(),
+        options.resolved_region(),
+        options.resolved_job(),
+        session_id,
+    )
+    # Only once the trigger landed: a session that failed to be triggered
+    # is not starting, and the caller sees the error either way.
+    await store.mark_starting(session_id)
+    return True
+
+
 async def send_prompt(
     store: StoreProtocol,
     session_id: str,
     options: AgentOptions,
     prompt: str | AsyncIterable[dict[str, Any]],
-) -> None:
-    """Queue the prompt and make sure a sandbox execution is (or will be) running."""
-    for text in await _prompt_texts(prompt):
-        await store.push_inbox(session_id, "message", text)
-    session = await store.get_session(session_id)
-    if not lease_active(session):
-        await _trigger_job(
-            options.resolved_project(),
-            options.resolved_region(),
-            options.resolved_job(),
-            session_id,
-        )
-        # Only once the trigger landed: a session that failed to be triggered
-        # is not starting, and the caller sees the error either way.
-        await store.mark_starting(session_id)
+) -> list[str]:
+    """Queue the prompt and make sure a sandbox execution is (or will be) running.
+
+    Returns the inbox ids it queued, so a caller that wants to show the prompt
+    back to whoever sent it doesn't have to go looking for it.
+    """
+    ids = [
+        await store.push_inbox(session_id, "message", text) for text in await _prompt_texts(prompt)
+    ]
+    await ensure_running(store, session_id, options)
+    return ids
 
 
 async def stream_response(

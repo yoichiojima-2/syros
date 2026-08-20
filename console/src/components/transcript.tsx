@@ -2,7 +2,12 @@
 
 import { useLayoutEffect, useRef } from "react";
 import { FileCode2 } from "lucide-react";
-import type { ContentBlock, TranscriptEvent, TranscriptMessage } from "@/lib/types";
+import type {
+  ContentBlock,
+  PendingPrompt,
+  TranscriptEvent,
+  TranscriptMessage,
+} from "@/lib/types";
 import { eventMessage } from "@/lib/types";
 import { artifactToolPath } from "@/lib/artifacts";
 import { compact, cost, pretty } from "@/lib/format";
@@ -269,8 +274,8 @@ export function Transcript({
 }: {
   events: TranscriptEvent[];
   placeholder: string | null;
-  /** Prompts sent from this browser but not yet mirrored back by the runner. */
-  pending?: string[];
+  /** Prompts queued in the session's inbox, not yet read by a runner. */
+  pending?: PendingPrompt[];
   /** True while the agent owes a response — renders a typing indicator. */
   working?: boolean;
   artifactPaths?: ReadonlySet<string>;
@@ -315,11 +320,11 @@ export function Transcript({
             );
           return <JournalRow key={key} event={event} />;
         })}
-        {/* Prompts render the instant they're sent; the runner mirrors them
-            into the feed when it picks them up, and the dimmed copy drops. */}
-        {pending.map((text, i) => (
-          <div key={`pending-${i}`} className="opacity-60">
-            <UserText text={text} />
+        {/* Queued prompts render dimmed; each drops when the runner reads it
+            and its journal record joins the feed above. */}
+        {pending.map((prompt) => (
+          <div key={prompt.id} className="opacity-60">
+            <UserText text={prompt.text} />
           </div>
         ))}
         {working && (

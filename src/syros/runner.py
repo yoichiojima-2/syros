@@ -31,7 +31,17 @@ from .options import (
 )
 from .store import Store, is_dead
 from .types import ResultMessage, SystemMessage, message_to_doc
-from . import analytics, artifacts, bigquery, connectors, layout, titles, workflows, workspace
+from . import (
+    analytics,
+    artifacts,
+    bigquery,
+    connectors,
+    layout,
+    remote,
+    titles,
+    workflows,
+    workspace,
+)
 
 INTERRUPT_POLL_SECONDS = 2.0
 INBOX_POLL_SECONDS = 2.0
@@ -94,6 +104,23 @@ async def _advance_workflow(store: Store, config: env.RunnerEnv, session_id: str
         print(f"workflow advance failed for {session_id}: {error}", file=sys.stderr)
 
 
+async def _handoff_queued(store: Store, config: env.RunnerEnv, session_id: str) -> None:
+    """Trigger a fresh execution if this run released with mail still queued.
+
+    The message loop closes before the shutdown tail (checkpoint, labelling),
+    which takes seconds — and a prompt arriving in that window sees a live
+    lease, so the sender triggers nothing and this run never looks at the inbox
+    again. Without a handoff the prompt waits for the next thing that happens
+    to start the session. Never fatal, and never called on the failure path:
+    re-triggering a run that just died is a loop, not a recovery.
+    """
+    try:
+        if await store.peek_messages(session_id):
+            await remote.ensure_running(store, session_id, AgentOptions(project=config.project))
+    except Exception as error:
+        print(f"handoff failed for {session_id}: {error}", file=sys.stderr)
+
+
 async def _append_run_log(
     config: env.RunnerEnv,
     session_id: str,
@@ -134,16 +161,23 @@ async def _append_run_log(
         print(f"run log append failed for {session_id}: {error}", file=sys.stderr)
 
 
-async def _wait_for_messages(store: Store, session_id: str, stay_alive: float) -> list[str]:
+async def _wait_for_messages(
+    store: Store, session_id: str, stay_alive: float
+) -> list[dict[str, Any]]:
     """Poll the inbox for up to stay_alive seconds of idleness.
 
     An empty return means "exit now": the idle window lapsed with no input, or
     the session was killed/terminated. The client re-triggers the job when the
     next prompt arrives, so exiting is cheap — that's the scale-to-zero deal.
+
+    Peeks rather than consumes: the caller marks each message consumed only
+    once its journal record is written, so this must not be called by anyone
+    who won't. It also means the caller has to consume, or the next poll hands
+    back the same messages.
     """
     waited = 0.0
     while waited <= stay_alive:
-        messages = await store.pop_messages(session_id)
+        messages = await store.peek_messages(session_id)
         if messages:
             return messages
         session = await store.get_session(session_id)
@@ -469,11 +503,19 @@ async def run(session_id: str) -> None:
                         break
                     # One query per prompt, so each gets its own turn (and its own
                     # result row) instead of being glued into one mega-prompt.
-                    for text in messages:
+                    for queued in messages:
+                        text = queued["text"]
                         # The prompt is a first-class journal record: the SDK stream
                         # echoes tool results as user messages but never the prompt
-                        # itself, and the chat view needs it.
-                        await writer.append("prompt", {"text": text, "source": "inbox"})
+                        # itself, and the chat view needs it. Written *before* the
+                        # inbox item is consumed, so a run that dies in between
+                        # replays the prompt instead of swallowing it; the id ties
+                        # the record back to the queued item the console renders.
+                        await writer.append(
+                            "prompt",
+                            {"text": text, "source": "inbox", "inbox_id": queued["id"]},
+                        )
+                        await store.consume_message(session_id, queued["id"])
                         run_prompts.append(text)
                         await client.query(text)
                         async for message in client.receive_response():
@@ -564,6 +606,7 @@ async def run(session_id: str) -> None:
             **({"result": result_text[: workflows.RESULT_LIMIT]} if result_text else {}),
         )
         await _advance_workflow(store, config, session_id)
+        await _handoff_queued(store, config, session_id)
         await _append_run_log(
             config,
             session_id,
@@ -574,6 +617,30 @@ async def run(session_id: str) -> None:
             cost_usd=cost,
             seq_head=writer.seq,
         )
+    except Exception as error:
+        # A crash used to end the process with the session still marked
+        # "running" and the lease left to expire on its own: the console showed
+        # a bare "stalled" with nothing in the transcript after "claimed", and
+        # while that stale lease looked alive no replacement execution could be
+        # triggered for it. It releases like any other failed run instead.
+        #
+        # The journal belongs to whoever holds the lease: if it was lost, the
+        # new owner's state stands and this run writes nothing (same rule as
+        # the mid-turn check above). Re-raised either way, so the execution
+        # still exits non-zero and Cloud Run records the failure. The queued
+        # inbox is deliberately untouched — a run that died before consuming a
+        # prompt leaves it for the next execution rather than swallowing it,
+        # and nothing re-triggers here: a deterministic failure would loop.
+        if not lost.is_set():
+            try:
+                leased_workspace["name"] = None  # detach, or the next beat re-claims
+                await fail_fast(
+                    "error", {"error": repr(error)}, result=repr(error), release_workspace=True
+                )
+            except Exception as nested:
+                # Handling a failure must not replace the original traceback.
+                print(f"failure handling failed for {session_id}: {nested}", file=sys.stderr)
+        raise
     finally:
         beat.cancel()
 

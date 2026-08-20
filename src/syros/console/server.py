@@ -191,6 +191,7 @@ ROUTES: list[tuple[str, tuple[str | None, ...], Callable[..., Any]]] = [
         lambda api, body, query: api.skills(_qworkspace(query)),
     ),
     ("POST", ("api", "skills", "sync"), lambda api, body, query: api.sync_official_skills()),
+    ("GET", ("api", "skills", "sync"), lambda api, body, query: api.skills_sync_status()),
     ("GET", ("api", "presets"), lambda api, body, query: api.presets()),
     (
         "POST",

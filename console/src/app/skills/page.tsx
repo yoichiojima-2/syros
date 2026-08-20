@@ -9,10 +9,10 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SkillDropZone, SkillUpload } from "@/components/skill-upload";
 import { useAction, useNow, useSkillFiles, useSkills } from "@/lib/hooks";
-import { post } from "@/lib/api";
+import { api, post } from "@/lib/api";
 import { bytes, relTime } from "@/lib/format";
 import type { SkillSummary } from "@/lib/types";
-import type { SyncSkillsResponse } from "@/lib/types";
+import type { SyncSkillsStart, SyncSkillsStatus } from "@/lib/types";
 
 // Skills live under skills/{name}/ (global) and workspaces/{workspace}/skills/{name}/
 // in the bucket, and are mounted into a session's HOME at run start, so what
@@ -32,12 +32,33 @@ export default function SkillsPage() {
   const [query, setQuery] = useState("");
   const [flash, run] = useAction();
 
+  // The sync rewrites thousands of blobs and runs for minutes, so the POST only
+  // starts it (or joins the one already running) and the summary comes from
+  // polling. Waiting on the POST instead meant a 500 at the server's 30s call
+  // ceiling for a sync that was still going — and a retry that started a second
+  // one on top of it.
+  const [syncing, setSyncing] = useState(false);
   const sync = () =>
     run(async () => {
-      const result = await post<SyncSkillsResponse>("/api/skills/sync");
-      const skipped = result.skipped.length ? `, ${result.skipped.length} skipped (too large)` : "";
-      refresh();
-      return `synced ${result.files} file(s) across ${result.skills.length} skill(s)${skipped}`;
+      const start = await post<SyncSkillsStart>("/api/skills/sync");
+      setSyncing(true);
+      try {
+        for (;;) {
+          await new Promise((resume) => setTimeout(resume, 2000));
+          const status = await api<SyncSkillsStatus>("/api/skills/sync");
+          if (status.running) continue;
+          refresh();
+          if (status.error) throw new Error(status.error);
+          const summary = status.result;
+          if (!summary) return start.started ? "sync finished" : "no sync running";
+          const skipped = summary.skipped.length
+            ? `, ${summary.skipped.length} skipped (too large)`
+            : "";
+          return `synced ${summary.files} file(s) across ${summary.skills.length} skill(s)${skipped}`;
+        }
+      } finally {
+        setSyncing(false);
+      }
     });
 
   const term = query.trim().toLowerCase();
@@ -61,7 +82,7 @@ export default function SkillsPage() {
         <h1 className="flex-1 font-serif text-2xl tracking-tight">Skills</h1>
         {flash && <span className="text-[11px] text-muted-foreground">{flash}</span>}
         <SkillUpload onUploaded={refresh} run={run} />
-        <Button variant="outline" size="sm" onClick={sync}>
+        <Button variant="outline" size="sm" onClick={sync} disabled={syncing}>
           <DownloadCloud /> Sync official skills
         </Button>
       </div>

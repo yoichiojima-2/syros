@@ -4,13 +4,14 @@ which is what lets the whole suite run without touching GCP."""
 
 from __future__ import annotations
 
+import secrets
 import time
 from typing import Any
 
 from syros.errors import SessionExists
 from syros.names import validate_file
 from syros.skills import parse_description, skill_prefix
-from syros.store import RUNTIME_FIELDS
+from syros.store import RUNTIME_FIELDS, lease_active
 from syros.workspace import workspace_prefix
 
 
@@ -116,11 +117,10 @@ class FakeStore:
 
     async def mark_starting(self, session_id):
         session = self.sessions.get(session_id)
-        if (
-            not session
-            or session.get("disabled")
-            or session["runtime"]["status"] in ("running", "terminated")
-        ):
+        if not session or session.get("disabled"):
+            return
+        status = session["runtime"]["status"]
+        if status == "terminated" or (status == "running" and lease_active(session)):
             return
         session["runtime"].update(status="starting", triggered_at=time.time())
         session["updated_at"] = time.time()
@@ -203,17 +203,23 @@ class FakeStore:
         return int(head["seq"]), head.get("uuid")
 
     async def push_inbox(self, session_id, kind, text=None):
+        message_id = secrets.token_hex(10)
         self.inbox.setdefault(session_id, []).append(
-            {"kind": kind, "text": text, "ts": time.time(), "consumed": False}
+            {"id": message_id, "kind": kind, "text": text, "ts": time.time(), "consumed": False}
         )
+        return message_id
 
-    async def pop_messages(self, session_id):
-        texts = []
+    async def peek_messages(self, session_id):
+        return [
+            {"id": item["id"], "text": item["text"] or "", "ts": item["ts"]}
+            for item in self.inbox.get(session_id, [])
+            if item["kind"] == "message" and not item["consumed"]
+        ]
+
+    async def consume_message(self, session_id, message_id):
         for item in self.inbox.get(session_id, []):
-            if item["kind"] == "message" and not item["consumed"]:
+            if item["id"] == message_id:
                 item["consumed"] = True
-                texts.append(item["text"] or "")
-        return texts
 
     async def take_interrupt(self, session_id):
         taken = False
@@ -616,6 +622,10 @@ class FakeBlob:
         self.name = name
         self.metadata: dict[str, Any] | None = None
         self.updated = None
+        # None until the handle is reloaded (which is what a listing does). A
+        # handle that knows a generation reads *that* one, like GCS: the object
+        # being rewritten underneath it is a 404, not a fresh download.
+        self.generation: int | None = None
 
     @property
     def size(self) -> int | None:
@@ -628,6 +638,7 @@ class FakeBlob:
     def reload(self) -> None:
         record = self._bucket.objects[self.name]
         self.metadata = dict(record["metadata"]) if record.get("metadata") else None
+        self.generation = self._bucket.generations.get(self.name)
 
     def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
         self._bucket.objects[self.name] = {
@@ -635,6 +646,7 @@ class FakeBlob:
             "metadata": None,
             "content_type": content_type,
         }
+        self._bucket.bump(self.name)
 
     def upload_from_filename(self, path) -> None:
         # like GCS, an upload replaces the object; metadata set on this handle
@@ -646,6 +658,7 @@ class FakeBlob:
             "data": Path(path).read_bytes(),
             "metadata": metadata or None,
         }
+        self._bucket.bump(self.name)
 
     def download_as_bytes(self) -> bytes:
         return self._bucket.objects[self.name]["data"]
@@ -653,6 +666,14 @@ class FakeBlob:
     def download_to_filename(self, path) -> None:
         from pathlib import Path
 
+        from google.api_core.exceptions import NotFound
+
+        current = self._bucket.generations.get(self.name)
+        # GCS opens the destination before it can know the read will fail, so a
+        # 404 leaves an empty file behind. Mirror it: callers have to clean up.
+        Path(path).write_bytes(b"")
+        if current is None or (self.generation is not None and self.generation != current):
+            raise NotFound(f"404 no such object: {self.name}")
         Path(path).write_bytes(self._bucket.objects[self.name]["data"])
 
     def patch(self) -> None:
@@ -679,6 +700,13 @@ class FakeBucket:
             name: {"data": data, "metadata": metadata}
             for name, (data, metadata) in (objects or {}).items()
         }
+        # Generations live beside the objects rather than in them, so a rewrite
+        # is visible to a stale handle without changing the record shape tests
+        # compare against.
+        self.generations: dict[str, int] = dict.fromkeys(self.objects, 1)
+
+    def bump(self, name: str) -> None:
+        self.generations[name] = self.generations.get(name, 0) + 1
 
     def blob(self, name: str) -> FakeBlob:
         return FakeBlob(self, name)
@@ -707,3 +735,4 @@ class FakeBucket:
             **record,
             "metadata": dict(record["metadata"] or {}) or None,
         }
+        destination_bucket.bump(new_name)

@@ -55,6 +55,47 @@ def bucket(monkeypatch):
     return fake
 
 
+def test_restore_reads_the_live_object_not_the_listed_generation(bucket, tmp_path):
+    """A listing is a snapshot, and its blobs carry the generation they had when
+    they were listed. Downloading through one of those pins that generation, so
+    anything rewritten under the prefix mid-restore 404s — which at session
+    start took the whole run down (the console's skills sync rewrites thousands
+    of blobs and runs for minutes)."""
+    listed = bucket.list_blobs
+
+    def list_then_rewrite(prefix=""):
+        blobs = listed(prefix=prefix)
+        bucket.objects["workspaces/workspace/ws/a.md"]["data"] = b"rewritten"
+        bucket.bump("workspaces/workspace/ws/a.md")
+        return blobs
+
+    bucket.list_blobs = list_then_rewrite
+
+    count = workspace.restore("proj", "bkt", "workspaces/workspace/ws/", tmp_path)
+
+    assert count == 2
+    assert (tmp_path / "a.md").read_bytes() == b"rewritten"
+
+
+def test_restore_skips_a_file_deleted_mid_restore(bucket, tmp_path):
+    listed = bucket.list_blobs
+
+    def list_then_delete(prefix=""):
+        blobs = listed(prefix=prefix)
+        del bucket.objects["workspaces/workspace/ws/a.md"]
+        del bucket.generations["workspaces/workspace/ws/a.md"]
+        return blobs
+
+    bucket.list_blobs = list_then_delete
+
+    count = workspace.restore("proj", "bkt", "workspaces/workspace/ws/", tmp_path)
+
+    assert count == 1
+    assert (tmp_path / "sub" / "b.md").read_bytes() == b"bb"
+    # and no empty stub where the vanished file would have been
+    assert not (tmp_path / "a.md").exists()
+
+
 def test_checkpoint_preserves_tags(bucket, tmp_path):
     (tmp_path / "a.md").write_bytes(b"rewritten")
     (tmp_path / "new.md").write_bytes(b"new")

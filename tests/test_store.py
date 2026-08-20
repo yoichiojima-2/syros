@@ -75,6 +75,39 @@ async def test_mark_starting_skips_live_and_dead_sessions():
     await store.mark_starting("sess_missing")  # no such session: a no-op, not an error
 
 
+async def test_mark_starting_promotes_a_session_whose_lease_died():
+    """A session left at "running" by an execution that crashed without
+    releasing has no live run to protect. Skipping it there is what kept the
+    console reading "stalled" through the whole cold start of the job this call
+    is recording."""
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    await store.claim_session("sess_1", "lease-1", 60)
+    await store.update_session("sess_1", lease_expires=time.time() - 1)
+
+    await store.mark_starting("sess_1")
+
+    assert (await store.get_session("sess_1"))["runtime"]["status"] == "starting"
+
+
+async def test_inbox_peek_leaves_messages_for_the_caller_to_consume():
+    store = FakeStore()
+    await store.create_session("sess_1", {})
+    first = await store.push_inbox("sess_1", "message", "one")
+    second = await store.push_inbox("sess_1", "message", "two")
+    await store.push_inbox("sess_1", "interrupt")
+
+    queued = await store.peek_messages("sess_1")
+    assert [(m["id"], m["text"]) for m in queued] == [(first, "one"), (second, "two")]
+    # peeking is read-only: the same messages come back until they're consumed
+    assert await store.peek_messages("sess_1") == queued
+
+    await store.consume_message("sess_1", first)
+    assert [m["text"] for m in await store.peek_messages("sess_1")] == ["two"]
+    # the interrupt is untouched by all of this
+    assert await store.take_interrupt("sess_1") is True
+
+
 async def test_workspace_lease_claim_and_contend():
     store = FakeStore()
     assert await store.claim_workspace("ws", "sess_a", 60) is True

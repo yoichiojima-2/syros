@@ -12,37 +12,33 @@ import { Composer } from "@/components/composer";
 import { ApprovalCard } from "@/components/approval-card";
 import { ArtifactPanel } from "@/components/artifact-panel";
 import { deriveArtifacts } from "@/lib/artifacts";
-import { eventMessage } from "@/lib/types";
+import { eventInboxId, eventMessage } from "@/lib/types";
+import type { PromptResponse } from "@/lib/types";
 import { useAction, useNow, useSessionPoll } from "@/lib/hooks";
 import { post } from "@/lib/api";
 import { cost, shortId } from "@/lib/format";
 
 export function SessionDetail({ sid }: { sid: string }) {
   const router = useRouter();
-  const { session, events, approvals, removeApproval } = useSessionPoll(sid);
+  const { session, events, pending, approvals, removeApproval, trackSent } = useSessionPoll(sid);
   const now = useNow();
   const [flash, run] = useAction();
   const dead = session?.state === "terminated";
 
-  // Prompts echo in the transcript the moment they're sent; each dimmed copy
-  // drops when the runner mirrors the real event back into the feed.
-  const [pending, setPending] = useState<string[]>([]);
-  const scannedRef = useRef(0);
-  useEffect(() => {
-    const fresh = events.slice(scannedRef.current);
-    scannedRef.current = events.length;
-    if (!fresh.length) return;
-    setPending((prev) => {
-      let next = prev;
-      for (const event of fresh) {
-        const message = eventMessage(event);
-        if (message?.kind !== "user" || typeof message.content !== "string") continue;
-        const i = next.indexOf(message.content);
-        if (i !== -1) next = [...next.slice(0, i), ...next.slice(i + 1)];
-      }
-      return next;
-    });
+  // Prompts show dimmed in the transcript from the moment they're sent until a
+  // runner reads them. The list is the session's inbox as the server reports
+  // it, so it survives a remount — the queue is the only record of a prompt
+  // nobody has answered yet. A copy drops when the runner's journal record for
+  // it arrives, matched by the inbox id the record carries.
+  const journaled = useMemo(() => {
+    const ids = new Set<string>();
+    for (const event of events) {
+      const id = eventInboxId(event);
+      if (id) ids.add(id);
+    }
+    return ids;
   }, [events]);
+  const queued = useMemo(() => pending.filter((p) => !journaled.has(p.id)), [pending, journaled]);
 
   // The agent owes a response while a prompt waits in the inbox or a live
   // turn hasn't reached its result row yet — that's when the typing dots show.
@@ -54,7 +50,7 @@ export function SessionDetail({ sid }: { sid: string }) {
   );
   const working =
     !dead &&
-    (pending.length > 0 ||
+    (queued.length > 0 ||
       ((session?.state === "running" ||
         session?.state === "starting" ||
         session?.state === "queued") &&
@@ -86,8 +82,6 @@ export function SessionDetail({ sid }: { sid: string }) {
     seenVersionsRef.current = 0;
     setPanelOpen(false);
     setSelectedPath(null);
-    setPending([]);
-    scannedRef.current = 0;
   }, [sid]);
 
   const openArtifact = (path: string) => {
@@ -104,19 +98,23 @@ export function SessionDetail({ sid }: { sid: string }) {
       return allow ? "allowed" : "denied";
     });
 
+  const echoRef = useRef(0);
   const sendPrompt = async (text: string) => {
     let failed = false;
     await run(async () => {
-      setPending((prev) => [...prev, text]);
+      // Echoed under a local id for the length of the round trip, then replaced
+      // by the queue as the server recorded it; the poll owns the list after.
+      const echo = `echo-${(echoRef.current += 1)}`;
+      trackSent((prev) => [...prev, { id: echo, text, ts: null }]);
       try {
-        const result = await post<{ triggered: boolean }>(`/api/sessions/${sid}/prompt`, { text });
+        const result = await post<PromptResponse>(`/api/sessions/${sid}/prompt`, { text });
+        // Swap the placeholder for the real queue entry: from here the bubble
+        // is tied to the inbox id, and drops when the runner journals it.
+        trackSent((prev) => [...prev.filter((p) => p.id !== echo), ...result.queued]);
         return result.triggered ? "queued · runner starting…" : "queued";
       } catch (err) {
         // the POST never landed, so the optimistic bubble comes back out
-        setPending((prev) => {
-          const i = prev.lastIndexOf(text);
-          return i === -1 ? prev : [...prev.slice(0, i), ...prev.slice(i + 1)];
-        });
+        trackSent((prev) => prev.filter((p) => p.id !== echo));
         failed = true;
         throw err;
       }
@@ -259,7 +257,7 @@ export function SessionDetail({ sid }: { sid: string }) {
           <Transcript
             events={events}
             placeholder={session ? "No messages yet." : "loading…"}
-            pending={pending}
+            pending={queued}
             working={working}
             artifactPaths={artifactPaths}
             onOpenArtifact={openArtifact}

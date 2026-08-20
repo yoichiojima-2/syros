@@ -345,7 +345,7 @@ async def test_tick_fires_due_slot(no_job_trigger):
     assert session["trigger"] == "schedule"
     assert session["created_by"] == "workflow:nightly"
     # the prompt is queued in the inbox
-    assert await store.pop_messages(sid) == ["do the thing"]
+    assert [m["text"] for m in await store.peek_messages(sid)] == ["do the thing"]
     workflow = store.workflows["nightly"]
     assert workflow["run_count"] == 1 and workflow["last_run_id"] == run_id
     # slot advanced past `now`
@@ -532,7 +532,7 @@ async def test_chain_advances_on_completion(no_job_trigger):
     second = task_state(store, "chain", run_id, "report")["session_id"]
     assert task_state(store, "chain", run_id, "report")["status"] == "running"
     # the upstream result is piped into the downstream prompt
-    assert await store.pop_messages(second) == ["write it up from: 42"]
+    assert [m["text"] for m in await store.peek_messages(second)] == ["write it up from: 42"]
     # downstream session carries its own provenance
     assert store.sessions[second]["task"] == "report"
 
@@ -580,7 +580,7 @@ async def test_fan_out_and_fan_in(no_job_trigger):
     await complete(store, task_state(store, "chain", run_id, "c")["session_id"], result="C")
     d = task_state(store, "chain", run_id, "d")
     assert d["status"] == "running"
-    assert await store.pop_messages(d["session_id"]) == ["join B C"]
+    assert [m["text"] for m in await store.peek_messages(d["session_id"])] == ["join B C"]
 
 
 async def test_advance_is_idempotent(no_job_trigger):
@@ -602,7 +602,7 @@ async def test_template_run_and_workflow_refs():
     await make_chain(store, [{"id": "a", "prompt": "run {{run.id}} of {{workflow.name}}"}])
     run_id = await workflows.run_now("chain", options=OPTS, store=store)
     sid = task_state(store, "chain", run_id, "a")["session_id"]
-    assert await store.pop_messages(sid) == [f"run {run_id} of chain"]
+    assert [m["text"] for m in await store.peek_messages(sid)] == [f"run {run_id} of chain"]
 
 
 async def test_workspace_busy_release_fails_task():
@@ -734,4 +734,4 @@ async def test_reconcile_restarts_stuck_launch(no_job_trigger):
     # restarted under the already-claimed session id
     assert task_state(store, "chain", run_id, "report")["status"] == "running"
     assert claimed in store.sessions
-    assert await store.pop_messages(claimed) == ["write it up from: 42"]
+    assert [m["text"] for m in await store.peek_messages(claimed)] == ["write it up from: 42"]
