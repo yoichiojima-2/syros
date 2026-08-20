@@ -3,7 +3,6 @@ import time
 
 import pytest
 
-import syros.remote
 from syros import (
     AgentOptions,
     AssistantMessage,
@@ -16,17 +15,6 @@ from syros.remote import run_remote, send_prompt
 from syros.types import message_to_doc
 
 from .fakes import FakeStore, append_message
-
-
-@pytest.fixture(autouse=True)
-def no_job_trigger(monkeypatch):
-    triggered = []
-
-    async def fake_trigger(project, region, job, session_id):
-        triggered.append((project, region, job, session_id))
-
-    monkeypatch.setattr(syros.remote, "_trigger_job", fake_trigger)
-    return triggered
 
 
 def options(**kwargs):

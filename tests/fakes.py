@@ -610,3 +610,129 @@ class FakeObjects:
     async def sync_official_skills(self):
         self.skills.setdefault("pdf", {})["SKILL.md"] = b"# pdf"
         return {"skills": ["pdf"], "files": 1, "skipped": []}
+
+
+class FakeBlob:
+    """One blob handle over a FakeBucket record ({"data", "metadata", and
+    "content_type" for string uploads}) — the subset of google.cloud.storage
+    the syros GCS modules touch."""
+
+    def __init__(self, bucket: FakeBucket, name: str) -> None:
+        self._bucket = bucket
+        self.name = name
+        self.metadata: dict[str, Any] | None = None
+        self.updated = None
+        # None until the handle is reloaded (which is what a listing does). A
+        # handle that knows a generation reads *that* one, like GCS: the object
+        # being rewritten underneath it is a 404, not a fresh download.
+        self.generation: int | None = None
+
+    @property
+    def size(self) -> int | None:
+        record = self._bucket.objects.get(self.name)
+        return len(record["data"]) if record else None
+
+    def exists(self) -> bool:
+        return self.name in self._bucket.objects
+
+    def reload(self) -> None:
+        record = self._bucket.objects[self.name]
+        self.metadata = dict(record["metadata"]) if record.get("metadata") else None
+        self.generation = self._bucket.generations.get(self.name)
+
+    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
+        self._bucket.objects[self.name] = {
+            "data": data,
+            "metadata": None,
+            "content_type": content_type,
+        }
+        self._bucket.bump(self.name)
+
+    def upload_from_filename(self, path) -> None:
+        # like GCS, an upload replaces the object; metadata set on this handle
+        # (and nothing else) survives onto the new object
+        from pathlib import Path
+
+        metadata = {k: v for k, v in (self.metadata or {}).items() if v is not None}
+        self._bucket.objects[self.name] = {
+            "data": Path(path).read_bytes(),
+            "metadata": metadata or None,
+        }
+        self._bucket.bump(self.name)
+
+    def download_as_bytes(self) -> bytes:
+        return self._bucket.objects[self.name]["data"]
+
+    def download_to_filename(self, path) -> None:
+        from pathlib import Path
+
+        from google.api_core.exceptions import NotFound
+
+        current = self._bucket.generations.get(self.name)
+        # GCS opens the destination before it can know the read will fail, so a
+        # 404 leaves an empty file behind. Mirror it: callers have to clean up.
+        Path(path).write_bytes(b"")
+        if current is None or (self.generation is not None and self.generation != current):
+            raise NotFound(f"404 no such object: {self.name}")
+        Path(path).write_bytes(self._bucket.objects[self.name]["data"])
+
+    def patch(self) -> None:
+        record = self._bucket.objects[self.name]
+        record["metadata"] = {
+            k: v for k, v in (self.metadata or {}).items() if v is not None
+        } or None
+
+    def delete(self) -> None:
+        del self._bucket.objects[self.name]
+
+
+class FakeListing(list):
+    def __init__(self, blobs, prefixes):
+        super().__init__(blobs)
+        self.prefixes = prefixes
+
+
+class FakeBucket:
+    """In-memory GCS bucket, seedable with {name: (data, metadata)}."""
+
+    def __init__(self, objects: dict[str, tuple[bytes, dict | None]] | None = None) -> None:
+        self.objects: dict[str, dict[str, Any]] = {
+            name: {"data": data, "metadata": metadata}
+            for name, (data, metadata) in (objects or {}).items()
+        }
+        # Generations live beside the objects rather than in them, so a rewrite
+        # is visible to a stale handle without changing the record shape tests
+        # compare against.
+        self.generations: dict[str, int] = dict.fromkeys(self.objects, 1)
+
+    def bump(self, name: str) -> None:
+        self.generations[name] = self.generations.get(name, 0) + 1
+
+    def blob(self, name: str) -> FakeBlob:
+        return FakeBlob(self, name)
+
+    def list_blobs(self, prefix: str = "", delimiter: str | None = None) -> FakeListing:
+        names = sorted(n for n in self.objects if n.startswith(prefix))
+        if delimiter is None:
+            blobs = []
+            for name in names:
+                blob = FakeBlob(self, name)
+                blob.reload()
+                blobs.append(blob)
+            return FakeListing(blobs, set())
+        blobs, prefixes = [], set()
+        for name in names:
+            rest = name[len(prefix) :]
+            if delimiter in rest:
+                prefixes.add(prefix + rest.split(delimiter)[0] + delimiter)
+            else:
+                blobs.append(FakeBlob(self, name))
+        return FakeListing(blobs, prefixes)
+
+    def copy_blob(self, blob: FakeBlob, destination_bucket: FakeBucket, new_name: str) -> None:
+        record = self.objects[blob.name]
+        destination_bucket.objects[new_name] = {
+            **record,
+            "metadata": dict(record["metadata"] or {}) or None,
+        }
+        destination_bucket.bump(new_name)

@@ -9,6 +9,8 @@ from syros import skills
 from syros.errors import OptionsError
 from syros.layout import skill_prefix
 
+from .fakes import FakeBucket
+
 # The real write, captured before the autouse fixture below stubs it out — one
 # test drives push all the way down to the blobs.
 REAL_WRITE_FILE = skills.write_file
@@ -138,32 +140,6 @@ def test_push_skips_oversized_files(tmp_path, capture_writes):
     assert [f for _, f, _ in capture_writes] == ["SKILL.md"]
 
 
-class FakeBlob:
-    def __init__(self, bucket, name):
-        self.bucket = bucket
-        self.name = name
-
-    def upload_from_string(self, data, content_type=None):
-        self.bucket.objects[self.name] = (data, content_type)
-
-    def exists(self):
-        return self.name in self.bucket.objects
-
-    def delete(self):
-        del self.bucket.objects[self.name]
-
-
-class FakeBucket:
-    def __init__(self):
-        self.objects: dict[str, tuple[bytes, str]] = {}
-
-    def blob(self, name):
-        return FakeBlob(self, name)
-
-    def list_blobs(self, prefix=""):
-        return [FakeBlob(self, n) for n in sorted(self.objects) if n.startswith(prefix)]
-
-
 @pytest.fixture
 def bucket(monkeypatch):
     """A bucket behind the real write, so push runs end to end."""
@@ -182,7 +158,8 @@ def test_push_lands_blobs_under_the_skill_prefix(tmp_path, bucket):
 
     skills.push("p", "b", path, max_bytes=1024)
     assert sorted(bucket.objects) == ["skills/pdf/SKILL.md", "skills/pdf/scripts/fill.py"]
-    assert bucket.objects["skills/pdf/SKILL.md"] == (b"# pdf", "text/markdown")
+    assert bucket.objects["skills/pdf/SKILL.md"]["data"] == b"# pdf"
+    assert bucket.objects["skills/pdf/SKILL.md"]["content_type"] == "text/markdown"
 
     skills.push("p", "b", path, max_bytes=1024, workspace="ws")
     assert "workspaces/ws/skills/pdf/SKILL.md" in bucket.objects

@@ -41,8 +41,8 @@ def _timestamp(value: Any) -> str | None:
     for time.time() fields; BigQuery TIMESTAMP accepts either as ISO 8601."""
     if value is None:
         return None
-    if isinstance(value, (int, float)):
-        value = datetime.datetime.fromtimestamp(value, tz=datetime.timezone.utc)
+    if isinstance(value, int | float):
+        value = datetime.datetime.fromtimestamp(value, tz=datetime.UTC)
     if isinstance(value, datetime.datetime):
         return value.isoformat()
     return str(value)
@@ -87,7 +87,7 @@ SESSION_FIELDS: list[Field] = [
     ),
     ("seq_head", "INT64", "NULLABLE", _get("seq_head")),
     ("model", "STRING", "NULLABLE", lambda s: (s.get("options") or {}).get("model")),
-    ("workspace", "STRING", "NULLABLE", lambda s: _opt_workspace(s)),
+    ("workspace", "STRING", "NULLABLE", _opt_workspace),
     ("created_by", "STRING", "NULLABLE", _get("created_by")),
     ("workflow", "STRING", "NULLABLE", _get("workflow")),
     ("run_id", "STRING", "NULLABLE", _get("run_id")),
@@ -145,7 +145,7 @@ AGENT_FIELDS: list[Field] = [
     ("description", "STRING", "NULLABLE", _get("description")),
     ("created_by", "STRING", "NULLABLE", _get("created_by")),
     ("model", "STRING", "NULLABLE", lambda a: (a.get("options") or {}).get("model")),
-    ("workspace", "STRING", "NULLABLE", lambda a: _opt_workspace(a)),
+    ("workspace", "STRING", "NULLABLE", _opt_workspace),
     ("created_at", "TIMESTAMP", "NULLABLE", _ts("created_at")),
     ("updated_at", "TIMESTAMP", "NULLABLE", _ts("updated_at")),
     ("options", "JSON", "NULLABLE", lambda a: _json(a.get("options") or {})),

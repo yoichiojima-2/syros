@@ -121,13 +121,14 @@ async def branch_from_event(
         raise SyrosError(f"event {from_event} not found in session {session_id}")
     base = await _turn_base(store, session_id, event)
     branch_id = journal.new_branch_id()
-    base_uuid = base["uuid"] if base else None
-    base_seq = int(base["seq"]) if base else 0
+    base = base or {}
+    base_uuid = base.get("uuid")
+    base_seq = int(base.get("seq") or 0)
     # The result payload's session_id is the SDK session that produced *this*
     # turn; the context snapshot can lag one run behind (it is refreshed only
     # after a turn completes), so the payload wins.
-    claude_session_id = ((base or {}).get("payload") or {}).get("session_id") or (
-        (base or {}).get("context") or {}
+    claude_session_id = (base.get("payload") or {}).get("session_id") or (
+        base.get("context") or {}
     ).get("claude_session_id")
     await store.create_branch(
         session_id,

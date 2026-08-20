@@ -43,9 +43,8 @@ export interface SessionSummary {
   agent: string | null; // the stored agent its options were resolved from, if any
 }
 
-// Mirrors run_outcome() in src/syros/console/api.py — keep the two in sync.
 // Liveness (SessionState) answers "is it going"; the outcome answers "how did
-// it go", and the three live states carry through so one badge covers both.
+// it go", and the live states carry through so one badge covers both.
 export type RunOutcome =
   | "running"
   | "starting"
@@ -54,12 +53,6 @@ export type RunOutcome =
   | "succeeded"
   | "failed"
   | "cancelled";
-
-/** A session seen as one run of something. duration_s is null while it runs. */
-export interface RunSummary extends SessionSummary {
-  outcome: RunOutcome;
-  duration_s: number | null;
-}
 
 /** One task in a workflow's definition — mirrors workflows.normalize_tasks. */
 export interface WorkflowTaskSpec {

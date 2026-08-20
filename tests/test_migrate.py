@@ -7,7 +7,7 @@ import pytest
 
 from syros import migrate
 
-from .test_workspace import FakeBucket
+from .fakes import FakeBucket
 
 # --- planning (pure) ---
 

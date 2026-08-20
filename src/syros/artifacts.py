@@ -9,13 +9,13 @@ purpose — callers wrap in asyncio.to_thread (same contract as workspace.py).
 
 from __future__ import annotations
 
-import mimetypes
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import workspace
 from .layout import ARTIFACTS, space_prefix
-from .names import validate_file
+from .workspace import _bucket
 
 
 def mount_prompt(spaces: dict[str, str]) -> str | None:
@@ -70,12 +70,6 @@ class Artifact:
     updated: datetime | None
 
 
-def _bucket(project: str, bucket_name: str):
-    from google.cloud import storage
-
-    return storage.Client(project=project).bucket(bucket_name)
-
-
 def list_spaces(project: str, bucket_name: str) -> list[str]:
     iterator = _bucket(project, bucket_name).list_blobs(prefix=ARTIFACTS, delimiter="/")
     list(iterator)  # prefixes populate only after iteration
@@ -96,44 +90,26 @@ def read_artifact(
 ) -> tuple[bytes, str]:
     """Download one artifact: (data, content type). Raises FileNotFoundError for
     a missing blob and ValueError when it exceeds max_bytes (download instead)."""
-    validate_file("artifact", name)
-    prefix = space_prefix(space)
-    blob = _bucket(project, bucket_name).blob(prefix + name)
-    if not blob.exists():
-        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{name}")
-    blob.reload()
-    if (blob.size or 0) > max_bytes:
-        raise ValueError(f"{name} is {blob.size} bytes (limit {max_bytes})")
-    return blob.download_as_bytes(), mimetypes.guess_type(name)[0] or "application/octet-stream"
-
-
-def write_artifact(project: str, bucket_name: str, space: str, name: str, data: bytes) -> None:
-    prefix = space_prefix(space)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("artifact", name))
-    blob.upload_from_string(
-        data, content_type=mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return workspace.read_in_prefix(
+        project, bucket_name, space_prefix(space), "artifact", name, max_bytes=max_bytes
     )
 
 
+def write_artifact(project: str, bucket_name: str, space: str, name: str, data: bytes) -> None:
+    workspace.write_in_prefix(project, bucket_name, space_prefix(space), "artifact", name, data)
+
+
 def delete_artifact(project: str, bucket_name: str, space: str, name: str) -> None:
-    prefix = space_prefix(space)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("artifact", name))
-    if not blob.exists():
-        raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{name}")
-    blob.delete()
+    workspace.delete_in_prefix(project, bucket_name, space_prefix(space), "artifact", name)
 
 
 def rename_artifact(project: str, bucket_name: str, space: str, src: str, dst: str) -> None:
-    from . import workspace
-
     workspace.rename_in_prefix(project, bucket_name, space_prefix(space), "artifact", src, dst)
 
 
 def set_artifact_tags(
     project: str, bucket_name: str, space: str, name: str, tags: list[str]
 ) -> None:
-    from . import workspace
-
     workspace.set_tags_in_prefix(project, bucket_name, space_prefix(space), "artifact", name, tags)
 
 
@@ -158,8 +134,6 @@ def push(project: str, bucket_name: str, space: str, paths: list[Path]) -> int:
 
 
 def pull(project: str, bucket_name: str, space: str, dest: Path) -> int:
-    from . import workspace
-
     return workspace.restore(project, bucket_name, space_prefix(space), dest)
 
 

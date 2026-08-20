@@ -2,20 +2,11 @@ import asyncio
 
 import pytest
 
-import syros.remote
 from syros import AgentOptions, AssistantMessage, ResultMessage, SyrosClient, TextBlock
 from syros.errors import SyrosError
 from syros.types import message_to_doc
 
 from .fakes import FakeStore, append_message
-
-
-@pytest.fixture(autouse=True)
-def no_job_trigger(monkeypatch):
-    async def fake_trigger(*args):
-        pass
-
-    monkeypatch.setattr(syros.remote, "_trigger_job", fake_trigger)
 
 
 def make_client(store, **kwargs):

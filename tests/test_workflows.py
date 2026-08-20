@@ -2,7 +2,6 @@ import time
 
 import pytest
 
-import syros.remote
 from syros import workflows
 from syros.cron import next_after
 from syros.errors import SessionExists
@@ -10,17 +9,6 @@ from syros.options import AgentOptions
 from syros.workflows import WorkflowError
 
 from .fakes import FakeStore
-
-
-@pytest.fixture(autouse=True)
-def no_job_trigger(monkeypatch):
-    triggered = []
-
-    async def fake_trigger(project, region, job, session_id):
-        triggered.append(session_id)
-
-    monkeypatch.setattr(syros.remote, "_trigger_job", fake_trigger)
-    return triggered
 
 
 OPTS = AgentOptions(project="p")
@@ -349,7 +337,7 @@ async def test_tick_fires_due_slot(no_job_trigger):
     state = task_state(store, "nightly", run_id, "main")
     assert state["status"] == "running"
     sid = state["session_id"]
-    assert no_job_trigger == [sid]
+    assert no_job_trigger.session_ids == [sid]
     session = await store.get_session(sid)
     assert session["workflow"] == "nightly"
     assert session["run_id"] == run_id
@@ -468,7 +456,7 @@ async def test_run_now_leaves_clock_alone(no_job_trigger):
     assert session["trigger"] == "manual" and session["created_by"] == "me"
     assert store.workflows["nightly"]["next_run_at"] == slot
     assert store.workflows["nightly"]["run_count"] == 1
-    assert no_job_trigger == [sid]
+    assert no_job_trigger.session_ids == [sid]
 
 
 async def test_run_now_unknown_workflow():

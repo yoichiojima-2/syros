@@ -97,18 +97,6 @@ def fake_harness(monkeypatch):
 
 
 @pytest.fixture
-def triggers(monkeypatch):
-    """Capture the job triggers a release hands off, instead of calling GCP."""
-    fired = []
-
-    async def fake_trigger(project, region, job, session_id):
-        fired.append(session_id)
-
-    monkeypatch.setattr(syros.runner.remote, "_trigger_job", fake_trigger)
-    return fired
-
-
-@pytest.fixture
 def gcs_sync(monkeypatch):
     """Record every restore/checkpoint as (prefix, root dir name)."""
     calls = {"restore": [], "checkpoint": [], "exclude": []}
@@ -700,7 +688,7 @@ async def test_prompt_is_journaled_before_the_inbox_item_is_consumed(
 
 
 async def test_a_run_that_dies_releases_and_leaves_the_prompt_queued(
-    env, store, fake_harness, triggers, run_log, monkeypatch
+    env, store, fake_harness, no_job_trigger, run_log, monkeypatch
 ):
     """A crash used to end the process with the session still "running" and the
     lease left to expire: the console showed a bare "stalled" with nothing in
@@ -733,11 +721,11 @@ async def test_a_run_that_dies_releases_and_leaves_the_prompt_queued(
     # the prompt waits for whoever runs next, and the failed run does not
     # re-trigger itself — a deterministic failure would loop forever
     assert [m["text"] for m in await store.peek_messages(SID)] == ["do the thing"]
-    assert triggers == []
+    assert no_job_trigger.session_ids == []
 
 
 async def test_release_hands_off_a_prompt_that_arrived_during_shutdown(
-    env, store, fake_harness, triggers, monkeypatch
+    env, store, fake_harness, no_job_trigger, monkeypatch
 ):
     """The message loop closes before the shutdown tail, so a prompt arriving in
     that window sees a live lease and its sender triggers nothing. The releasing
@@ -756,16 +744,18 @@ async def test_release_hands_off_a_prompt_that_arrived_during_shutdown(
 
     await run(SID)
 
-    assert triggers == [SID]
+    assert no_job_trigger.session_ids == [SID]
     session = await store.get_session(SID)
     assert session["runtime"]["status"] == "starting"
     assert [m["text"] for m in await store.peek_messages(SID)] == ["late"]
 
 
-async def test_release_with_an_empty_inbox_triggers_nothing(env, store, fake_harness, triggers):
+async def test_release_with_an_empty_inbox_triggers_nothing(
+    env, store, fake_harness, no_job_trigger
+):
     await store.create_session(SID, {})
     await store.push_inbox(SID, "message", "do the thing")
 
     await run(SID)
 
-    assert triggers == []
+    assert no_job_trigger.session_ids == []

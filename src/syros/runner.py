@@ -239,64 +239,88 @@ async def _publish_spaces(config: env.RunnerEnv, spaces: dict[str, str], ws) -> 
     return published
 
 
-async def _fail(
+async def _recover_cursor(
+    store: Store, session_id: str, session: dict[str, Any], branch: str
+) -> tuple[dict[str, Any], int, str | None, bool]:
+    """Seed the journal cursor from the journal itself, never from the advisory
+    seq_head: after a mid-turn crash the doc lags the records, and trusting it
+    would re-issue seqs. A fresh branch has no records yet, so its base
+    (written by create_branch) is the floor. Returns (branch_info, seq,
+    tip_uuid, fresh_branch); a fresh rewind branch — nothing past its
+    branch_created record — is the one claim that must fork the SDK session
+    instead of resuming it (see build_sdk_options in run())."""
+    branch_info = (session.get("branches") or {}).get(branch) or {}
+    seq, tip_uuid = await store.recover_head(session_id, branch)
+    base_seq = int(branch_info.get("base_seq") or 0)
+    if seq < base_seq:
+        seq, tip_uuid = base_seq, branch_info.get("base_uuid")
+    fresh_branch = branch != MAIN_BRANCH and seq <= base_seq + 1
+    return branch_info, seq, tip_uuid, fresh_branch
+
+
+async def _restore_state(
+    config: env.RunnerEnv, options: AgentOptions, session_id: str, ws, home
+) -> tuple[str, str, dict[str, str]]:
+    """Restore ws/ and home/ from GCS and mount skills and artifact spaces.
+
+    Returns (ws_prefix, home_prefix, spaces). Skills mount into HOME after the
+    home restore, so the live prefixes win over anything a stale checkpoint
+    might carry: global skills for every run, then the workspace's own —
+    restored second, so a workspace skill shadows a same-named global one. The
+    SDK finds them via setting_sources=["user"]. Artifact spaces mount after
+    the ws restore so the space's content wins.
+    """
+    ws.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    ws_prefix = (
+        layout.workspace_prefix(options.workspace)
+        if options.workspace
+        else layout.session_prefix(session_id, "ws")
+    )
+    home_prefix = layout.session_prefix(session_id, "home")
+
+    def restore(prefix: str, target) -> None:
+        workspace.restore(config.project, config.bucket, prefix, target)
+
+    await asyncio.to_thread(restore, ws_prefix, ws)
+    await asyncio.to_thread(restore, home_prefix, home)
+    await asyncio.to_thread(restore, layout.skills_root(), home / ".claude" / "skills")
+    if options.workspace:
+        await asyncio.to_thread(
+            restore, layout.skills_root(options.workspace), home / ".claude" / "skills"
+        )
+    spaces = options.resolved_artifacts()
+    for space in spaces:
+        mount = ws / "artifacts" / space
+        mount.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(restore, artifacts.space_prefix(space), mount)
+    return ws_prefix, home_prefix, spaces
+
+
+async def _label_session(
     store: Store,
-    config: env.RunnerEnv,
     session_id: str,
     session: dict[str, Any],
-    writer: JournalWriter,
-    branch: str,
-    error: BaseException,
+    options: AgentOptions,
+    run_prompts: list[str],
+    result_text: str | None,
 ) -> None:
-    """Record a crashed run and release the session.
-
-    Without this a failure anywhere in the run (a GCS restore, a sandbox that
-    won't start) ended the process with the session still marked "running" and
-    the lease left to expire on its own: the console showed a bare "stalled"
-    with nothing in the transcript after "claimed", and while that stale lease
-    looked alive no replacement execution could be triggered for it. The
-    session releases idle instead, carrying stop_reason="error", and the
-    transcript says what happened.
-
-    Every step is best-effort — a store failure while handling a failure must
-    not replace the original traceback with a second one. The queued inbox is
-    deliberately left alone: a run that died before consuming a prompt should
-    leave it for the next execution, not swallow it.
-    """
+    """Label the session for the dashboard: a haiku call writes the title
+    (once) and refreshes the summary each run. Never fatal — a session must
+    release whether or not it got described."""
+    if not (run_prompts or result_text):
+        return
     try:
-        await writer.append("lifecycle", {"event": "error", "error": repr(error)})
-        doc = message_to_doc(
-            ResultMessage(
-                subtype="error",
-                duration_ms=0,
-                duration_api_ms=0,
-                is_error=True,
-                num_turns=0,
-                session_id=session.get("claude_session_id") or "",
-                total_cost_usd=0.0,
-                result=repr(error),
-            )
-        )
-        await writer.append("message", doc)
-        await store.release_session(
-            session_id,
-            status="idle",
-            stop_reason="error",
-            seq_head=writer.seq,
-            tip_uuid=writer.tip_uuid,
-        )
-        await _append_run_log(
-            config,
-            session_id,
-            session,
-            branch=branch,
-            stop_reason="error",
-            run_cost_usd=0.0,
-            cost_usd=float(session.get("cost_usd") or 0.0),
-            seq_head=writer.seq,
-        )
-    except Exception as nested:
-        print(f"failure handling failed for {session_id}: {nested}", file=sys.stderr)
+        label = await asyncio.to_thread(titles.describe, options, run_prompts, result_text)
+    except Exception:
+        label = {"title": titles.fallback_title(run_prompts), "summary": None}
+    fields = {
+        key: value
+        for key, value in label.items()
+        if value and not (key == "title" and session.get("title"))
+    }
+    if fields:
+        await store.update_session(session_id, **fields)
 
 
 async def run(session_id: str) -> None:
@@ -311,20 +335,10 @@ async def run(session_id: str) -> None:
     options = options_from_doc(dict(session["options"]))
     options.project = config.project
 
-    # Seed the journal cursor from the journal itself, never from the advisory
-    # seq_head: after a mid-turn crash the doc lags the records, and trusting
-    # it would re-issue seqs. A fresh branch has no records yet, so its base
-    # (written by create_branch) is the floor.
     branch = active_branch(session)
-    branch_info = (session.get("branches") or {}).get(branch) or {}
-    seq, tip_uuid = await store.recover_head(session_id, branch)
-    base_seq = int(branch_info.get("base_seq") or 0)
-    if seq < base_seq:
-        seq, tip_uuid = base_seq, branch_info.get("base_uuid")
-    # A rewind branch that has never run holds nothing past its branch_created
-    # record; that is the one claim that must fork the SDK session instead of
-    # resuming it (see build_sdk_options below).
-    fresh_branch = branch != MAIN_BRANCH and seq <= base_seq + 1
+    branch_info, seq, tip_uuid, fresh_branch = await _recover_cursor(
+        store, session_id, session, branch
+    )
 
     ws, home = config.work_dir / "ws", config.work_dir / "home"
     writer = JournalWriter(
@@ -361,6 +375,46 @@ async def run(session_id: str) -> None:
             lost=lost,
         )
     )
+
+    async def fail_fast(
+        reason: str, payload: dict, *, result: str | None = None, release_workspace: bool = False
+    ) -> None:
+        """Release everything with a zero-cost error result and no agent run."""
+        await writer.append("lifecycle", {"event": reason, **payload})
+        doc = message_to_doc(
+            ResultMessage(
+                subtype=reason,
+                duration_ms=0,
+                duration_api_ms=0,
+                is_error=True,
+                num_turns=0,
+                session_id=session.get("claude_session_id") or "",
+                total_cost_usd=0.0,
+                result=result,
+            )
+        )
+        await writer.append("message", doc)
+        if release_workspace and options.workspace:
+            await store.release_workspace(options.workspace, session_id)
+        await store.release_session(
+            session_id,
+            status="idle",
+            stop_reason=reason,
+            seq_head=writer.seq,
+            tip_uuid=writer.tip_uuid,
+        )
+        await _advance_workflow(store, config, session_id)
+        await _append_run_log(
+            config,
+            session_id,
+            session,
+            branch=branch,
+            stop_reason=reason,
+            run_cost_usd=0.0,
+            cost_usd=float(session.get("cost_usd") or 0.0),
+            seq_head=writer.seq,
+        )
+
     try:
         # stop_reason/lifecycle keep the "workspace_busy" name: it is a wire
         # value the console and stored sessions already know.
@@ -370,39 +424,7 @@ async def run(session_id: str) -> None:
             # Another session is live in this workspace: fail fast with an error
             # result so the waiting client terminates. The prompt stays queued in
             # the inbox and is consumed when the session is re-triggered.
-            await writer.append(
-                "lifecycle", {"event": "workspace_busy", "workspace": options.workspace}
-            )
-            doc = message_to_doc(
-                ResultMessage(
-                    subtype="workspace_busy",
-                    duration_ms=0,
-                    duration_api_ms=0,
-                    is_error=True,
-                    num_turns=0,
-                    session_id=session.get("claude_session_id") or "",
-                    total_cost_usd=0.0,
-                )
-            )
-            await writer.append("message", doc)
-            await store.release_session(
-                session_id,
-                status="idle",
-                stop_reason="workspace_busy",
-                seq_head=writer.seq,
-                tip_uuid=writer.tip_uuid,
-            )
-            await _advance_workflow(store, config, session_id)
-            await _append_run_log(
-                config,
-                session_id,
-                session,
-                branch=branch,
-                stop_reason="workspace_busy",
-                run_cost_usd=0.0,
-                cost_usd=float(session.get("cost_usd") or 0.0),
-                seq_head=writer.seq,
-            )
+            await fail_fast("workspace_busy", {"workspace": options.workspace})
             return
         if options.workspace:
             leased_workspace["name"] = options.workspace  # heartbeat renews it from here on
@@ -417,85 +439,16 @@ async def run(session_id: str) -> None:
                     connectors.mcp_servers_for, config.project, options.connectors
                 )
             except connectors.ConnectorError as error:
-                await writer.append("lifecycle", {"event": "connector_error", "error": str(error)})
-                doc = message_to_doc(
-                    ResultMessage(
-                        subtype="connector_error",
-                        duration_ms=0,
-                        duration_api_ms=0,
-                        is_error=True,
-                        num_turns=0,
-                        session_id=session.get("claude_session_id") or "",
-                        total_cost_usd=0.0,
-                        result=str(error),
-                    )
-                )
-                await writer.append("message", doc)
-                if options.workspace:
-                    await store.release_workspace(options.workspace, session_id)
-                await store.release_session(
-                    session_id,
-                    status="idle",
-                    stop_reason="connector_error",
-                    seq_head=writer.seq,
-                    tip_uuid=writer.tip_uuid,
-                )
-                await _advance_workflow(store, config, session_id)
-                await _append_run_log(
-                    config,
-                    session_id,
-                    session,
-                    branch=branch,
-                    stop_reason="connector_error",
-                    run_cost_usd=0.0,
-                    cost_usd=float(session.get("cost_usd") or 0.0),
-                    seq_head=writer.seq,
+                await fail_fast(
+                    "connector_error",
+                    {"error": str(error)},
+                    result=str(error),
+                    release_workspace=True,
                 )
                 return
             options.mcp_servers = {**servers, **options.mcp_servers}
 
-        ws.mkdir(parents=True, exist_ok=True)
-        home.mkdir(parents=True, exist_ok=True)
-        ws_prefix = (
-            layout.workspace_prefix(options.workspace)
-            if options.workspace
-            else layout.session_prefix(session_id, "ws")
-        )
-        home_prefix = layout.session_prefix(session_id, "home")
-        await asyncio.to_thread(workspace.restore, config.project, config.bucket, ws_prefix, ws)
-        await asyncio.to_thread(workspace.restore, config.project, config.bucket, home_prefix, home)
-        # Mount skills into HOME after the home restore, so the live prefixes
-        # win over anything a stale checkpoint might carry: global skills for
-        # every run, then the workspace's own — restored second, so a workspace skill
-        # shadows a same-named global one. The SDK finds them via
-        # setting_sources=["user"] below.
-        await asyncio.to_thread(
-            workspace.restore,
-            config.project,
-            config.bucket,
-            layout.skills_root(),
-            home / ".claude" / "skills",
-        )
-        if options.workspace:
-            await asyncio.to_thread(
-                workspace.restore,
-                config.project,
-                config.bucket,
-                layout.skills_root(options.workspace),
-                home / ".claude" / "skills",
-            )
-        # Mount artifact spaces after the ws restore so the space's content wins.
-        spaces = options.resolved_artifacts()
-        for space in spaces:
-            mount = ws / "artifacts" / space
-            mount.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(
-                workspace.restore,
-                config.project,
-                config.bucket,
-                artifacts.space_prefix(space),
-                mount,
-            )
+        ws_prefix, home_prefix, spaces = await _restore_state(config, options, session_id, ws, home)
 
         # The mounts are invisible to the agent otherwise — without this a session
         # can succeed while writing its output somewhere that never persists.
@@ -634,21 +587,7 @@ async def run(session_id: str) -> None:
         if options.workspace:
             leased_workspace["name"] = None
             await store.release_workspace(options.workspace, session_id)
-        # Label the session for the dashboard: a haiku call writes the title
-        # (once) and refreshes the summary each run. Never fatal — a session
-        # must release whether or not it got described.
-        if run_prompts or result_text:
-            try:
-                label = await asyncio.to_thread(titles.describe, options, run_prompts, result_text)
-            except Exception:
-                label = {"title": titles.fallback_title(run_prompts), "summary": None}
-            fields = {
-                key: value
-                for key, value in label.items()
-                if value and not (key == "title" and session.get("title"))
-            }
-            if fields:
-                await store.update_session(session_id, **fields)
+        await _label_session(store, session_id, session, options, run_prompts, result_text)
         await writer.append("lifecycle", {"event": "released", "stop_reason": stop_reason})
         await store.release_session(
             session_id,
@@ -679,12 +618,28 @@ async def run(session_id: str) -> None:
             seq_head=writer.seq,
         )
     except Exception as error:
+        # A crash used to end the process with the session still marked
+        # "running" and the lease left to expire on its own: the console showed
+        # a bare "stalled" with nothing in the transcript after "claimed", and
+        # while that stale lease looked alive no replacement execution could be
+        # triggered for it. It releases like any other failed run instead.
+        #
         # The journal belongs to whoever holds the lease: if it was lost, the
         # new owner's state stands and this run writes nothing (same rule as
         # the mid-turn check above). Re-raised either way, so the execution
-        # still exits non-zero and Cloud Run records the failure.
+        # still exits non-zero and Cloud Run records the failure. The queued
+        # inbox is deliberately untouched — a run that died before consuming a
+        # prompt leaves it for the next execution rather than swallowing it,
+        # and nothing re-triggers here: a deterministic failure would loop.
         if not lost.is_set():
-            await _fail(store, config, session_id, session, writer, branch, error)
+            try:
+                leased_workspace["name"] = None  # detach, or the next beat re-claims
+                await fail_fast(
+                    "error", {"error": repr(error)}, result=repr(error), release_workspace=True
+                )
+            except Exception as nested:
+                # Handling a failure must not replace the original traceback.
+                print(f"failure handling failed for {session_id}: {nested}", file=sys.stderr)
         raise
     finally:
         beat.cancel()

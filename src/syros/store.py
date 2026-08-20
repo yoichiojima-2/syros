@@ -241,6 +241,11 @@ class StoreProtocol(Protocol):
     async def delete_agent(self, name: str) -> None: ...
 
 
+def store_or_default(options, store: StoreProtocol | None) -> StoreProtocol:
+    """The caller's store, or a real Store for the options' resolved project."""
+    return store or Store(options.resolved_project())
+
+
 class Store:
     """Thin async wrapper over Firestore. All methods take/return plain dicts."""
 
@@ -347,21 +352,27 @@ class Store:
         Batched: a long session's event mirror runs to thousands of docs, and
         one round trip per doc makes bulk deletion of several such sessions
         take longer than any caller is willing to wait."""
-        reference = self._session(session_id)
-        batch = self._db.batch()
-        pending = 0
         # "tool_calls" is drained only for sessions created before the journal
         # migration folded audit rows into "events" — nothing writes it now.
-        for name in ("events", "inbox", "approvals", "tool_calls"):
+        await self._drain_and_delete(
+            self._session(session_id), ("events", "inbox", "approvals", "tool_calls")
+        )
+
+    async def _drain_and_delete(self, reference, subcollections: tuple[str, ...]) -> None:
+        """Drain the named subcollections in batches, then delete the parent.
+
+        The parent goes last: if a commit fails partway the doc is still
+        there, so the caller sees something to retry rather than orphaned
+        subcollections."""
+        batch = self._db.batch()
+        pending = 0
+        for name in subcollections:
             async for snapshot in reference.collection(name).stream():
                 batch.delete(snapshot.reference)
                 pending += 1
                 if pending == DELETE_BATCH_SIZE:
                     await batch.commit()
                     batch, pending = self._db.batch(), 0
-        # The parent goes last: if a commit fails partway the session doc is
-        # still there, so the caller sees a session to retry rather than
-        # orphaned subcollections.
         batch.delete(reference)
         await batch.commit()
 
@@ -867,18 +878,7 @@ class Store:
     async def delete_workflow(self, name: str) -> None:
         """Remove the workflow and its run history. Deleting a document doesn't
         cascade in Firestore, so the runs subcollection is drained first."""
-        reference = self._workflow(name)
-        batch = self._db.batch()
-        pending = 0
-        async for snapshot in reference.collection("runs").stream():
-            batch.delete(snapshot.reference)
-            pending += 1
-            if pending == DELETE_BATCH_SIZE:
-                await batch.commit()
-                batch = self._db.batch()
-                pending = 0
-        batch.delete(reference)
-        await batch.commit()
+        await self._drain_and_delete(self._workflow(name), ("runs",))
 
     async def claim_slot(self, name: str, due: float, following: float) -> bool:
         """Atomically take one firing slot: advance next_run_at past `due`.

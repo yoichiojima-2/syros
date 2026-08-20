@@ -95,35 +95,52 @@ def checkpoint(
 def read_file(
     project: str, bucket_name: str, name: str, file: str, *, max_bytes: int
 ) -> tuple[bytes, str]:
-    """Download one workspace file: (data, content type). Raises FileNotFoundError
-    for a missing blob and ValueError when it exceeds max_bytes."""
-    prefix = workspace_prefix(name)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("workspace file", file))
+    return read_in_prefix(
+        project, bucket_name, workspace_prefix(name), "workspace file", file, max_bytes=max_bytes
+    )
+
+
+def write_file(project: str, bucket_name: str, name: str, file: str, data: bytes) -> None:
+    write_in_prefix(project, bucket_name, workspace_prefix(name), "workspace file", file, data)
+
+
+def delete_file(project: str, bucket_name: str, name: str, file: str) -> None:
+    delete_in_prefix(project, bucket_name, workspace_prefix(name), "workspace file", file)
+
+
+# --- prefix-generic helpers, shared with skills.py and artifacts.py ---
+
+
+def content_type(file: str) -> str:
+    return mimetypes.guess_type(file)[0] or "application/octet-stream"
+
+
+def read_in_prefix(
+    project: str, bucket_name: str, prefix: str, kind: str, file: str, *, max_bytes: int
+) -> tuple[bytes, str]:
+    """Download one file under the prefix: (data, content type). Raises
+    FileNotFoundError for a missing blob and ValueError over max_bytes."""
+    blob = _bucket(project, bucket_name).blob(prefix + validate_file(kind, file))
     if not blob.exists():
         raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
     blob.reload()
     if (blob.size or 0) > max_bytes:
         raise ValueError(f"{file} is {blob.size} bytes (limit {max_bytes})")
-    return blob.download_as_bytes(), mimetypes.guess_type(file)[0] or "application/octet-stream"
+    return blob.download_as_bytes(), content_type(file)
 
 
-def write_file(project: str, bucket_name: str, name: str, file: str, data: bytes) -> None:
-    prefix = workspace_prefix(name)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("workspace file", file))
-    blob.upload_from_string(
-        data, content_type=mimetypes.guess_type(file)[0] or "application/octet-stream"
-    )
+def write_in_prefix(
+    project: str, bucket_name: str, prefix: str, kind: str, file: str, data: bytes
+) -> None:
+    blob = _bucket(project, bucket_name).blob(prefix + validate_file(kind, file))
+    blob.upload_from_string(data, content_type=content_type(file))
 
 
-def delete_file(project: str, bucket_name: str, name: str, file: str) -> None:
-    prefix = workspace_prefix(name)
-    blob = _bucket(project, bucket_name).blob(prefix + validate_file("workspace file", file))
+def delete_in_prefix(project: str, bucket_name: str, prefix: str, kind: str, file: str) -> None:
+    blob = _bucket(project, bucket_name).blob(prefix + validate_file(kind, file))
     if not blob.exists():
         raise FileNotFoundError(f"gs://{bucket_name}/{prefix}{file}")
     blob.delete()
-
-
-# --- prefix-generic helpers, shared with artifacts.py ---
 
 
 def rename_in_prefix(
