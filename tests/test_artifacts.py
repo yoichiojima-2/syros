@@ -1,65 +1,9 @@
-from pathlib import Path
-
 import pytest
 
 from syros import artifacts
 from syros.errors import OptionsError
 
-
-class FakeBlob:
-    def __init__(self, bucket, name):
-        self.bucket = bucket
-        self.name = name
-        self.updated = None
-
-    @property
-    def size(self):
-        return len(self.bucket.objects.get(self.name, b""))
-
-    def upload_from_filename(self, path):
-        self.bucket.objects[self.name] = Path(path).read_bytes()
-
-    def download_to_filename(self, path):
-        Path(path).write_bytes(self.bucket.objects[self.name])
-
-    def exists(self):
-        return self.name in self.bucket.objects
-
-    def reload(self):
-        pass
-
-    def download_as_bytes(self):
-        return self.bucket.objects[self.name]
-
-
-class FakeListing(list):
-    def __init__(self, blobs, prefixes):
-        super().__init__(blobs)
-        self.prefixes = prefixes
-
-
-class FakeBucket:
-    def __init__(self):
-        self.objects: dict[str, bytes] = {}
-
-    def blob(self, name):
-        return FakeBlob(self, name)
-
-    def list_blobs(self, prefix="", delimiter=None):
-        names = sorted(n for n in self.objects if n.startswith(prefix))
-        if delimiter is None:
-            return FakeListing([FakeBlob(self, n) for n in names], set())
-        blobs, prefixes = [], set()
-        for name in names:
-            rest = name[len(prefix) :]
-            if delimiter in rest:
-                prefixes.add(prefix + rest.split(delimiter)[0] + delimiter)
-            else:
-                blobs.append(FakeBlob(self, name))
-        return FakeListing(blobs, prefixes)
-
-    def copy_blob(self, blob, destination_bucket, new_name):
-        destination_bucket.objects[new_name] = self.objects[blob.name]
+from .fakes import FakeBucket
 
 
 @pytest.fixture
@@ -116,9 +60,9 @@ def test_push_missing_path(bucket, tmp_path):
 
 
 def test_publish_copies_from_session_state(bucket):
-    bucket.objects["sessions/sess_x/state/ws/report.md"] = b"done"
+    bucket.objects["sessions/sess_x/state/ws/report.md"] = {"data": b"done", "metadata": None}
     assert artifacts.publish("p", "b", "workspace", "sessions/sess_x/state/ws/", ["report.md"]) == 1
-    assert bucket.objects["artifacts/workspace/report.md"] == b"done"
+    assert bucket.objects["artifacts/workspace/report.md"]["data"] == b"done"
     with pytest.raises(FileNotFoundError):
         artifacts.publish("p", "b", "workspace", "sessions/sess_x/state/ws/", ["missing.md"])
 
@@ -136,7 +80,10 @@ def test_checkpoint_excludes_mounted_spaces(bucket, tmp_path):
 
 
 def test_read_artifact(bucket):
-    bucket.objects["artifacts/workspace/sub/report.html"] = b"<h1>hi</h1>"
+    bucket.objects["artifacts/workspace/sub/report.html"] = {
+        "data": b"<h1>hi</h1>",
+        "metadata": None,
+    }
 
     data, content_type = artifacts.read_artifact(
         "p", "b", "workspace", "sub/report.html", max_bytes=100

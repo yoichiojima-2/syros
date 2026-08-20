@@ -2,24 +2,12 @@
 
 import pytest
 
-import syros.remote
 from syros import workflows
 from syros.console.api import Conflict, ConsoleAPI, NotFound
 from syros.errors import OptionsError
 from syros.options import AgentOptions
 
 from .fakes import FakeStore
-
-
-@pytest.fixture(autouse=True)
-def no_job_trigger(monkeypatch):
-    triggered = []
-
-    async def fake_trigger(project, region, job, session_id):
-        triggered.append(session_id)
-
-    monkeypatch.setattr(syros.remote, "_trigger_job", fake_trigger)
-    return triggered
 
 
 def api(store):
@@ -202,7 +190,7 @@ async def test_pause_resume_run_delete(no_job_trigger):
     result = await console.run_workflow("nightly")
     run_id = result["run_id"]
     sid = only_session(store, "nightly", run_id)
-    assert no_job_trigger == [sid]
+    assert no_job_trigger.session_ids == [sid]
     assert store.sessions[sid]["trigger"] == "manual"
 
     await console.delete_workflow("nightly")
