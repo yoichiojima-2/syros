@@ -56,13 +56,13 @@ from .names import validate_name
 from .options import AgentOptions, options_from_doc
 from .store import (
     START_GRACE_SECONDS,
-    Store,
     StoreProtocol,
     lease_active,
     new_run_id,
     new_session_id,
     runtime,
     start_pending,
+    store_or_default as _store,
 )
 
 DEFAULT_TIMEZONE = "UTC"
@@ -90,6 +90,19 @@ def _epoch(value: Any) -> float:
     if isinstance(value, datetime):
         return value.timestamp()
     return float(value or 0.0)
+
+
+def _schedule(
+    cron_expression: str | None, timezone: str, now: float | None
+) -> tuple[dict[str, Any] | None, float]:
+    """The stored schedule dict and the first slot, or (None, 0.0) for a
+    manual-only workflow."""
+    if not cron_expression:
+        return None, 0.0
+    cron.validate(cron_expression, timezone)
+    now = time.time() if now is None else now
+    schedule = {"cron": cron.describe(cron_expression), "timezone": timezone}
+    return schedule, cron.next_after(cron_expression, now, timezone)
 
 
 def result_refs(prompt: str) -> set[str]:
@@ -209,13 +222,7 @@ def build(
     """
     validate_name("workflow", name)
     normalized = normalize_tasks(tasks)
-    schedule = None
-    next_run_at = 0.0
-    if cron_expression:
-        cron.validate(cron_expression, timezone)
-        schedule = {"cron": cron.describe(cron_expression), "timezone": timezone}
-        now = time.time() if now is None else now
-        next_run_at = cron.next_after(cron_expression, now, timezone)
+    schedule, next_run_at = _schedule(cron_expression, timezone, now)
     return {
         "tasks": normalized,
         "options": (defaults or AgentOptions()).serialize(),
@@ -230,10 +237,6 @@ def build(
         "skip_count": 0,
         "created_by": created_by,
     }
-
-
-def _store(options: AgentOptions, store: StoreProtocol | None) -> StoreProtocol:
-    return store or Store(options.resolved_project())
 
 
 async def _validate_tasks(
@@ -364,13 +367,7 @@ async def update(
     options = options or AgentOptions()
     defaults = defaults or AgentOptions()
     normalized = normalize_tasks(tasks)
-    schedule = None
-    next_run_at = 0.0
-    if cron_expression:
-        cron.validate(cron_expression, timezone)
-        schedule = {"cron": cron.describe(cron_expression), "timezone": timezone}
-        now = time.time() if now is None else now
-        next_run_at = cron.next_after(cron_expression, now, timezone)
+    schedule, next_run_at = _schedule(cron_expression, timezone, now)
     store = _store(options, store)
     await _validate_tasks(store, normalized, defaults, options)
     workflow = await _require(store, name)

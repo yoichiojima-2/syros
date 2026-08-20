@@ -267,6 +267,45 @@ async def run(session_id: str) -> None:
             lost=lost,
         )
     )
+    async def fail_fast(
+        reason: str, payload: dict, *, result: str | None = None, release_workspace: bool = False
+    ) -> None:
+        """Release everything with a zero-cost error result and no agent run."""
+        await writer.append("lifecycle", {"event": reason, **payload})
+        doc = message_to_doc(
+            ResultMessage(
+                subtype=reason,
+                duration_ms=0,
+                duration_api_ms=0,
+                is_error=True,
+                num_turns=0,
+                session_id=session.get("claude_session_id") or "",
+                total_cost_usd=0.0,
+                result=result,
+            )
+        )
+        await writer.append("message", doc)
+        if release_workspace and options.workspace:
+            await store.release_workspace(options.workspace, session_id)
+        await store.release_session(
+            session_id,
+            status="idle",
+            stop_reason=reason,
+            seq_head=writer.seq,
+            tip_uuid=writer.tip_uuid,
+        )
+        await _advance_workflow(store, config, session_id)
+        await _append_run_log(
+            config,
+            session_id,
+            session,
+            branch=branch,
+            stop_reason=reason,
+            run_cost_usd=0.0,
+            cost_usd=float(session.get("cost_usd") or 0.0),
+            seq_head=writer.seq,
+        )
+
     try:
         # stop_reason/lifecycle keep the "workspace_busy" name: it is a wire
         # value the console and stored sessions already know.
@@ -276,39 +315,7 @@ async def run(session_id: str) -> None:
             # Another session is live in this workspace: fail fast with an error
             # result so the waiting client terminates. The prompt stays queued in
             # the inbox and is consumed when the session is re-triggered.
-            await writer.append(
-                "lifecycle", {"event": "workspace_busy", "workspace": options.workspace}
-            )
-            doc = message_to_doc(
-                ResultMessage(
-                    subtype="workspace_busy",
-                    duration_ms=0,
-                    duration_api_ms=0,
-                    is_error=True,
-                    num_turns=0,
-                    session_id=session.get("claude_session_id") or "",
-                    total_cost_usd=0.0,
-                )
-            )
-            await writer.append("message", doc)
-            await store.release_session(
-                session_id,
-                status="idle",
-                stop_reason="workspace_busy",
-                seq_head=writer.seq,
-                tip_uuid=writer.tip_uuid,
-            )
-            await _advance_workflow(store, config, session_id)
-            await _append_run_log(
-                config,
-                session_id,
-                session,
-                branch=branch,
-                stop_reason="workspace_busy",
-                run_cost_usd=0.0,
-                cost_usd=float(session.get("cost_usd") or 0.0),
-                seq_head=writer.seq,
-            )
+            await fail_fast("workspace_busy", {"workspace": options.workspace})
             return
         if options.workspace:
             leased_workspace["name"] = options.workspace  # heartbeat renews it from here on
@@ -323,39 +330,11 @@ async def run(session_id: str) -> None:
                     connectors.mcp_servers_for, config.project, options.connectors
                 )
             except connectors.ConnectorError as error:
-                await writer.append("lifecycle", {"event": "connector_error", "error": str(error)})
-                doc = message_to_doc(
-                    ResultMessage(
-                        subtype="connector_error",
-                        duration_ms=0,
-                        duration_api_ms=0,
-                        is_error=True,
-                        num_turns=0,
-                        session_id=session.get("claude_session_id") or "",
-                        total_cost_usd=0.0,
-                        result=str(error),
-                    )
-                )
-                await writer.append("message", doc)
-                if options.workspace:
-                    await store.release_workspace(options.workspace, session_id)
-                await store.release_session(
-                    session_id,
-                    status="idle",
-                    stop_reason="connector_error",
-                    seq_head=writer.seq,
-                    tip_uuid=writer.tip_uuid,
-                )
-                await _advance_workflow(store, config, session_id)
-                await _append_run_log(
-                    config,
-                    session_id,
-                    session,
-                    branch=branch,
-                    stop_reason="connector_error",
-                    run_cost_usd=0.0,
-                    cost_usd=float(session.get("cost_usd") or 0.0),
-                    seq_head=writer.seq,
+                await fail_fast(
+                    "connector_error",
+                    {"error": str(error)},
+                    result=str(error),
+                    release_workspace=True,
                 )
                 return
             options.mcp_servers = {**servers, **options.mcp_servers}

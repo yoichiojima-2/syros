@@ -30,7 +30,7 @@ from .options import (
     default_prompt,
     options_from_doc,
 )
-from .store import Store, StoreProtocol
+from .store import StoreProtocol, store_or_default as _store
 
 
 class AgentError(SyrosError):
@@ -51,10 +51,6 @@ def build(
         "description": description,
         "created_by": created_by,
     }
-
-
-def _store(options: AgentOptions, store: StoreProtocol | None) -> StoreProtocol:
-    return store or Store(options.resolved_project())
 
 
 async def create(
