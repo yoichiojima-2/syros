@@ -314,7 +314,8 @@ Semantics, all inherited from today's deployments:
   run's live task statuses, and the editor's canvas, with each node linking to
   the task's ordinary session page. `types.ts` mirrors the new shapes.
 - Firestore: `deployments/*` documents are dropped, not migrated
-  (experimental stage; `migrate.py` is the pattern if we regret this).
+  (experimental stage; the deleted `migrate.py` in git history is the pattern
+  if we regret this).
   Sessions' historical `deployment` field stays on old docs and is simply no
   longer queried.
 

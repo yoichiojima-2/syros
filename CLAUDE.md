@@ -43,10 +43,6 @@ workspaces/skills/artifacts, Cloud Run Jobs run the sandbox.
   `ws/` (the shared directory) and `skills/`. Skills have two scopes: `skills/`
   (global, mounted everywhere) and a workspace's own (mounted for that workspace,
   shadowing same-named globals).
-- `migrate.py` + `syros migrate` move an installation deployed before that layout
-  onto it (old `team-skills/`, `teams/`, and `"team"` option keys). It is the only
-  code that knows those names — nothing reads them as a fallback. Delete both once
-  every installation has run it.
 - Presets (`presets/__init__.py`, data under `presets/data/`) are example objects
   installed through the ordinary `create()` calls — nothing about an installed
   preset is special afterwards, and no doc points back at the catalog. Two tracks:
