@@ -15,6 +15,12 @@ model_backend = "anthropic"
 # Read only — flip sandbox_bigquery_write to let sessions keep their own tables.
 sandbox_bigquery = true
 
+# The default (`* * * * *`) boots the ~20s tick container 43k times a month —
+# nearly the whole GCP bill at idle. Every-5-minutes cuts that ~80%, and the
+# only cost is firing granularity: a workflow fires at the first tick at or
+# after its cron time, fine for the daily/weekly schedules in use.
+tick_schedule = "*/5 * * * *"
+
 # Console access: public URL behind IAP (console_iap defaults to true);
 # these principals both pass IAP and hold run.invoker.
 console_invokers = [

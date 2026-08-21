@@ -237,6 +237,25 @@ resource "google_artifact_registry_repository" "syros" {
   location      = var.region
   format        = "DOCKER"
   depends_on    = [google_project_service.apis]
+
+  # Releases push a new image every tag and nothing else deletes them, so the
+  # repository grows without bound. Keep enough recent versions to roll back;
+  # `latest` always survives because the newest version carries it.
+  cleanup_policy_dry_run = false
+  cleanup_policies {
+    id     = "keep-recent"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 5
+    }
+  }
+  cleanup_policies {
+    id     = "delete-stale"
+    action = "DELETE"
+    condition {
+      older_than = "2592000s" # 30 days; KEEP above still wins for the newest 5
+    }
+  }
 }
 
 # --- secrets: containers only; values are added out-of-band via gcloud ---
