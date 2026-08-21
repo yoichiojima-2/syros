@@ -698,29 +698,6 @@ container is the same for everyone, so approvals made through the deployed conso
 attributed to the container's user, not the human — Cloud Run's access logs are the record
 of who acted.
 
-### Upgrading an older installation
-
-The workspace concept was once called a team, and the layout above is newer than the
-rename. An installation deployed before either carries the old shapes — skills under a
-top-level `team-skills/` prefix, workspace docs in a `teams/` Firestore collection,
-workspace files directly under `workspaces/{name}/`, and a `"team"` key inside stored
-option dicts. Nothing reads those names any more, so move the data forward once:
-
-```sh
-syros migrate --dry-run   # print the plan: every object move and doc rewrite
-syros migrate             # do it
-```
-
-It is idempotent — every step skips what is already in place, so re-running it (or
-running it on a fresh installation) is a no-op. It refuses to start while a workspace
-lease is live, since the session holding it is checkpointing to the prefix being moved
-(`--force` overrides). Stored options are rewritten everywhere they are read back:
-sessions, agents, workspaces, global settings, workflows, and the options each
-in-flight workflow run captured at launch. Objects already sitting under a workspace's
-`ws/` or `skills/` are left alone and reported as a count; a name syros would never
-have written (say, a hand-uploaded `workspaces/Old Team/`) is named in the report and
-left for you to move.
-
 ## How a run works
 
 1. `query()` writes `sessions/{sid}` + the prompt to the inbox, then triggers the Cloud Run
